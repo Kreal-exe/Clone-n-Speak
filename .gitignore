@@ -1,0 +1,7 @@
+build/
+dist/
+.DS_Store
+xcuserdata/
+*.xcworkspace/
+__pycache__/
+*.pyc

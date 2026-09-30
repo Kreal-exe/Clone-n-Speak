@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key><string>en</string>
+	<key>CFBundleLocalizations</key>
+	<array><string>en</string><string>ru</string></array>
+	<key>CFBundleDisplayName</key><string>Clone'n'Speak</string>
+	<key>CFBundleExecutable</key><string>Clone'n'Speak</string>
+	<key>CFBundleIconFile</key><string>AppIcon</string>
+	<key>CFBundleIdentifier</key><string>com.clonenspeak.mac</string>
+	<key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+	<key>CFBundleName</key><string>Clone'n'Speak</string>
+	<key>CFBundlePackageType</key><string>APPL</string>
+	<key>CFBundleShortVersionString</key><string>1.0.0</string>
+	<key>CFBundleVersion</key><string>100</string>
+	<key>LSApplicationCategoryType</key><string>public.app-category.productivity</string>
+	<key>LSMinimumSystemVersion</key><string>13.0</string>
+	<key>LSArchitecturePriority</key><array><string>arm64</string></array>
+	<key>NSHighResolutionCapable</key><true/>
+	<key>NSSupportsAutomaticGraphicsSwitching</key><true/>
+	<key>NSHumanReadableCopyright</key><string>MIT License. OmniVoice model © k2-fsa (Apache-2.0).</string>
+	<key>NSMicrophoneUsageDescription</key><string>Clone'n'Speak records a sample of your voice for cloning.</string>
+</dict>
+</plist>
