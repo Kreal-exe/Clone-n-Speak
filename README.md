@@ -124,7 +124,9 @@ Only the Xcode Command Line Tools are needed (`xcode-select --install`):
 - Translations: `python3 tools/strings.py check`
 - Xcode project: `python3 tools/gen_xcodeproj.py`
 - Signed & notarized DMG: `SIGN_IDENTITY="Developer ID Application: …" NOTARY_PROFILE=notary ./build.sh --dmg`.
-  Pushing a `v*` tag builds the DMG in GitHub Actions and attaches it to a release.
+- Releasing: bump `CFBundleShortVersionString` in `Sources/Info.plist`, add a `## x.y.z` section to `CHANGELOG.md`
+  and push to `main`. GitHub Actions runs the tests, builds the DMG, tags `vx.y.z` and publishes the release with
+  that section as its notes (`tools/release_notes.py x.y.z` shows them). Nothing is built or uploaded by hand.
 
 ### How it works
 

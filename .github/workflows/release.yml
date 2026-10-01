@@ -1,6 +1,10 @@
 name: Release
 
-# Push a tag like v3.0.0 to build a DMG and attach it to a GitHub release.
+# Releases publish themselves: bump CFBundleShortVersionString in Sources/Info.plist, describe the version in
+# CHANGELOG.md ("## 1.2.3") and push to main. When that version has no tag yet, this workflow runs the tests,
+# builds the DMG, tags vX.Y.Z and publishes the release with the changelog section as its notes.
+# Pushing a v* tag by hand still works (a release that already exists keeps its hand-written notes).
+#
 # Optional signing & notarization — add these repository secrets:
 #   MACOS_CERT_P12        base64 of a "Developer ID Application" .p12
 #   MACOS_CERT_PASSWORD   its password
@@ -8,10 +12,16 @@ name: Release
 #   APPLE_ID, APPLE_TEAM_ID, APPLE_APP_PASSWORD   for notarytool
 on:
   push:
+    branches: [main]
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
   release:
@@ -19,11 +29,50 @@ jobs:
     env:  # secrets can't be tested in `if:` directly
       MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
       APPLE_ID: ${{ secrets.APPLE_ID }}
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
 
+      - name: What to release
+        id: meta
+        run: |
+          VERSION=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" Sources/Info.plist)
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            TAG="$GITHUB_REF_NAME"
+            if [[ "$TAG" != "v$VERSION" ]]; then
+              echo "::error::Tag $TAG does not match version $VERSION in Sources/Info.plist"; exit 1
+            fi
+          else
+            TAG="v$VERSION"
+            if [[ -n "$(git ls-remote --tags origin "refs/tags/$TAG")" ]]; then
+              echo "Version $VERSION is already released ($TAG) — nothing to do."
+              echo "release=false" >> "$GITHUB_OUTPUT"; exit 0
+            fi
+          fi
+          # a release someone wrote by hand keeps its notes; otherwise they come from CHANGELOG.md
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "notes=" >> "$GITHUB_OUTPUT"
+          else
+            python3 tools/release_notes.py "$VERSION" > "$RUNNER_TEMP/notes.md"
+            echo "notes=$RUNNER_TEMP/notes.md" >> "$GITHUB_OUTPUT"
+          fi
+          echo "release=true" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-python@v5
+        if: steps.meta.outputs.release == 'true'
+        with:
+          python-version: "3.11"
+
+      - name: Python tests
+        if: steps.meta.outputs.release == 'true'
+        run: |
+          pip install num2words numpy scipy
+          python -m unittest discover -s tests -v
+
       - name: Import signing certificate
-        if: ${{ env.MACOS_CERT_P12 != '' }}
+        if: ${{ steps.meta.outputs.release == 'true' && env.MACOS_CERT_P12 != '' }}
         env:
           MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
         run: |
@@ -36,12 +85,13 @@ jobs:
           rm cert.p12
 
       - name: Notary profile
-        if: ${{ env.APPLE_ID != '' }}
+        if: ${{ steps.meta.outputs.release == 'true' && env.APPLE_ID != '' }}
         run: |
           xcrun notarytool store-credentials notary --apple-id "${{ secrets.APPLE_ID }}" \
             --team-id "${{ secrets.APPLE_TEAM_ID }}" --password "${{ secrets.APPLE_APP_PASSWORD }}"
 
       - name: Build DMG
+        if: steps.meta.outputs.release == 'true'
         env:
           SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
           NOTARY_PROFILE: ${{ env.APPLE_ID != '' && 'notary' || '' }}
@@ -51,7 +101,13 @@ jobs:
           ./build.sh --dmg
 
       - name: Publish release
+        if: steps.meta.outputs.release == 'true'
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: Clone'n'Speak ${{ steps.meta.outputs.version }}
+          body_path: ${{ steps.meta.outputs.notes }}
           files: dist/*.dmg
-          generate_release_notes: false  # keep the hand-written notes as they are
+          make_latest: "true"
+          generate_release_notes: false
