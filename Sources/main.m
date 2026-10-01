@@ -11,11 +11,44 @@
 
 #pragma mark - Sidebar
 
+/// Thin bar under the status: how much of the Mac's memory the engine and everything else use.
+@interface OVMemoryMeter : NSView
+@property (nonatomic) double engine, others;  // fractions of the physical memory
+@end
+@implementation OVMemoryMeter
+- (NSSize)intrinsicContentSize { return NSMakeSize(NSViewNoIntrinsicMetric, 4); }
+- (void)setEngine:(double)e { _engine = e; self.needsDisplay = YES; }
+- (void)setOthers:(double)o { _others = o; self.needsDisplay = YES; }
+- (void)drawRect:(NSRect)r {
+    NSRect b = self.bounds;
+    [[NSBezierPath bezierPathWithRoundedRect:b xRadius:2 yRadius:2] addClip];
+    [[NSColor.labelColor colorWithAlphaComponent:0.08] setFill];
+    NSRectFillUsingOperation(b, NSCompositingOperationSourceOver);
+    double e = MAX(0, MIN(1, self.engine)), o = MAX(0, MIN(1 - e, self.others));
+    [[NSColor.labelColor colorWithAlphaComponent:0.22] setFill];
+    NSRectFillUsingOperation(NSMakeRect(0, 0, NSWidth(b) * (e + o), NSHeight(b)), NSCompositingOperationSourceOver);
+    [OVAccent() setFill];
+    NSRectFillUsingOperation(NSMakeRect(0, 0, NSWidth(b) * e, NSHeight(b)), NSCompositingOperationSourceOver);
+}
+@end
+
+/// Rounded, barely tinted box behind the sidebar status.
+@interface OVTintBox : NSView
+@end
+@implementation OVTintBox
+- (BOOL)wantsUpdateLayer { return YES; }
+- (void)updateLayer {
+    self.layer.cornerRadius = 11;
+    self.layer.backgroundColor = [NSColor.labelColor colorWithAlphaComponent:0.055].CGColor;
+}
+@end
+
 @interface OVSidebar : NSViewController <NSTableViewDataSource, NSTableViewDelegate>
 @property NSTableView *table;
 @property NSArray<NSArray<NSString *> *> *items; // id, title, symbol
-@property NSTextField *footer, *tagline;
+@property NSTextField *footer, *footerDetail, *tagline;
 @property NSImageView *footerIcon;
+@property OVMemoryMeter *meter;
 @property NSButton *themeButton;
 @property (copy) void (^onSelect)(NSString *page);
 - (void)selectPage:(NSString *)page;
@@ -28,7 +61,7 @@
     [self.table addTableColumn:[[NSTableColumn alloc] initWithIdentifier:@"i"]];
     self.table.headerView = nil;
     self.table.style = NSTableViewStyleSourceList;
-    self.table.rowHeight = 30;
+    self.table.rowHeight = 34;
     self.table.dataSource = self;
     self.table.delegate = self;
     self.table.backgroundColor = NSColor.clearColor;
@@ -36,37 +69,53 @@
     sv.documentView = self.table;
     sv.drawsBackground = NO;
 
-    NSTextField *brand = OVLabel(OVAppName, 17, NSFontWeightBold, nil);
-    self.tagline = OVWrapLabel(@"", 11, NSColor.secondaryLabelColor);
-    [self.tagline.widthAnchor constraintLessThanOrEqualToConstant:160].active = YES;
-    self.themeButton = OVIconButton(@"moon.fill", @"", self, @selector(toggleTheme:));
-    NSStackView *head = OVHStack(@[OVVStack(@[brand, self.tagline], 1), OVSpacer(), self.themeButton], 6);
-    head.alignment = NSLayoutAttributeTop;
+    NSImageView *logo = [NSImageView imageViewWithImage:NSApp.applicationIconImage];
+    logo.imageScaling = NSImageScaleProportionallyUpOrDown;
+    [logo.widthAnchor constraintEqualToConstant:40].active = YES;
+    [logo.heightAnchor constraintEqualToConstant:40].active = YES;
+    NSTextField *brand = OVLabel(OVAppName, 15.5, NSFontWeightBold, nil);
+    brand.font = OVRoundedFont(15.5, NSFontWeightBold);
+    self.tagline = OVWrapLabel(@"", 10.5, NSColor.secondaryLabelColor);
+    self.tagline.maximumNumberOfLines = 2;
+    NSStackView *head = OVHStack(@[logo, OVVStack(@[brand, self.tagline], 1)], 8);
 
+    // status card: what the engine is doing, memory at a glance, theme switch
     self.footerIcon = OVSymbol(@"circle.fill", 8, NSColor.tertiaryLabelColor);
-    self.footer = OVWrapLabel(@"", 11, NSColor.secondaryLabelColor);
-    self.footer.maximumNumberOfLines = 3;
-    [self.footer.widthAnchor constraintLessThanOrEqualToConstant:170].active = YES;
-    NSStackView *foot = OVHStack(@[self.footerIcon, self.footer], 6);
+    self.footer = OVLabel(@"", 11.5, NSFontWeightSemibold, nil);
+    self.footerDetail = OVWrapLabel(@"", 10.5, NSColor.secondaryLabelColor);
+    self.footerDetail.maximumNumberOfLines = 3;
+    self.themeButton = OVIconButton(@"moon.fill", @"", self, @selector(toggleTheme:));
+    self.themeButton.symbolConfiguration = [NSImageSymbolConfiguration configurationWithPointSize:12 weight:NSFontWeightRegular];
+    self.meter = [OVMemoryMeter new];
+    self.meter.toolTip = L(@"Memory of this Mac: the speech engine (blue), other apps (gray), free");
+    NSStackView *statusLine = OVHStack(@[self.footerIcon, self.footer, OVSpacer(), self.themeButton], 6);
+    NSStackView *footStack = OVVStack(@[statusLine, self.footerDetail, self.meter], 5);
+    OVFillWidth(@[statusLine, self.footerDetail, self.meter], footStack);
+    OVTintBox *foot = [OVTintBox new];
+    foot.wantsLayer = YES;
+    [foot addSubview:footStack];
+    OVPin(footStack, foot, NSEdgeInsetsMake(9, 11, 11, 9));
+    [foot setContentHuggingPriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationVertical];
 
     NSView *root = [NSView new];
     for (NSView *v in @[head, sv, foot]) { v.translatesAutoresizingMaskIntoConstraints = NO; [root addSubview:v]; }
     [NSLayoutConstraint activateConstraints:@[
-        [head.topAnchor constraintEqualToAnchor:root.topAnchor constant:44],
-        [head.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:20],
-        [head.trailingAnchor constraintEqualToAnchor:root.trailingAnchor constant:-14],
+        [head.topAnchor constraintEqualToAnchor:root.topAnchor constant:46],
+        [head.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:16],
+        [head.trailingAnchor constraintEqualToAnchor:root.trailingAnchor constant:-10],
         [sv.topAnchor constraintEqualToAnchor:head.bottomAnchor constant:18],
         [sv.leadingAnchor constraintEqualToAnchor:root.leadingAnchor],
         [sv.trailingAnchor constraintEqualToAnchor:root.trailingAnchor],
         [sv.bottomAnchor constraintEqualToAnchor:foot.topAnchor constant:-10],
-        [foot.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:20],
-        [foot.trailingAnchor constraintLessThanOrEqualToAnchor:root.trailingAnchor constant:-12],
-        [foot.bottomAnchor constraintEqualToAnchor:root.bottomAnchor constant:-16],
+        [foot.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:12],
+        [foot.trailingAnchor constraintEqualToAnchor:root.trailingAnchor constant:-12],
+        [foot.bottomAnchor constraintEqualToAnchor:root.bottomAnchor constant:-12],
         [root.widthAnchor constraintGreaterThanOrEqualToConstant:200],
     ]];
     self.view = root;
     NSNotificationCenter *nc = NSNotificationCenter.defaultCenter;
-    for (NSNotificationName n in @[OVRuntimeDidChangeNotification, OVModelsDidChangeNotification, OVWorkerDidChangeNotification])
+    for (NSNotificationName n in @[OVRuntimeDidChangeNotification, OVModelsDidChangeNotification, OVWorkerDidChangeNotification,
+                                   OVWorkerMemoryDidChangeNotification])
         [nc addObserver:self selector:@selector(refreshFooter) name:n object:nil];
     [self reloadTexts];
 }
@@ -117,11 +166,18 @@
     else if (w.loadedModelPath) { t = [NSString stringWithFormat:L(@"%@ loaded"), model]; c = OVGreen(); }
     else { t = [NSString stringWithFormat:L(@"Ready · %@"), model]; c = OVGreen(); }
     unsigned long long avail = w.availableMemory ?: [OVMemory availableBytes];
-    NSString *mem = w.engineFootprint > 0
+    BOOL engine = w.engineFootprint > 50 * 1024 * 1024;  // a process that is only starting isn't worth a "0.0 GB"
+    NSString *mem = engine
         ? [NSString stringWithFormat:L(@"Engine %@ · free %@"), [OVMemory format:w.engineFootprint], [OVMemory format:avail]]
         : [NSString stringWithFormat:L(@"Free memory %@"), [OVMemory format:avail]];
-    self.footer.stringValue = [NSString stringWithFormat:@"%@\n%@", t, mem];
+    // "Ready · OmniVoice · Apple MLX": the state in bold, the rest below it
+    NSRange dot = [t rangeOfString:@" · "];
+    self.footer.stringValue = dot.location == NSNotFound ? t : [t substringToIndex:dot.location];
+    self.footerDetail.stringValue = dot.location == NSNotFound ? mem : [NSString stringWithFormat:@"%@\n%@", [t substringFromIndex:NSMaxRange(dot)], mem];
     self.footerIcon.contentTintColor = c;
+    double total = (double)NSProcessInfo.processInfo.physicalMemory;
+    self.meter.engine = engine ? w.engineFootprint / total : 0;
+    self.meter.others = MAX(0, 1 - avail / total - self.meter.engine);
 }
 
 - (NSInteger)numberOfRowsInTableView:(NSTableView *)t { return self.items.count; }
@@ -132,7 +188,7 @@
         cell = [NSTableCellView new];
         cell.identifier = @"cell";
         NSImageView *iv = [NSImageView new];
-        NSTextField *tf = OVLabel(@"", 13, NSFontWeightRegular, nil);
+        NSTextField *tf = OVLabel(@"", 13.5, NSFontWeightMedium, nil);
         cell.imageView = iv;
         cell.textField = tf;
         NSStackView *s = OVHStack(@[iv, tf], 8);
@@ -143,7 +199,7 @@
     NSArray *it = self.items[row];
     cell.textField.stringValue = it[1];
     cell.imageView.image = [NSImage imageWithSystemSymbolName:it[2] accessibilityDescription:it[1]];
-    cell.imageView.symbolConfiguration = [NSImageSymbolConfiguration configurationWithPointSize:14 weight:NSFontWeightRegular];
+    cell.imageView.symbolConfiguration = [NSImageSymbolConfiguration configurationWithPointSize:14 weight:NSFontWeightMedium];
     return cell;
 }
 
@@ -286,10 +342,16 @@
         CFAbsoluteTime t0 = CFAbsoluteTimeGetCurrent();
         [[OVWorker shared] request:clone status:^(NSString *m) { say(m); } progress:nil done:^(NSDictionary *d, NSString *err) {
             say([NSString stringWithFormat:@"clone → %@ %@ (%.1f s)", err ?: @"ok", d, CFAbsoluteTimeGetCurrent() - t0]);
+            v.language = d[@"language"];  // auto-detected; a text in another language then goes through accent removal
+            v.refText = d[@"ref_text"] ?: v.refText;
+            v.seconds = [d[@"seconds"] doubleValue] ?: v.seconds;
+            [v save];
             NSString *text = env[@"OV_SELFTEST_SPEAK"] ?: @"Привіт! Це перевірка нового рушія на Apple Silicon.";
             NSString *out = [[OVHistory shared] newOutputPathForText:text];
-            NSMutableDictionary *synth = [@{@"cmd": @"synth", @"model": [OVSettings modelSpec], @"text": text, @"out": out, @"voice": v.workerSpec,
-                                            @"language": [OVLocale speechLanguageForText:text], @"params": [OVSettings generationParams]} mutableCopy];
+            NSString *language = [OVLocale speechLanguageForText:text];
+            NSMutableDictionary *synth = [@{@"cmd": @"synth", @"model": [OVSettings modelSpec], @"text": text, @"out": out,
+                                            @"voice": [v workerSpecForLanguage:language],
+                                            @"language": language, @"params": [OVSettings generationParams]} mutableCopy];
             if ([OVModels shared].asrModel)
                 synth[@"improve"] = @{@"asr_path": [OVModels shared].asrModel.localPath, @"attempts": @2, @"threshold": @0.08};
             __block double lastP = 0;
@@ -297,6 +359,7 @@
                 say([NSString stringWithFormat:@"synth → %@ %@ progress %.2f memory %.2f/%.2f GB", err2 ?: @"ok", d2, lastP,
                      [OVWorker shared].memoryActive, [OVWorker shared].memoryPeak]);
                 if (!env[@"OV_SELFTEST_NAME"]) [[OVVoices shared] remove:v]; // named voices are kept (demo data)
+                else if (!err2) [[OVHistory shared] record:d2[@"path"] text:text voice:v result:d2];
                 [NSApp terminate:nil];
             }];
         }];
@@ -382,7 +445,7 @@
     self.window.toolbarStyle = NSWindowToolbarStyleUnifiedCompact;
     self.window.delegate = self;
     [self.window setContentSize:NSMakeSize(980, 680)];
-    self.window.contentMinSize = NSMakeSize(760, 540);
+    self.window.contentMinSize = NSMakeSize(820, 560);
     [self.window center];
     self.window.frameAutosaveName = @"MainWindow";
     // never taller or wider than the screen (small MacBook Air displays, Stage Manager, …)
@@ -503,12 +566,13 @@
 - (BOOL)applicationSupportsSecureRestorableState:(NSApplication *)a { return YES; }
 
 - (void)applicationWillTerminate:(NSNotification *)n {
-    [[OVWorker shared] shutdown];
+    [[OVWorker shared] stop];
     [[OVRuntime shared] cancelInstall];
 }
 @end
 
 int main(int argc, const char *argv[]) {
+    signal(SIGPIPE, SIG_IGN); // writing to a worker that has just died must raise an exception, not kill the app
     @autoreleasepool {
         NSApplication *app = NSApplication.sharedApplication;
         app.activationPolicy = NSApplicationActivationPolicyRegular;

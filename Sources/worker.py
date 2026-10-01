@@ -8,6 +8,11 @@ protocol: anything libraries print is redirected to stderr (the app's log).
 Requests:  {"id": 1, "cmd": "synth", ...}
 Events:    {"event": "status"|"progress"|"memory"|"result"|"error"|"ready", ...}
 
+Voice controls (see resolve_style): the model itself has no "emotion" switch, so intonation, energy,
+pitch, tone and pauses are built from what it does have — sampling temperature, guidance, speaking rate —
+plus light DSP on the finished take. Voice design tags (gender, age, pitch, whisper, accent) apply to the
+model's own voice only: with a cloned voice the sample decides.
+
 Memory strategy (the whole point on 8 GB Macs):
   * the model is converted once into a 4/8-bit MLX checkpoint ("optimized") and loaded from there,
   * text is spoken sentence by sentence, so activations stay small whatever the text length,
@@ -72,6 +77,11 @@ _RU = {
     "Unknown command: {cmd}": "Неизвестная команда: {cmd}",
     " — not enough memory: close other apps or choose 4-bit precision.": " — не хватает памяти: закройте другие приложения или выберите точность 4 бита.",
     "This voice needs to be re-created: its sample or text is missing.": "Голос нужно пересоздать: нет образца или его текста.",
+    "Detecting the language of the sample…": "Определяю язык образца…",
+    "The sample is long — keeping its best {sec} seconds…": "Образец длинный — оставляю лучшие {sec} с…",
+    "Teaching the voice {lang} pronunciation (once per voice)…": "Учу голос произношению: {lang} (один раз для голоса)…",
+    "Teaching the voice {lang} pronunciation: take {i} of {n}…": "Учу голос произношению: {lang} — дубль {i} из {n}…",
+    "Choosing the take with the cleanest pronunciation…": "Выбираю дубль с самым чистым произношением…",
 }
 
 
@@ -195,6 +205,38 @@ def prepare_uk_text(text):
     return text.strip()
 
 
+# Sounds the model can make between words: "[laughter] You really got me."
+NONVERBAL_TAGS = ("laughter", "sigh", "confirmation-en", "question-en", "question-ah", "question-oh", "question-ei",
+                  "question-yi", "surprise-ah", "surprise-oh", "surprise-wa", "surprise-yo", "dissatisfaction-hnn")
+_TAG_RE = re.compile(r"\[(?:" + "|".join(NONVERBAL_TAGS) + r")\]")
+
+
+def _wide(ch):
+    """Characters that take about three times longer to say than a letter (CJK, kana, hangul)."""
+    o = ord(ch)
+    return 0x2E80 <= o <= 0x9FFF or 0xAC00 <= o <= 0xD7AF or 0xF900 <= o <= 0xFAFF
+
+
+def _tlen(s):
+    """Length of a text in "letters of speech"."""
+    return sum(3 if _wide(c) else 1 for c in s)
+
+
+def _sentences(para):
+    """Sentence split that also works without capital letters (Arabic, Hindi, CJK …)."""
+    out = []
+    for piece in re.split(r"(?<=[.!?…])\s+|(?<=[。！？])\s*", para):
+        if not piece:
+            continue
+        start = piece.lstrip("\"«„“‘'(")[:1]
+        # "… т. д. і далі", "e.g. this": a lowercase letter or a dash continues the sentence
+        if out and (start.islower() or start in ("—", "–", "-")):
+            out[-1] = f"{out[-1]} {piece}"
+        else:
+            out.append(piece)
+    return out
+
+
 def split_segments(text, max_chars=160):
     """Sentences grouped into segments of reasonable length; paragraph breaks kept."""
     out = []
@@ -202,21 +244,21 @@ def split_segments(text, max_chars=160):
         para = " ".join(para.split())
         if not para:
             continue
-        sentences = re.split(r"(?<=[.!?…])\s+(?=[\"«„(]?[A-ZА-ЯІЇЄҐ0-9])", para)
         cur = ""
-        for s in sentences:
-            while len(s) > max_chars:  # very long sentence: cut at a comma / dash / space
-                cut = max(s.rfind(", ", 0, max_chars), s.rfind(" — ", 0, max_chars), s.rfind("; ", 0, max_chars))
-                if cut < max_chars // 3:
-                    cut = s.rfind(" ", 0, max_chars)
+        for s in _sentences(para):
+            while _tlen(s) > max_chars:  # very long sentence: cut at a comma / dash / space
+                limit = max(8, max_chars * len(s) // _tlen(s))  # the same budget, counted in characters
+                cut = max(s.rfind(c, 0, limit) for c in (", ", " — ", "; ", "，", "、", "；"))
+                if cut < limit // 3:
+                    cut = s.rfind(" ", 0, limit)
                 if cut <= 0:
-                    cut = max_chars
+                    cut = limit - 1  # no spaces at all (CJK, one endless token): hard cut
                 piece, s = s[: cut + 1].strip(), s[cut + 1:].strip()
                 if cur:
                     out.append((cur, False))
                     cur = ""
                 out.append((piece, False))
-            if cur and len(cur) + 1 + len(s) > max_chars:
+            if cur and _tlen(cur) + 1 + _tlen(s) > max_chars:
                 out.append((cur, False))
                 cur = s
             else:
@@ -229,6 +271,7 @@ def split_segments(text, max_chars=160):
 
 
 def _norm_for_compare(s):
+    s = _TAG_RE.sub(" ", s)  # [laughter] is a sound, not a word Whisper should hear
     s = unicodedata.normalize("NFC", s.lower()).replace("\u0301", "")  # Whisper never writes stress marks
     for ch in _APOSTROPHES + "'":
         s = s.replace(ch, "")
@@ -345,6 +388,213 @@ def polish(wav, sr=SR, pad=0.1):
         wav[-f:] *= np.linspace(1, 0, f)
     silence = np.zeros(int(sr * pad), dtype=np.float32)
     return np.concatenate([silence, wav, silence])
+
+
+# --------------------------------------------------------------------------
+# Voice style: macro controls → generation parameters + light DSP
+# --------------------------------------------------------------------------
+# Voice design tags of OmniVoice (one per group). Anything else makes the model produce noise, so it is dropped.
+INSTRUCT_GROUPS = {
+    "gender": ("male", "female"),
+    "age": ("child", "teenager", "young adult", "middle-aged", "elderly"),
+    "pitch": ("very low pitch", "low pitch", "moderate pitch", "high pitch", "very high pitch"),
+    "style": ("whisper",),
+    "accent": ("american accent", "british accent", "australian accent", "canadian accent", "indian accent",
+               "chinese accent", "korean accent", "japanese accent", "portuguese accent", "russian accent"),
+}
+
+
+def clean_instruct(instruct, language=None):
+    """Keeps the known voice-design tags, one per group; accents only make sense for English."""
+    wanted = [w.strip().lower() for w in re.split(r"[,;]", instruct or "")]
+    out = []
+    for group, values in INSTRUCT_GROUPS.items():
+        if group == "accent" and language not in (None, "en"):
+            continue
+        hit = next((w for w in wanted if w in values), None)
+        if hit:
+            out.append(hit)
+    if out == ["whisper"]:
+        out = ["female", "whisper"]  # a bare "whisper" loses words; with a gender it is stable
+    return ", ".join(out) or None
+
+
+def _clamp(v, lo, hi):
+    return max(lo, min(hi, v))
+
+
+def resolve_style(style):
+    """The Speech page's sliders → numbers the engine understands.
+
+    intonation −1…1   flat ↔ lively: the pitch melody of the take is narrowed or widened (scale_melody);
+                      guidance and temperature were measured and do not move it
+    energy     −1…1   relaxed ↔ energetic: pace, pauses, melody, presence and dynamics together
+    pitch      semitones; the model speaks slower/faster and the take is resampled back, so the voice
+               gets deeper or lighter without vocoder artifacts
+    tone       −1…1   warm ↔ bright (tilt EQ)
+    pauses     multiplier for the pauses between sentences and paragraphs
+    volume     dB
+    """
+    style = style or {}
+
+    def val(key, lo, hi, default=0.0):
+        try:
+            return _clamp(float(style.get(key, default)), lo, hi)
+        except (TypeError, ValueError):
+            return default
+    inton, energy = val("intonation", -1, 1), val("energy", -1, 1)
+    return {
+        "melody": _clamp((1 + (0.75 if inton > 0 else 0.6) * inton) * (1 + 0.15 * energy), 0.3, 2.0),
+        "speed_mul": 1 + 0.10 * energy,
+        "pitch": _clamp(val("pitch", -6, 6) + 0.4 * energy, -6, 6),
+        "tone": val("tone", -1, 1),
+        "presence_db": 3.0 * energy,
+        "compress": 0.6 * max(0.0, energy),
+        "pause_mul": _clamp(val("pauses", 0.3, 3.0, 1.0) * (1 - 0.25 * energy), 0.2, 3.5),
+        "gain_db": val("volume", -12, 12),
+    }
+
+
+def _biquad(kind, freq, gain_db, sr=SR, q=0.707):
+    """RBJ cookbook low shelf / high shelf / peak as one second-order section."""
+    import numpy as np
+    A = 10 ** (gain_db / 40.0)
+    w = 2 * np.pi * freq / sr
+    cw, alpha = np.cos(w), np.sin(w) / (2 * q)
+    if kind == "peak":
+        b = [1 + alpha * A, -2 * cw, 1 - alpha * A]
+        a = [1 + alpha / A, -2 * cw, 1 - alpha / A]
+    else:
+        k = 2 * np.sqrt(A) * alpha
+        sign = 1 if kind == "low" else -1  # the two shelves mirror each other
+        b = [A * ((A + 1) - sign * (A - 1) * cw + k), sign * 2 * A * ((A - 1) - sign * (A + 1) * cw),
+             A * ((A + 1) - sign * (A - 1) * cw - k)]
+        a = [(A + 1) + sign * (A - 1) * cw + k, -sign * 2 * ((A - 1) + sign * (A + 1) * cw),
+             (A + 1) + sign * (A - 1) * cw - k]
+    return np.array([b[0], b[1], b[2], a[0], a[1], a[2]]) / a[0]
+
+
+def _compress(wav, amount, sr=SR):
+    """Gentle RMS compressor (up to ~3:1 above −24 dBFS): evens out loud and quiet syllables."""
+    import numpy as np
+    from scipy.signal import lfilter
+    k = np.exp(-1.0 / (0.02 * sr))  # 20 ms level detector
+    env = np.sqrt(np.maximum(lfilter([1 - k], [1, -k], wav.astype(np.float64) ** 2), 1e-12))
+    threshold, ratio = 10 ** (-24 / 20), 1 + 3.3 * amount
+    gain = np.where(env > threshold, (env / threshold) ** (1 / ratio - 1), 1.0)
+    return (wav * gain).astype(np.float32)
+
+
+def shape_voice(wav, fx, sr=SR):
+    """Tone, presence, dynamics and level of the finished take."""
+    import numpy as np
+    from scipy.signal import sosfilt
+    wav = np.asarray(wav, dtype=np.float32)
+    if not len(wav):
+        return wav
+    rms_in = float(np.sqrt((wav ** 2).mean() + 1e-12))
+    sos = []
+    if abs(fx["tone"]) > 0.02:
+        sos += [_biquad("low", 220, -3.0 * fx["tone"], sr), _biquad("high", 3800, 4.0 * fx["tone"], sr)]
+    if abs(fx["presence_db"]) > 0.1:
+        sos.append(_biquad("peak", 3000, fx["presence_db"], sr, q=0.9))
+    if sos:
+        wav = sosfilt(np.array(sos), wav).astype(np.float32)
+    if fx["compress"] > 0.01:
+        wav = _compress(wav, fx["compress"], sr)
+    rms = float(np.sqrt((wav ** 2).mean() + 1e-12))
+    wav = wav * (rms_in / rms) * 10 ** (fx["gain_db"] / 20)  # EQ must not change the loudness; volume does
+    knee, top = 0.8, 0.97  # soft limiter: peaks above the knee are rounded off instead of clipped
+    over = np.abs(wav) > knee
+    if over.any():
+        wav = np.where(over, np.sign(wav) * (knee + (top - knee) * np.tanh((np.abs(wav) - knee) / (top - knee))), wav)
+    return wav.astype(np.float32)
+
+
+def change_pitch(wav, semitones):
+    """Plays the take 2^(st/12) times faster: pitch and timbre move together (the model spoke slower to compensate)."""
+    import numpy as np
+    if abs(semitones) < 0.01 or not len(wav):
+        return wav
+    from fractions import Fraction
+    from scipy.signal import resample_poly
+    ratio = Fraction(2 ** (-semitones / 12.0)).limit_denominator(240)
+    return resample_poly(wav, ratio.numerator, ratio.denominator).astype(np.float32)
+
+
+def track_f0(wav, sr=SR, hop=0.01):
+    """Rough pitch track by autocorrelation: Hz per 10 ms frame, 0 where there is no voice."""
+    import numpy as np
+    from scipy.signal import medfilt
+    n, step = int(sr * 0.04), int(sr * hop)
+    if len(wav) < n + step:
+        return np.zeros(0)
+    frames = np.lib.stride_tricks.sliding_window_view(np.asarray(wav, dtype=np.float64), n)[::step]
+    frames = frames - frames.mean(axis=1, keepdims=True)
+    rms = np.sqrt((frames ** 2).mean(axis=1))
+    ac = np.fft.irfft(np.abs(np.fft.rfft(frames, 2 * n, axis=1)) ** 2, axis=1)[:, :n]
+    lo, hi = sr // 400, sr // 60
+    lag = lo + np.argmax(ac[:, lo:hi], axis=1)
+    strength = ac[np.arange(len(lag)), lag] / (ac[:, 0] + 1e-12)
+    voiced = (strength > 0.45) & (rms > 0.15 * np.percentile(rms, 90))
+    f0 = np.where(voiced, sr / lag, 0.0)
+    if voiced.sum() > 5:
+        smooth = medfilt(f0, 5)  # single-frame octave jumps
+        f0 = np.where(voiced & (smooth > 0), smooth, 0.0)
+    return f0
+
+
+def scale_melody(wav, k, sr=SR, hop=0.01):
+    """Widens (k > 1) or narrows (k < 1) the pitch melody around the speaker's usual pitch.
+
+    The take is replayed at a gently varying rate — a little faster where the voice rises, a little slower
+    where it falls — so there is no vocoder and nothing to phase: the waveform stays the model's own."""
+    import numpy as np
+    from scipy.ndimage import uniform_filter1d
+    from scipy.signal import resample_poly
+    if abs(k - 1.0) < 0.02:
+        return wav
+    f0 = track_f0(wav, sr, hop)
+    voiced = f0 > 0
+    if voiced.sum() < 10:
+        return wav
+    octaves = np.log2(f0[voiced])
+    frames = np.arange(len(f0))
+    dev = np.interp(frames, frames[voiced], np.clip(octaves - np.median(octaves), -0.75, 0.75))
+    dev = uniform_filter1d(dev, 7)  # ~70 ms: follow the melody, not the jitter
+    step = int(sr * hop)
+    rate = 2 ** ((k - 1.0) * np.interp(np.arange(len(wav)), frames * step + int(sr * 0.02), dev))
+    pos = np.concatenate([[0.0], np.cumsum(rate)[:-1]])
+    fine = resample_poly(wav, 2, 1)  # read from a 2× oversampled copy: linear interpolation stays clean
+    pos = pos[pos < len(wav) - 1] * 2
+    return np.interp(pos, np.arange(len(fine)), fine).astype(np.float32)
+
+
+def trim_sample(wav, sr=SR, target=10.0, limit=14.0):
+    """Best stretch of a long recording: from the first word to the longest pause between 6 s and `limit`."""
+    import numpy as np
+    db = frames_db(wav, sr)
+    hop = 0.03
+    n = int(sr * hop)
+    voiced = db > max(np.percentile(db, 10) + 10, -55)
+    if not voiced.any():
+        return wav[: int(sr * target)]
+    first = int(np.argmax(voiced))
+    lo, hi = first + int(6 / hop), min(len(voiced), first + int(limit / hop))
+    best, run_start = None, None
+    for i in range(lo, hi + 1):
+        quiet = i < hi and not voiced[i]
+        if quiet and run_start is None:
+            run_start = i
+        elif not quiet and run_start is not None:
+            if best is None or i - run_start > best[1] - best[0]:
+                best = (run_start, i)
+            run_start = None
+    if best and best[1] - best[0] >= 4:  # a pause of at least 0.12 s: cut in its middle
+        cut = (best[0] + best[1]) // 2
+    else:
+        cut = first + int(target / hop)
+    return wav[max(0, first - 3) * n: min(len(wav), cut * n)]
 
 
 # --------------------------------------------------------------------------
@@ -495,7 +745,7 @@ def ensure_tts(spec):
     mx.eval(_tts.parameters())
     _tts_dir = path
     status(T("Model loaded in {sec} s", sec=f"{time.time() - t0:.0f}"))
-    emit("model_loaded", path=spec["path"], lora=spec.get("lora"), bits=int(spec.get("bits") or 4))
+    emit("model_loaded", path=spec["path"], lora=spec.get("lora"), bits=int(spec.get("bits") or 16))
     report_memory()
     return _tts
 
@@ -535,13 +785,71 @@ def unload_stt():
     _free()
 
 
-def transcribe_wave(stt, wav, language=None):
+def _resample_16k(wav):
     import numpy as np
-    from math import gcd
     from scipy.signal import resample_poly
-    wav16 = resample_poly(np.asarray(wav, dtype=np.float32), 2, 3).astype(np.float32)  # 24 kHz → 16 kHz
-    kw = {"language": language} if language and language not in ("auto", "None") else {}
-    return stt.generate(wav16, **kw).text.strip()
+    return resample_poly(np.asarray(wav, dtype=np.float32), 2, 3).astype(np.float32)  # 24 kHz → 16 kHz
+
+
+def _whisper_lang(language):
+    """The language as Whisper knows it, or None (it then detects the language itself)."""
+    if not language or language in ("auto", "None"):
+        return None
+    try:
+        from mlx_audio.stt.models.whisper.tokenizer import LANGUAGES
+    except ImportError:
+        return language
+    language = {"jv": "jw", "nb": "no"}.get(language, language)
+    return language if language in LANGUAGES else None
+
+
+def transcribe_wave(stt, wav, language=None):
+    language = _whisper_lang(language)
+    kw = {"language": language} if language else {}
+    return stt.generate(_resample_16k(wav), **kw).text.strip()
+
+
+def _whisper_features(stt, wav):
+    """Encoder output for the first 30 s of a 24 kHz recording."""
+    from mlx_audio.stt.models.whisper.audio import N_FRAMES, log_mel_spectrogram, pad_or_trim
+    mel = log_mel_spectrogram(_resample_16k(wav), n_mels=stt.dims.n_mels)
+    return stt.encoder(pad_or_trim(mel, N_FRAMES, axis=-2).astype(stt.dtype)[None])
+
+
+def detect_language(stt, wav):
+    """Whisper's language guesses for a recording, best first: [(code, probability), …]."""
+    _, probs = stt.detect_language(_whisper_features(stt, wav)[0])
+    return sorted(probs.items(), key=lambda kv: -kv[1])
+
+
+def fluency(stt, wav, text, language):
+    """Mean log-probability Whisper gives to `text` for this audio (teacher forcing). The closer to 0, the more
+    the recording sounds like clean speech in `language`; it drops for slurred words and for a foreign accent."""
+    import mlx.nn as nn
+    mx = _mx()
+    tok = stt.get_tokenizer(language=_whisper_lang(language) or "en", task="transcribe")
+    head = list(tok.sot_sequence_including_notimestamps)
+    target = tok.encode(" " + text.strip())[:200]
+    if not target:
+        return 0.0
+    logits = stt.logits(mx.array([head + target[:-1]]), _whisper_features(stt, wav))
+    logp = nn.log_softmax(logits.astype(mx.float32), axis=-1)[0, len(head) - 1:]
+    picked = mx.take_along_axis(logp, mx.array(target)[:, None], axis=-1)
+    return float(picked.mean().item())
+
+
+def transcribe_auto(stt, wav):
+    """Text and language of a recording. On short clips Whisper's first guess mixes up close languages
+    (Ukrainian / Russian / Belarusian): when it is unsure, both readings are transcribed and the one
+    Whisper itself finds more convincing wins."""
+    ranked = detect_language(stt, wav)
+    (lang, p1), (second, p2) = ranked[0], ranked[1]
+    text = transcribe_wave(stt, wav, lang)
+    if p1 < 0.8 and p2 > 0.05:
+        other = transcribe_wave(stt, wav, second)
+        if other and fluency(stt, wav, other, second) > fluency(stt, wav, text, lang):
+            text, lang = other, second
+    return text, {"jw": "jv"}.get(lang, lang)
 
 
 # --------------------------------------------------------------------------
@@ -587,6 +895,89 @@ def load_prompt(voice, tts):
     return {"tokens": tokens, "ref_text": ref_text}
 
 
+# A phrase per language for ensure_adapted(): everyday words, about eight seconds of speech.
+_BRIDGE = {
+    "uk": "Привіт! Сьогодні чудовий день, щоб розповісти цікаву історію. Гарні гілки ялини хитаються від вітру, а їжачок біжить до річки.",
+    "ru": "Привет! Сегодня отличный день, чтобы рассказать интересную историю. Широкие ветви ели качаются от ветра, а ёжик бежит к реке.",
+    "en": "Hello! Today is a wonderful day to tell an interesting story. The branches of the fir tree sway in the wind, and a little hedgehog runs to the river.",
+    "de": "Hallo! Heute ist ein schöner Tag, um eine spannende Geschichte zu erzählen. Die Zweige der Fichte wiegen sich im Wind, und ein kleiner Igel läuft zum Fluss.",
+    "pl": "Cześć! Dzisiaj jest piękny dzień, żeby opowiedzieć ciekawą historię. Gałęzie świerku kołyszą się na wietrze, a mały jeż biegnie do rzeki.",
+    "fr": "Bonjour ! C'est une belle journée pour raconter une histoire intéressante. Les branches du sapin se balancent au vent, et un petit hérisson court vers la rivière.",
+    "es": "¡Hola! Hoy es un día estupendo para contar una historia interesante. Las ramas del abeto se mueven con el viento y un pequeño erizo corre hacia el río.",
+    "it": "Ciao! Oggi è una giornata splendida per raccontare una storia interessante. I rami dell'abete ondeggiano al vento e un piccolo riccio corre verso il fiume.",
+    "pt": "Olá! Hoje é um dia maravilhoso para contar uma história interessante. Os ramos do abeto balançam ao vento e um pequeno ouriço corre para o rio.",
+    "cs": "Ahoj! Dnes je krásný den na vyprávění zajímavého příběhu. Větve smrku se houpou ve větru a malý ježek běží k řece.",
+    "nl": "Hallo! Vandaag is een prachtige dag om een interessant verhaal te vertellen. De takken van de spar wiegen in de wind en een kleine egel rent naar de rivier.",
+    "tr": "Merhaba! Bugün ilginç bir hikâye anlatmak için harika bir gün. Ladin dalları rüzgârda sallanıyor ve küçük bir kirpi nehre doğru koşuyor.",
+}
+
+
+def bridge_text(language, text):
+    """The phrase the voice learns a language on: a built-in one, else the beginning of the text itself."""
+    if language in _BRIDGE:
+        return _BRIDGE[language]
+    out = ""
+    for seg, _ in split_segments(_TAG_RE.sub(" ", text)):
+        out = f"{out} {seg}".strip()
+        if _tlen(out) >= 90:
+            break
+    return out if _tlen(out) >= 30 else None
+
+
+def ensure_adapted(req, language, text):
+    """Speech in a language other than the sample's keeps the sample's accent: the model continues the way
+    its prompt sounds. So the cloned voice first says a short phrase in the target language; the take Whisper
+    finds the most native becomes the prompt for that language from then on — prompt and text now match.
+    Measured by Whisper's likelihood of the spoken text, this brings a Russian or English sample speaking
+    Ukrainian back to the level of the model's own native voice. One round only: each further round drifts
+    away from the original timbre.
+
+    Returns the path of the adapted prompt (cached in the voice's folder), or None when there is nothing to do."""
+    voice = req["voice"]
+    path = voice.get("adapt_prompt")
+    if not path or not language:
+        return None
+    if os.path.exists(path):
+        return path
+    bridge = bridge_text(language, text)
+    if not bridge:
+        return None
+    low_memory = bool(req.get("low_memory"))
+    spec = dict(req["model"], low_memory=low_memory)
+    name = voice.get("adapt_name") or language
+    asr = req.get("asr_path") or (req.get("improve") or {}).get("asr_path")
+    count = 3 if asr else 1
+    status(T("Teaching the voice {lang} pronunciation (once per voice)…", lang=name))
+    tts = ensure_tts(spec)
+    base = load_prompt(voice, tts)
+    takes = []
+    for k in range(count):
+        if count > 1:
+            status(T("Teaching the voice {lang} pronunciation: take {i} of {n}…", lang=name, i=k + 1, n=count))
+        _progress_window(0.0, 0.0, 32)
+        takes.append(_speak(tts, bridge, language, base, {}, seed=4242 + 97 * k))
+    best = takes[0]
+    if count > 1:
+        status(T("Choosing the take with the cleanest pronunciation…"))
+        try:
+            stt = ensure_stt(asr, low_memory, req.get("asr_bits") or 8)
+
+            def score(wav):
+                heard = transcribe_wave(stt, wav, language)
+                cer = char_error_rate(_spoken(bridge, language), _spoken(heard, language))
+                return (fluency(stt, wav, bridge, language) if _whisper_lang(language) else 0.0) - 2 * cer
+            best = max(takes, key=score)
+        except Exception:  # Whisper is a bonus here: without it the first take is used
+            traceback.print_exc(file=sys.stderr)
+        if low_memory:
+            unload_stt()
+        tts = ensure_tts(spec)
+    sample = os.path.splitext(path)[0] + ".wav"
+    write_wav(sample, best)
+    save_prompt(path, build_prompt(tts, sample, bridge), bridge)
+    return path
+
+
 # --------------------------------------------------------------------------
 # Commands
 # --------------------------------------------------------------------------
@@ -597,34 +988,58 @@ def cmd_hello(req):
             "metal": bool(mx.metal.is_available())}
 
 
-def cmd_transcribe(req):
+def _listen(req, wav, language):
+    """(text, language) of a sample; language None/"auto" = detect it."""
     stt = ensure_stt(req.get("asr_path"), req.get("low_memory"), req.get("asr_bits") or 8)
+    if language in (None, "", "auto"):
+        status(T("Detecting the language of the sample…"))
+        return transcribe_auto(stt, wav)
     status(T("Transcribing the voice sample…"))
-    lang = req.get("language")
-    return {"text": transcribe_wave(stt, load_mono(req["audio"]), None if lang in (None, "", "auto") else lang)}
+    return transcribe_wave(stt, wav, language), language
+
+
+def cmd_transcribe(req):
+    text, language = _listen(req, load_mono(req["audio"]), req.get("language"))
+    return {"text": text, "language": language}
 
 
 def cmd_clone(req):
+    import glob
     audio = req["audio"]
     if not os.path.isfile(audio):
         raise FileNotFoundError(T("Voice sample not found: {path}", path=audio))
     ref_text = (req.get("ref_text") or "").strip()
+    language = req.get("language")
+    auto = language in (None, "", "auto")
+    language = None if auto else language
+    wav = load_mono(audio)
+    result = {}
+    if len(wav) / SR > 20 and (req.get("asr_path") or not ref_text):
+        # minutes of audio as a prompt would make every phrase slow and memory-hungry
+        wav = trim_sample(wav)
+        status(T("The sample is long — keeping its best {sec} seconds…", sec=round(len(wav) / SR)))
+        audio = os.path.splitext(req["out"])[0] + ".trimmed.wav"
+        write_wav(audio, wav)
+        result["trimmed"] = audio
+        ref_text = ""  # the old transcript no longer matches the shorter recording
     heard = None
     if not ref_text or (req.get("asr_path") and req.get("check_text", True)):
         # a transcript that doesn't match the recording is the #1 cause of bad clones — check it
-        heard = cmd_transcribe(req)["text"]
+        heard, language = _listen(req, wav, language)
         if not ref_text:
             ref_text = heard
             emit("transcript", text=ref_text)
-    tts = ensure_tts(req["model"])
+    tts = ensure_tts(dict(req["model"], low_memory=bool(req.get("low_memory"))))
     status(T("Creating the voice profile…"))
     tokens = build_prompt(tts, audio, ref_text)
     save_prompt(req["out"], tokens, ref_text)
-    result = {"path": req["out"], "ref_text": ref_text, "seconds": round(int(tokens.shape[0]) / 25.0, 2)}
+    for stale in glob.glob(os.path.join(glob.escape(os.path.dirname(req["out"])), "adapted-*")):
+        os.remove(stale)  # pronunciation learned from the previous sample
+    result.update(path=req["out"], ref_text=ref_text, seconds=round(int(tokens.shape[0]) / 25.0, 2))
+    if auto and language:
+        result["language"] = language
     if heard is not None and heard != ref_text:
-        lang = req.get("language")
-        lang = None if lang in (None, "", "auto") else lang
-        cer = char_error_rate(_spoken(ref_text, lang), _spoken(heard, lang))
+        cer = char_error_rate(_spoken(ref_text, language), _spoken(heard, language))
         if cer > 0.12:
             result["mismatch"] = {"heard": heard, "cer": round(cer, 3)}
     report_memory()
@@ -636,24 +1051,25 @@ _GEN_KEYS = {"num_step": "num_steps", "guidance_scale": "guidance_scale", "t_shi
              "class_temperature": "class_temperature"}
 
 
-def _speak(tts, text, language, prompt, gen, speed, seed):
+def _speak(tts, text, language, prompt, gen, speed=1.0, seed=None, pitch=0.0, melody=1.0):
     import numpy as np
+    from mlx_audio.tts.models.omnivoice.duration import RuleDurationEstimator
     mx = _mx()
     if seed is not None:
         mx.random.seed(seed)
     kw = dict(gen)
+    # a pitch change is "speak slower, play faster" (see change_pitch): the model's own pace absorbs it
+    pace = _clamp((speed or 1.0) / 2 ** (pitch / 12.0), 0.55, 1.8)
     if prompt:
         kw.update(ref_tokens=prompt["tokens"], ref_text=prompt["ref_text"])
         # speaking rate of this voice: estimate from the sample (upstream does the same)
-        from mlx_audio.tts.models.omnivoice.duration import RuleDurationEstimator
         tokens = RuleDurationEstimator().estimate_duration(text, prompt["ref_text"], int(prompt["tokens"].shape[0]))
-        kw["duration_s"] = max(0.6, tokens / 25.0) / (speed or 1.0)
-    elif speed and abs(speed - 1.0) > 1e-3:
-        from mlx_audio.tts.models.omnivoice.duration import RuleDurationEstimator
-        kw["duration_s"] = max(0.6, RuleDurationEstimator().estimate_duration(text, "Nice to meet you.", 25) * 1.15 / 25.0) / speed
+        kw["duration_s"] = max(0.6, tokens / 25.0) / pace
+    elif abs(pace - 1.0) > 1e-3:
+        kw["duration_s"] = max(0.6, RuleDurationEstimator().estimate_duration(text, "Nice to meet you.", 25) * 1.15 / 25.0) / pace
     res = list(tts.generate(text=text, language=language or "None", **kw))
     audio = np.array(res[0].audio, dtype=np.float32)
-    return polish(audio, pad=0.0)
+    return polish(scale_melody(change_pitch(audio, pitch), melody), pad=0.0)
 
 
 def cmd_synth(req):
@@ -669,8 +1085,13 @@ def cmd_synth(req):
         text = prepare_uk_text(text)
     if p.get("normalize_text", True):
         text = numbers_to_words(text, language)
+    voice = req.get("voice") or None
+    fx = resolve_style(p.get("style"))
     gen = {v: p[k] for k, v in _GEN_KEYS.items() if p.get(k) is not None}
-    speed = float(p.get("speed") or 1.0)
+    instruct = None if voice else clean_instruct(p.get("instruct"), language)  # with a clone the sample decides
+    if instruct:
+        gen["instruct"] = instruct
+    speed = float(p.get("speed") or 1.0) * fx["speed_mul"]
     seed = p.get("seed")
     seed = int(seed) if seed is not None and int(seed) >= 0 else None
     low_memory = bool(req.get("low_memory"))
@@ -681,6 +1102,7 @@ def cmd_synth(req):
     improve = req.get("improve") or None
     rounds = max(1, int(improve.get("attempts", 3))) if improve else 1
     good = float(improve.get("threshold", 0.08)) if improve else 1.0
+    adapted = ensure_adapted(req, language, text) if voice else None
 
     takes = [None] * len(segments)   # best take per phrase: {"cer", "audio", "heard"}
     todo = list(range(len(segments)))
@@ -690,7 +1112,7 @@ def cmd_synth(req):
     for attempt in range(rounds):
         # 1) speak every phrase that still needs work
         tts = ensure_tts(dict(req["model"], low_memory=low_memory))
-        prompt = load_prompt(req["voice"], tts) if req.get("voice") else None
+        prompt = load_prompt({"prompt": adapted} if adapted else voice, tts) if voice else None
         fresh = {}
         round_start, round_share = attempt / rounds, 1.0 / rounds
         for n, i in enumerate(todo):
@@ -699,7 +1121,7 @@ def cmd_synth(req):
             label = T("Phrase {i} of {n}", i=i + 1, n=len(segments)) + (T(" · attempt {a}", a=attempt + 1) if attempt else "")
             status(label + T(": speaking…"))
             s = base_seed + i * 101 + attempt * 7919 if (improve or seed is not None) else None
-            fresh[i] = _speak(tts, segments[i][0], language, prompt, gen, speed, s)
+            fresh[i] = _speak(tts, segments[i][0], language, prompt, gen, speed, s, fx["pitch"], fx["melody"])
         if not improve:
             takes = [{"cer": 0.0, "audio": fresh[i], "heard": None} for i in range(len(segments))]
             break
@@ -723,9 +1145,9 @@ def cmd_synth(req):
     for i, (seg, para_end) in enumerate(segments):
         pieces.append(takes[i]["audio"])
         if i < len(segments) - 1:
-            pieces.append(np.zeros(int(SR * (0.45 if para_end else 0.18)), dtype=np.float32))
+            pieces.append(np.zeros(int(SR * (0.45 if para_end else 0.18) * fx["pause_mul"]), dtype=np.float32))
     silence = np.zeros(int(SR * 0.1), dtype=np.float32)
-    audio = np.concatenate([silence] + pieces + [silence])
+    audio = np.concatenate([silence, shape_voice(np.concatenate(pieces), fx), silence])
     if improve:
         weight = sum(len(s) for s, _ in segments) or 1
         clarity = 1.0 - sum(takes[i]["cer"] * len(segments[i][0]) for i in range(len(segments))) / weight
@@ -736,12 +1158,10 @@ def cmd_synth(req):
     emit("progress", value=1.0)
     report_memory()
     result = {"path": req["out"], "seconds": round(duration, 2), "elapsed": round(time.time() - t0, 1),
-              "sample_rate": SR, "text": text}
+              "sample_rate": SR, "text": text, "adapted": bool(adapted)}
     if report:
         result.update(report)
     return result
-
-
 def cmd_prepare(req):
     """Preview what the text will sound like after preparation."""
     lang = req.get("language") or "uk"
@@ -825,9 +1245,10 @@ def cmd_enhance(req):
     peak = np.abs(wav).max()
     if peak > 0.89:
         wav = wav * (0.89 / peak)
-    f = int(SR * 0.01)
-    wav[:f] *= np.linspace(0, 1, f)
-    wav[-f:] *= np.linspace(1, 0, f)
+    f = min(len(wav) // 4, int(SR * 0.01))
+    if f > 0:
+        wav[:f] *= np.linspace(0, 1, f)
+        wav[-f:] *= np.linspace(1, 0, f)
     write_wav(req["out"], wav)
     report = cmd_analyze({"audio": req["out"]})
     report["path"] = req["out"]

@@ -24,11 +24,37 @@ NSNotificationName const OVHistoryDidChangeNotification = @"OVHistoryDidChange";
 - (NSDictionary *)workerSpec {
     return @{@"prompt": self.promptPath, @"audio": self.referencePath, @"ref_text": self.refText ?: @""};
 }
+- (NSString *)adaptedPath:(NSString *)language ext:(NSString *)ext {
+    return [self.folder stringByAppendingPathComponent:[NSString stringWithFormat:@"adapted-%@.%@", language, ext]];
+}
+- (NSString *)adaptedSamplePath:(NSString *)language { return [self adaptedPath:language ext:@"wav"]; }
+- (BOOL)adaptsToLanguage:(NSString *)language {
+    return [OVSettings adaptAccent] && language.length && self.language.length && ![language isEqualToString:self.language];
+}
+- (NSDictionary *)workerSpecForLanguage:(NSString *)language {
+    if (![self adaptsToLanguage:language]) return self.workerSpec;
+    NSMutableDictionary *spec = [self.workerSpec mutableCopy];
+    spec[@"adapt_prompt"] = [self adaptedPath:language ext:@"npz"];
+    spec[@"adapt_name"] = [OVLocale nameForLanguage:language];
+    return spec;
+}
+- (NSArray<NSString *> *)adaptedLanguages {
+    NSMutableArray *out = [NSMutableArray array];
+    for (NSString *f in [NSFileManager.defaultManager contentsOfDirectoryAtPath:self.folder error:nil])
+        if ([f hasPrefix:@"adapted-"] && [f.pathExtension isEqualToString:@"npz"])
+            [out addObject:[f.stringByDeletingPathExtension substringFromIndex:@"adapted-".length]];
+    return [out sortedArrayUsingSelector:@selector(compare:)];
+}
+- (void)forgetAdaptations {
+    for (NSString *f in [NSFileManager.defaultManager contentsOfDirectoryAtPath:self.folder error:nil])
+        if ([f hasPrefix:@"adapted-"]) [NSFileManager.defaultManager removeItemAtPath:[self.folder stringByAppendingPathComponent:f] error:nil];
+}
 - (void)save {
     [NSFileManager.defaultManager createDirectoryAtPath:self.folder withIntermediateDirectories:YES attributes:nil error:nil];
     NSMutableDictionary *d = [@{@"name": self.name ?: @"", @"refText": self.refText ?: @"",
                                 @"created": self.created ?: NSDate.date, @"seconds": @(self.seconds)} mutableCopy];
     if (self.language.length) d[@"language"] = self.language;
+    d[@"languageAuto"] = @(self.languageAuto);
     [d writeToFile:[self.folder stringByAppendingPathComponent:@"meta.plist"] atomically:YES];
     // refresh the list first so observers already find this voice in it (reload posts the change notification)
     [[OVVoices shared] reload];
@@ -64,6 +90,8 @@ NSNotificationName const OVHistoryDidChangeNotification = @"OVHistoryDidChange";
         v.created = meta[@"created"] ?: NSDate.distantPast;
         v.seconds = [meta[@"seconds"] doubleValue];
         v.language = meta[@"language"];
+        // voices made before 1.0.1 had their language picked by hand
+        v.languageAuto = meta[@"languageAuto"] ? [meta[@"languageAuto"] boolValue] : v.language == nil;
         [list addObject:v];
     }
     [list sortUsingComparator:^NSComparisonResult(OVVoice *a, OVVoice *b) { return [b.created compare:a.created]; }];
@@ -78,6 +106,7 @@ NSNotificationName const OVHistoryDidChangeNotification = @"OVHistoryDidChange";
     v.name = name;
     v.refText = @"";
     v.created = NSDate.date;
+    v.languageAuto = YES;
     [NSFileManager.defaultManager createDirectoryAtPath:v.folder withIntermediateDirectories:YES attributes:nil error:nil];
     return v;
 }
@@ -245,12 +274,18 @@ BOOL OVConvertToWav(NSString *src, NSString *dst, double *seconds, NSError **err
         @"classTemp": @0.0,
         @"posTemp": @5.0,
         @"layerPenalty": @5.0,
-        @"denoise": @YES,
-        @"postprocess": @YES,
         @"normalizeText": @YES,
-        @"chunkDuration": @15.0,
-        @"chunkThreshold": @30.0,
         @"seed": @-1,
+        // voice style (Speech page): 0 = as the model speaks
+        @"styleMood": @"neutral",
+        @"styleIntonation": @0.0,
+        @"styleEnergy": @0.0,
+        @"stylePitch": @0.0,
+        @"styleTone": @0.0,
+        @"stylePauses": @1.0,
+        @"styleVolume": @0.0,
+        @"stylePanel": @YES,
+        @"adaptAccent": @YES,
         @"precision": @0,   // 0 = automatic: best precision that fits into free memory
         @"lowMemory": @([OVSettings physicalMemoryGB] <= 12),
         @"idleUnloadMinutes": @([OVSettings physicalMemoryGB] <= 12 ? 3 : 10),
@@ -292,9 +327,55 @@ BOOL OVConvertToWav(NSString *src, NSString *dst, double *seconds, NSError **err
     return spec;
 }
 
++ (BOOL)adaptAccent { return [NSUserDefaults.standardUserDefaults boolForKey:@"adaptAccent"]; }
+
++ (NSArray<NSDictionary *> *)moods {
+    // intonation / energy / tone: −1…1, pitch: semitones, pauses: multiplier
+    return @[
+        @{@"id": @"neutral", @"emoji": @"😐", @"title": L(@"Neutral"), @"styleIntonation": @0.0, @"styleEnergy": @0.0, @"stylePitch": @0.0, @"styleTone": @0.0, @"stylePauses": @1.0},
+        @{@"id": @"calm", @"emoji": @"😌", @"title": L(@"Calm"), @"styleIntonation": @-0.3, @"styleEnergy": @-0.5, @"stylePitch": @-0.5, @"styleTone": @-0.3, @"stylePauses": @1.3},
+        @{@"id": @"cheerful", @"emoji": @"😊", @"title": L(@"Cheerful"), @"styleIntonation": @0.6, @"styleEnergy": @0.5, @"stylePitch": @1.0, @"styleTone": @0.3, @"stylePauses": @0.9},
+        @{@"id": @"energetic", @"emoji": @"⚡️", @"title": L(@"Energetic"), @"styleIntonation": @0.4, @"styleEnergy": @0.9, @"stylePitch": @0.5, @"styleTone": @0.4, @"stylePauses": @0.8},
+        @{@"id": @"serious", @"emoji": @"🧐", @"title": L(@"Serious"), @"styleIntonation": @-0.5, @"styleEnergy": @0.1, @"stylePitch": @-1.0, @"styleTone": @0.0, @"stylePauses": @1.1},
+        @{@"id": @"warm", @"emoji": @"🤗", @"title": L(@"Warm"), @"styleIntonation": @0.2, @"styleEnergy": @-0.2, @"stylePitch": @-0.5, @"styleTone": @-0.6, @"stylePauses": @1.15},
+        @{@"id": @"sad", @"emoji": @"😔", @"title": L(@"Sad"), @"styleIntonation": @-0.6, @"styleEnergy": @-0.8, @"stylePitch": @-1.0, @"styleTone": @-0.4, @"stylePauses": @1.5},
+        @{@"id": @"storyteller", @"emoji": @"📖", @"title": L(@"Storyteller"), @"styleIntonation": @0.7, @"styleEnergy": @-0.1, @"stylePitch": @0.0, @"styleTone": @-0.2, @"stylePauses": @1.4},
+    ];
+}
+
++ (void)applyMood:(NSString *)identifier {
+    NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
+    for (NSDictionary *m in [self moods]) {
+        if (![m[@"id"] isEqualToString:identifier]) continue;
+        for (NSString *k in m) if ([k hasPrefix:@"style"]) [d setObject:m[k] forKey:k];
+        [d setObject:identifier forKey:@"styleMood"];
+    }
+}
+
++ (BOOL)styleIsNeutral {
+    NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
+    for (NSString *k in @[@"styleIntonation", @"styleEnergy", @"stylePitch", @"styleTone", @"styleVolume"])
+        if (fabs([d doubleForKey:k]) > 0.005) return NO;
+    return fabs([d doubleForKey:@"stylePauses"] - 1.0) < 0.005;
+}
+
+/// Voice design tags for the model's own voice ("female, low pitch, whisper"); ignored for cloned voices.
++ (NSString *)designInstruct {
+    NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
+    NSMutableArray *tags = [NSMutableArray array];
+    for (NSString *k in @[@"designGender", @"designAge", @"designPitch", @"designAccent"])
+        if ([d stringForKey:k].length) [tags addObject:[d stringForKey:k]];
+    if ([d boolForKey:@"designWhisper"]) [tags addObject:@"whisper"];
+    return [tags componentsJoinedByString:@", "];
+}
+
 + (NSDictionary *)generationParams {
     NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
     return @{
+        @"style": @{@"intonation": @([d doubleForKey:@"styleIntonation"]), @"energy": @([d doubleForKey:@"styleEnergy"]),
+                    @"pitch": @([d doubleForKey:@"stylePitch"]), @"tone": @([d doubleForKey:@"styleTone"]),
+                    @"pauses": @([d doubleForKey:@"stylePauses"]), @"volume": @([d doubleForKey:@"styleVolume"])},
+        @"instruct": [self designInstruct],
         @"num_step": @([d integerForKey:@"numStep"]),
         @"guidance_scale": @([d doubleForKey:@"guidance"]),
         @"speed": @([d doubleForKey:@"speed"]),

@@ -9,7 +9,8 @@ NSNotificationName const OVLogNotification = @"OVLog";
 
 static NSString *const kPythonVersion = @"3.11";
 // Apple-Silicon-native stack: MLX instead of PyTorch (~360 MB instead of ~1.1 GB, a third of the RAM)
-static NSString *const kRequirements[] = {@"mlx-audio>=0.5.7", @"num2words", @"scipy"};
+// mlx-audio is held to the 0.5 line: worker.py reaches into its OmniVoice and Whisper modules
+static NSString *const kRequirements[] = {@"mlx-audio>=0.5.7,<0.6", @"num2words", @"scipy"};
 
 NSTask *OVRunTask(NSString *path, NSArray<NSString *> *args, NSDictionary *env,
                   void (^onLine)(NSString *), void (^done)(int)) {

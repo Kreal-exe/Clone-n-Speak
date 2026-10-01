@@ -9,7 +9,7 @@
 
 @interface OVSettingsPage ()
 @property NSMutableArray<OVSliderRow *> *sliders;
-@property NSMutableArray<NSButton *> *checks;
+@property NSMutableDictionary<NSString *, NSButton *> *checks;  // defaults key → checkbox
 @property NSTextField *seedField, *engineInfo;
 @property NSStackView *engineButtons;
 @end
@@ -18,7 +18,7 @@
 
 - (void)loadView {
     self.sliders = [NSMutableArray array];
-    self.checks = [NSMutableArray array];
+    self.checks = [NSMutableDictionary dictionary];
     NSStackView *page = OVVStack(@[], 14);
     page.edgeInsets = NSEdgeInsetsMake(30, 32, 30, 32);
 
@@ -39,11 +39,13 @@
         [self.sliders addObject:r];
         [genRows addObject:r];
     }
-    for (NSArray *c in @[@[L(@"Read numbers as words (2025 → дві тисячі двадцять п’ять)"), @"normalizeText"]]) {
+    for (NSArray *c in @[@[L(@"Read numbers as words (2025 → дві тисячі двадцять п’ять)"), @"normalizeText"],
+                         @[L(@"Remove the sample’s accent when the text is in another language (learned once per voice, about a minute)"), @"adaptAccent"]]) {
         NSButton *b = OVCheckbox(c[0], c[1]);
-        [self.checks addObject:b];
+        self.checks[c[1]] = b;
         [genRows addObject:b];
     }
+    [genRows addObject:OVWrapLabel(L(@"Mood, intonation, energy, pitch, tone, pauses and volume are on the Speech page, under the masks button."), 11.5, nil)];
     self.seedField = OVField(@"-1");
     self.seedField.stringValue = [NSString stringWithFormat:@"%ld", (long)[NSUserDefaults.standardUserDefaults integerForKey:@"seed"]];
     self.seedField.target = self;
@@ -93,7 +95,7 @@
                                                    key:@"improveThreshold" min:0.02 max:0.25 format:@"%.2f" integer:NO];
     [self.sliders addObjectsFromArray:@[attempts, threshold]];
     NSButton *prepare = OVCheckbox(L(@"Prepare Ukrainian text: abbreviations, years, units, apostrophes"), @"prepareText");
-    [self.checks addObject:prepare];
+    self.checks[@"prepareText"] = prepare;
     NSStackView *impBox = OVVStack(@[OVWrapLabel(L(@"Switch it on next to the Speak button. Each phrase is checked by speech recognition and unclear ones are re-spoken."), 12, nil),
                                      attempts, threshold, prepare], 14);
     OVFillWidth(@[attempts, threshold, impBox.arrangedSubviews[0]], impBox);
@@ -113,7 +115,7 @@
                                             @[L(@"after 30 minutes"), @"30"], @[L(@"never"), @"0"]],
                                           @"idleUnloadMinutes", nil, nil);
     NSButton *lowMem = OVCheckbox(L(@"Memory saver: never keep Whisper and the voice model in memory together"), @"lowMemory");
-    [self.checks addObject:lowMem];
+    self.checks[@"lowMemory"] = lowMem;
     NSGridView *grid = [NSGridView gridViewWithViews:@[
         @[OVLabel(L(@"Voice model precision"), 13, NSFontWeightMedium, nil), precision],
         @[OVLabel(L(@"Whisper precision"), 13, NSFontWeightMedium, nil), asrPrecision],
@@ -158,6 +160,21 @@
     [self refreshEngine];
 }
 
+/// Speed, quality and accent removal can also be changed on the Speech page.
+- (void)viewWillAppear {
+    [super viewWillAppear];
+    [self refreshControls];
+}
+
+- (void)refreshControls {
+    NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
+    for (OVSliderRow *r in self.sliders) [r refresh];
+    [self.checks enumerateKeysAndObjectsUsingBlock:^(NSString *key, NSButton *b, BOOL *stop) {
+        b.state = [d boolForKey:key] ? NSControlStateValueOn : NSControlStateValueOff;
+    }];
+    self.seedField.stringValue = [NSString stringWithFormat:@"%ld", (long)[d integerForKey:@"seed"]];
+}
+
 - (void)refreshEngine {
     OVRuntime *rt = [OVRuntime shared];
     NSMutableString *s = [NSMutableString string];
@@ -199,15 +216,10 @@
 
 - (void)resetGeneration:(id)s {
     for (NSString *k in @[@"numStep", @"guidance", @"speed", @"tShift", @"classTemp", @"posTemp", @"layerPenalty",
-                          @"normalizeText", @"seed",
+                          @"normalizeText", @"adaptAccent", @"seed",
                           @"improveAttempts", @"improveThreshold", @"prepareText"])
         [NSUserDefaults.standardUserDefaults removeObjectForKey:k];
-    for (OVSliderRow *r in self.sliders) [r refresh];
-    NSArray *checkKeys = @[@"normalizeText", @"prepareText", @"lowMemory"];
-    [self.checks enumerateObjectsUsingBlock:^(NSButton *b, NSUInteger i, BOOL *stop) {
-        b.state = [NSUserDefaults.standardUserDefaults boolForKey:checkKeys[i]] ? NSControlStateValueOn : NSControlStateValueOff;
-    }];
-    self.seedField.stringValue = @"-1";
+    [self refreshControls];
 }
 
 - (void)deviceChanged:(id)s { if (![OVWorker shared].busy) [[OVWorker shared] stop]; }

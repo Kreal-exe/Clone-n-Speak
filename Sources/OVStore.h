@@ -11,12 +11,22 @@ extern NSNotificationName const OVHistoryDidChangeNotification;
 @interface OVVoice : NSObject
 @property (copy) NSString *identifier, *folder, *name, *refText;
 @property (nullable, copy) NSString *language;   // language spoken in the sample (e.g. "uk"); nil = unknown
+@property BOOL languageAuto;                      // the language is detected from the sample, not picked by hand
 @property (copy) NSDate *created;
 @property double seconds;
 @property (readonly) NSString *referencePath, *promptPath;
 @property (readonly) BOOL ready;
 /// {prompt, audio, ref_text} for the worker (it re-encodes the sample if the prompt is missing).
 @property (readonly) NSDictionary *workerSpec;
+/// Same, for speech in `language`: when it differs from the sample's language (and accent removal is on),
+/// the worker is told where to keep the prompt it adapts to that language.
+- (NSDictionary *)workerSpecForLanguage:(nullable NSString *)language;
+/// Whether speech in `language` goes through accent removal.
+- (BOOL)adaptsToLanguage:(nullable NSString *)language;
+/// Languages this voice has already learned to pronounce (adapted-<code>.npz in its folder).
+@property (readonly) NSArray<NSString *> *adaptedLanguages;
+- (NSString *)adaptedSamplePath:(NSString *)language;
+- (void)forgetAdaptations;
 - (void)save;
 @end
 
@@ -61,8 +71,15 @@ double OVAudioDuration(NSString *path);
 + (void)registerDefaults;
 /// Model spec sent to the worker (path, lora, bits).
 + (nullable NSDictionary *)modelSpec;
-/// Generation params sent with synth.
+/// Generation params sent with synth (expert values from Settings + the voice style of the Speech page).
 + (NSDictionary *)generationParams;
+/// Voice style presets: @[@{@"id", @"emoji", @"title", values…}], the first one is neutral.
++ (NSArray<NSDictionary *> *)moods;
++ (void)applyMood:(NSString *)identifier;
+/// Whether any style control is away from neutral.
++ (BOOL)styleIsNeutral;
+/// Remove the accent of the sample's language when speaking another one.
++ (BOOL)adaptAccent;
 + (NSString *)language; // a language code or "auto"
 /// Auto-improve options sent with synth (asr path is added by the caller).
 + (NSDictionary *)improveParams;

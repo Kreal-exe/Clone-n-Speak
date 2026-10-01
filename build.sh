@@ -16,13 +16,18 @@ SLUG="CloneNSpeak"
 SRC=Sources
 BUILD=build
 FINAL="$BUILD/$NAME.app"
-APP="$BUILD/obj/stage/$NAME.app"   # built here, swapped into place at the end (safe while the app is running)
+# Built and signed in a temporary folder, swapped into place at the end (safe while the app is running).
+# Not inside the project: in a synced folder (iCloud Drive's Documents, Dropbox…) the file provider tags
+# bundles with Finder attributes, and codesign refuses to sign "detritus".
+OBJ="$(mktemp -d "${TMPDIR:-/tmp}/clonenspeak.XXXXXX")"
+trap 'rm -rf "$OBJ"' EXIT
+APP="$OBJ/stage/$NAME.app"
 VERSION=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" "$SRC/Info.plist")
 SIGN_IDENTITY="${SIGN_IDENTITY:--}"
-FRAMEWORKS=(-framework Cocoa -framework AVFAudio -framework AVFoundation -framework UniformTypeIdentifiers -framework NaturalLanguage)
+FRAMEWORKS=(-framework Cocoa -framework AVFAudio -framework AVFoundation -framework UniformTypeIdentifiers -framework NaturalLanguage -framework QuartzCore)
 
-rm -rf "$BUILD/obj"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$BUILD/obj"
+rm -rf "$BUILD/obj"   # left by earlier versions of this script
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$BUILD"
 
 echo "▶ Translations"
 python3 tools/strings.py check
@@ -41,17 +46,18 @@ done
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 
 echo "▶ Icon"
-clang -fobjc-arc -mmacosx-version-min=13.0 -framework Cocoa tools/make_icon.m -o "$BUILD/obj/make_icon"
-"$BUILD/obj/make_icon" "$BUILD/obj/icon_1024.png"
-ICONSET="$BUILD/obj/AppIcon.iconset"
+clang -fobjc-arc -mmacosx-version-min=13.0 -framework Cocoa tools/make_icon.m -o "$OBJ/make_icon"
+"$OBJ/make_icon" "$OBJ/icon_1024.png"
+ICONSET="$OBJ/AppIcon.iconset"
 mkdir -p "$ICONSET"
 for s in 16 32 128 256 512; do
-  sips -z $s $s "$BUILD/obj/icon_1024.png" --out "$ICONSET/icon_${s}x${s}.png" >/dev/null
-  sips -z $((s*2)) $((s*2)) "$BUILD/obj/icon_1024.png" --out "$ICONSET/icon_${s}x${s}@2x.png" >/dev/null
+  sips -z $s $s "$OBJ/icon_1024.png" --out "$ICONSET/icon_${s}x${s}.png" >/dev/null
+  sips -z $((s*2)) $((s*2)) "$OBJ/icon_1024.png" --out "$ICONSET/icon_${s}x${s}@2x.png" >/dev/null
 done
 iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
 
 echo "▶ Sign (${SIGN_IDENTITY})"
+xattr -cr "$APP"
 if [[ "$SIGN_IDENTITY" == "-" ]]; then
   codesign --force --sign - --entitlements "$SRC/CloneNSpeak.entitlements" "$APP"
 else
@@ -59,16 +65,12 @@ else
     --entitlements "$SRC/CloneNSpeak.entitlements" "$APP"
 fi
 codesign --verify --strict "$APP"
-rm -rf "$FINAL"
-mv "$APP" "$FINAL"
-APP="$FINAL"
-echo "✔ $APP"
 
 if [[ " $* " == *" --dmg "* ]]; then
   mkdir -p dist
   DMG="dist/$SLUG-$VERSION.dmg"
-  STAGE="$BUILD/obj/dmg"
-  rm -rf "$STAGE" "$DMG"
+  STAGE="$OBJ/dmg"
+  rm -rf "$DMG"
   mkdir -p "$STAGE"
   cp -R "$APP" "$STAGE/"
   ln -s /Applications "$STAGE/Applications"
@@ -82,6 +84,11 @@ if [[ " $* " == *" --dmg "* ]]; then
   fi
   echo "✔ $DMG"
 fi
+
+rm -rf "$FINAL"
+mv "$APP" "$FINAL"
+APP="$FINAL"
+echo "✔ $APP"
 
 if [[ " $* " == *" --run "* ]]; then
   open "$APP"

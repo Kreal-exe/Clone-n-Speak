@@ -17,7 +17,7 @@ jobs:
 
       - name: Python tests
         run: |
-          pip install num2words
+          pip install num2words numpy scipy
           python -m unittest discover -s tests -v
 
       - name: Build app

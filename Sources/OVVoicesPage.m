@@ -6,12 +6,28 @@
 #import "OVRuntime.h"
 #import "OVWorker.h"
 #import "OVPaths.h"
-#import "OVLocale.h"
 #import <AVFAudio/AVFAudio.h>
 #import <AVFoundation/AVFoundation.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
 static const NSTimeInterval kMaxRecord = 15;
+
+/// Page background that takes an audio file dropped anywhere on it.
+@interface OVAudioDropView : NSStackView
+@property (copy) void (^onDrop)(NSString *path);
+@end
+@implementation OVAudioDropView
+- (NSURL *)audioFrom:(id<NSDraggingInfo>)info {
+    NSDictionary *opts = @{NSPasteboardURLReadingFileURLsOnlyKey: @YES, NSPasteboardURLReadingContentsConformToTypesKey: @[UTTypeAudio.identifier, UTTypeMovie.identifier]};
+    return [[info.draggingPasteboard readObjectsForClasses:@[NSURL.class] options:opts] firstObject];
+}
+- (NSDragOperation)draggingEntered:(id<NSDraggingInfo>)info { return [self audioFrom:info] ? NSDragOperationCopy : NSDragOperationNone; }
+- (BOOL)performDragOperation:(id<NSDraggingInfo>)info {
+    NSURL *url = [self audioFrom:info];
+    if (url && self.onDrop) self.onDrop(url.path);
+    return url != nil;
+}
+@end
 
 @interface OVVoicesPage () <NSTableViewDataSource, NSTableViewDelegate, AVAudioRecorderDelegate, NSTextFieldDelegate, NSTextViewDelegate>
 @property NSTableView *table;
@@ -19,6 +35,8 @@ static const NSTimeInterval kMaxRecord = 15;
 @property NSTextView *refText;
 @property NSButton *chooseButton, *recordButton, *playButton, *transcribeButton, *cloneButton, *deleteButton;
 @property NSButton *enhanceButton, *revertButton, *previewButton;
+@property NSStackView *adaptedRow;
+@property NSTextField *adaptedLabel;
 @property NSLevelIndicator *qualityMeter;
 @property NSTextField *qualityLabel;
 @property NSPopUpButton *sampleLangPopup;
@@ -93,7 +111,7 @@ static const NSTimeInterval kMaxRecord = 15;
                                        self.qualityLabel, OVHStack(@[self.enhanceButton, self.revertButton], 6)], 8);
     OVFillWidth(@[self.qualityLabel], audioBox);
     NSView *audioCard = [self sectionCard:L(@"1 · Voice sample")
-                                     hint:L(@"3–10 seconds of clean speech from one person, without music or echo. WAV, MP3, M4A and FLAC work.")
+                                     hint:L(@"3–10 seconds of clean speech from one person, without music or echo. WAV, MP3, M4A and FLAC work — choose a file, record, or drop one here.")
                                   content:audioBox];
 
     NSScrollView *ts = [NSTextView scrollableTextView];
@@ -125,11 +143,25 @@ static const NSTimeInterval kMaxRecord = 15;
     self.previewButton = OVButton(L(@"Hear the clone"), self, @selector(playPreview:));
     self.previewButton.image = [NSImage imageWithSystemSymbolName:@"play.circle" accessibilityDescription:nil];
     self.previewButton.imagePosition = NSImageLeading;
-    NSStackView *actions = OVHStack(@[self.cloneButton, self.previewButton, self.spinner, self.status, OVSpacer(), self.deleteButton], 10);
+    NSStackView *actions = OVHStack(@[self.cloneButton, self.previewButton, self.spinner, OVSpacer(), self.deleteButton], 10);
     self.analysis = [NSMutableDictionary dictionary];
 
-    // the language of the sample is set explicitly: Whisper's own guess mixes up Ukrainian, Belarusian and Russian
+    // languages this voice already speaks without the sample's accent (see OVVoice adaptsToLanguage:)
+    self.adaptedLabel = OVLabel(@"", 12, NSFontWeightRegular, NSColor.secondaryLabelColor);
+    NSButton *adaptedListen = OVButton(L(@"Listen"), self, @selector(playAdapted:));
+    adaptedListen.toolTip = L(@"The phrase the voice learned this language on. Speech in that language starts from it instead of the original sample.");
+    NSButton *adaptedForget = OVButton(L(@"Forget"), self, @selector(forgetAdapted:));
+    adaptedForget.toolTip = L(@"Learn the pronunciation again the next time this voice speaks another language.");
+    adaptedListen.controlSize = adaptedForget.controlSize = NSControlSizeSmall;
+    self.adaptedRow = OVHStack(@[OVSymbol(@"globe", 12, nil), self.adaptedLabel, adaptedListen, adaptedForget], 8);
+
+    // "Auto-detect" first: the language is recognized when the sample is transcribed or cloned.
+    // Picking it by hand stays possible — on short clips Whisper can mix up Ukrainian, Belarusian and Russian.
     self.sampleLangPopup = [NSPopUpButton new];
+    [self.sampleLangPopup addItemWithTitle:L(@"Auto-detect")];
+    self.sampleLangPopup.lastItem.representedObject = @"auto";
+    [self.sampleLangPopup.menu addItem:NSMenuItem.separatorItem];
+    self.sampleLangPopup.toolTip = L(@"Auto-detect recognizes the language from the recording when the sample is transcribed or cloned. Pick it by hand if the guess is wrong.");
     NSArray *pinned = [OVLocale pinnedSpeechLanguages];
     for (NSString *c in pinned) { [self.sampleLangPopup addItemWithTitle:[OVLocale nameForLanguage:c]]; self.sampleLangPopup.lastItem.representedObject = c; }
     [self.sampleLangPopup.menu addItem:NSMenuItem.separatorItem];
@@ -139,17 +171,26 @@ static const NSTimeInterval kMaxRecord = 15;
     self.sampleLangPopup.action = @selector(sampleLanguagePicked:);
     NSStackView *nameRow = OVHStack(@[[self captioned:L(@"Name") view:self.nameField], [self captioned:L(@"Language of the sample") view:self.sampleLangPopup]], 14);
     nameRow.alignment = NSLayoutAttributeTop;
-    NSStackView *right = OVVStack(@[self.heading, nameRow, audioCard, textCard, actions], 16);
+    NSStackView *right = OVVStack(@[self.heading, nameRow, audioCard, textCard, actions, self.status, self.adaptedRow], 16);
     right.edgeInsets = NSEdgeInsetsMake(30, 24, 24, 32);
     [right setCustomSpacing:20 afterView:self.heading];
-    OVFillWidth(@[right.arrangedSubviews[1], audioCard, textCard, actions], right);
+    [right setCustomSpacing:8 afterView:actions];
+    OVFillWidth(@[right.arrangedSubviews[1], audioCard, textCard, actions, self.status], right);
     [self.nameField.widthAnchor constraintLessThanOrEqualToConstant:380].active = YES;
     NSScrollView *rightScroll = OVScrollPage(right);
 
     NSBox *sep = [NSBox new];
     sep.boxType = NSBoxSeparator;
-    NSStackView *root = OVHStack(@[left, sep, rightScroll], 0);
+    OVAudioDropView *root = [OVAudioDropView stackViewWithViews:@[left, sep, rightScroll]];
+    root.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    root.distribution = NSStackViewDistributionFill;
+    root.spacing = 0;
     root.alignment = NSLayoutAttributeTop;
+    [root registerForDraggedTypes:@[NSPasteboardTypeFileURL]];
+    __weak typeof(self) weakSelf = self;
+    root.onDrop = ^(NSString *path) {  // a recording dropped on the page becomes the sample of the voice shown
+        if (![OVWorker shared].busy && !weakSelf.recorder.recording) [weakSelf importAudio:path];
+    };
     left.translatesAutoresizingMaskIntoConstraints = NO;
     sep.translatesAutoresizingMaskIntoConstraints = NO;
     rightScroll.translatesAutoresizingMaskIntoConstraints = NO;
@@ -205,8 +246,15 @@ static const NSTimeInterval kMaxRecord = 15;
 - (NSView *)tableView:(NSTableView *)t viewForTableColumn:(NSTableColumn *)c row:(NSInteger)row {
     OVVoice *v = [OVVoices shared].all[row];
     NSTableCellView *cell = [NSTableCellView new];
-    NSImageView *icon = OVSymbol(v.ready ? @"person.wave.2.fill" : @"exclamationmark.circle", 15,
-                                 v.ready ? OVAccent() : NSColor.systemOrangeColor);
+    NSView *icon;
+    if (v.ready) {
+        OVAvatar *avatar = [OVAvatar avatarWithSize:28];
+        [avatar setName:v.name];
+        icon = avatar;
+    } else {
+        icon = OVSymbol(@"exclamationmark.circle", 18, NSColor.systemOrangeColor);
+        [icon.widthAnchor constraintEqualToConstant:28].active = YES;
+    }
     NSTextField *name = OVLabel(v.name, 13, NSFontWeightMedium, nil);
     NSString *lang = v.language ?: (v.refText.length ? [OVLocale detectLanguage:v.refText] : nil);
     NSString *subText = !v.ready ? L(@"not cloned") :
@@ -232,7 +280,7 @@ static const NSTimeInterval kMaxRecord = 15;
     self.voice = v;
     self.heading.stringValue = v.name ?: @"";
     self.nameField.stringValue = v.name ?: @"";
-    [self selectSampleLanguage:v.language ?: [self defaultSampleLanguage]];
+    [self showSampleLanguage:v.language isAuto:v.languageAuto];
     self.refText.string = v.refText ?: @"";
     self.status.stringValue = [self hasPending] ? L(@"New sample saved. Click “Re-clone voice” to apply it.") :
                               v.ready ? L(@"The voice is ready — you can select it on the Speech page.") :
@@ -251,7 +299,7 @@ static const NSTimeInterval kMaxRecord = 15;
     self.nameField.stringValue = [NSString stringWithFormat:L(@"Voice %lu"), (unsigned long)[OVVoices shared].all.count + 1];
     self.refText.string = @"";
     self.status.stringValue = @"";
-    [self selectSampleLanguage:[self defaultSampleLanguage]];
+    [self showSampleLanguage:nil isAuto:YES];
     [self refreshButtons];
     [self.view.window makeFirstResponder:self.nameField];
 }
@@ -274,7 +322,8 @@ static const NSTimeInterval kMaxRecord = 15;
         NSString *name = [self.nameField.stringValue stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
         OVVoice *v = [[OVVoices shared] createNamed:name.length ? name : L(@"Untitled")];
         v.refText = self.refText.string;
-        v.language = [self sampleLanguage];
+        v.languageAuto = [self sampleLanguageIsAuto];
+        v.language = v.languageAuto ? nil : [self sampleLanguage];
         self.voice = v;
     }
     NSString *dst = self.voice.ready ? [self pendingPath] : self.voice.referencePath;
@@ -344,6 +393,10 @@ static const NSTimeInterval kMaxRecord = 15;
     self.revertButton.hidden = !(self.voice && [NSFileManager.defaultManager fileExistsAtPath:[self originalPath]]);
     self.revertButton.enabled = !busy && !recording;
     self.previewButton.hidden = !(self.voice.ready && [NSFileManager.defaultManager fileExistsAtPath:[self previewPath]]);
+    NSMutableArray *learned = [NSMutableArray array];
+    for (NSString *code in self.voice.adaptedLanguages) [learned addObject:[OVLocale nameForLanguage:code]];
+    self.adaptedRow.hidden = learned.count == 0;
+    self.adaptedLabel.stringValue = [NSString stringWithFormat:L(@"Speaks without the sample’s accent: %@"), [learned componentsJoinedByString:@", "]];
     [self analyzeIfNeeded:audio];
 }
 
@@ -445,19 +498,52 @@ static const NSTimeInterval kMaxRecord = 15;
 
 #pragma mark Sample language
 
-- (NSString *)defaultSampleLanguage {
-    NSString *s = [OVLocale speechLanguageSetting];
-    return s.length && ![s isEqualToString:@"auto"] ? s : @"uk";
-}
-- (void)selectSampleLanguage:(NSString *)code {
-    NSInteger i = [self.sampleLangPopup indexOfItemWithRepresentedObject:code];
+/// "auto", or the language picked by hand.
+- (NSString *)sampleLanguage { return self.sampleLangPopup.selectedItem.representedObject ?: @"auto"; }
+- (BOOL)sampleLanguageIsAuto { return [[self sampleLanguage] isEqualToString:@"auto"]; }
+
+/// Selects the popup item; "Auto-detect" shows what it has found so far ("Auto · Ukrainian").
+- (void)showSampleLanguage:(nullable NSString *)code isAuto:(BOOL)isAuto {
+    [self.sampleLangPopup itemAtIndex:0].title = isAuto && code.length
+        ? [NSString stringWithFormat:L(@"Auto · %@"), [OVLocale nameForLanguage:code]] : L(@"Auto-detect");
+    NSInteger i = isAuto ? 0 : [self.sampleLangPopup indexOfItemWithRepresentedObject:code ?: @""];
     [self.sampleLangPopup selectItemAtIndex:MAX(0, i)];
+    [self.sampleLangPopup synchronizeTitleAndSelectedItem];
 }
-- (NSString *)sampleLanguage { return self.sampleLangPopup.selectedItem.representedObject ?: @"uk"; }
+
 - (void)sampleLanguagePicked:(id)s {
-    if (!self.voice) return;
-    self.voice.language = [self sampleLanguage];
-    [self.voice save];
+    BOOL isAuto = [self sampleLanguageIsAuto];
+    OVVoice *v = self.voice;
+    if (!v) { [self showSampleLanguage:nil isAuto:isAuto]; return; }
+    v.languageAuto = isAuto;
+    // until the recording is listened to, the transcript is the best hint
+    v.language = !isAuto ? [self sampleLanguage] : v.refText.length ? [OVLocale detectLanguage:v.refText] : nil;
+    [v save];
+    [self showSampleLanguage:v.language isAuto:isAuto];
+}
+
+/// The engine has listened to the sample: remember what language it heard (auto mode only).
+- (void)voice:(OVVoice *)v heardLanguage:(nullable NSString *)code {
+    if (!v.languageAuto) return;
+    v.language = code.length ? code : ([OVLocale detectLanguage:v.refText] ?: v.language);
+}
+
+- (void)playAdapted:(NSButton *)b {
+    NSArray<NSString *> *langs = self.voice.adaptedLanguages;
+    if (langs.count == 1) { [[OVPlayer shared] toggle:[self.voice adaptedSamplePath:langs.firstObject]]; return; }
+    NSMenu *menu = [NSMenu new];
+    for (NSString *code in langs) {
+        NSMenuItem *it = [menu addItemWithTitle:[OVLocale nameForLanguage:code] action:@selector(playAdaptedItem:) keyEquivalent:@""];
+        it.target = self;
+        it.representedObject = code;
+    }
+    [menu popUpMenuPositioningItem:nil atLocation:NSMakePoint(0, NSHeight(b.bounds) + 4) inView:b];
+}
+- (void)playAdaptedItem:(NSMenuItem *)it { [[OVPlayer shared] toggle:[self.voice adaptedSamplePath:it.representedObject]]; }
+- (void)forgetAdapted:(id)s {
+    [[OVPlayer shared] stop];
+    [self.voice forgetAdaptations];
+    [self refreshButtons];
 }
 
 #pragma mark Sample quality
@@ -536,9 +622,10 @@ static const NSTimeInterval kMaxRecord = 15;
 - (void)playPreview:(id)s { [[OVPlayer shared] toggle:[self previewPath]]; }
 
 /// A short phrase in the sample's language, spoken with the new voice, so the result is heard right away.
-- (void)makePreviewFor:(OVVoice *)v {
+- (void)makePreviewFor:(OVVoice *)v trimmed:(BOOL)trimmed {
     NSDictionary *spec = [OVSettings modelSpec];
     if (!spec || !v.ready) return;
+    NSString *vid = v.identifier;
     NSString *lang = v.language ?: [OVLocale detectLanguage:v.refText] ?: [OVLocale speechLanguageForText:v.refText];
     NSDictionary *phrases = @{@"uk": @"Привіт! Тепер мій голос звучить саме так. Як вам?",
                               @"ru": @"Привет! Теперь мой голос звучит именно так. Как вам?",
@@ -556,9 +643,11 @@ static const NSTimeInterval kMaxRecord = 15;
                                  @"params": [OVSettings generationParams], @"out": out}
                         status:nil progress:nil done:^(NSDictionary *data, NSString *error) {
         if (error) { w.status.stringValue = error; return; }
-        w.status.stringValue = L(@"Ready! Here is how the clone sounds. The voice is selected on the Speech page.");
+        w.status.stringValue = trimmed
+            ? [NSString stringWithFormat:L(@"Ready! The recording was long, so its best %@ became the sample (the original is kept)."), OVFormatDuration(v.seconds)]
+            : L(@"Ready! Here is how the clone sounds. The voice is selected on the Speech page.");
         [w refreshButtons];
-        if (w.voice == v) [[OVPlayer shared] play:out];
+        if ([w.voice.identifier isEqualToString:vid]) [[OVPlayer shared] play:out];
     }];
 }
 
@@ -579,6 +668,7 @@ static const NSTimeInterval kMaxRecord = 15;
     NSString *audio = [self currentAudio];
     if (!spec || !audio) return;
     self.status.stringValue = L(@"Transcribing…");
+    NSString *vid = self.voice.identifier;
     __weak typeof(self) w = self;
     [[OVWorker shared] request:@{@"cmd": @"transcribe", @"model": spec, @"audio": audio, @"asr_path": asr.localPath,
                                  @"language": [self sampleLanguage]}
@@ -586,7 +676,14 @@ static const NSTimeInterval kMaxRecord = 15;
                       progress:nil
                           done:^(NSDictionary *data, NSString *error) {
         if (error) { w.status.stringValue = error; return; }
-        w.refText.string = data[@"text"] ?: @"";
+        OVVoice *v = [[OVVoices shared] voiceWithId:vid ?: @""];  // the voice the sample belongs to, even if another one is shown now
+        if (!v) return;
+        v.refText = data[@"text"] ?: @"";
+        [w voice:v heardLanguage:data[@"language"]];
+        [v save];
+        if (![w.voice.identifier isEqualToString:vid]) return;
+        w.refText.string = v.refText;
+        [w showSampleLanguage:v.language isAuto:v.languageAuto];
         w.status.stringValue = L(@"Text transcribed — check it and correct it if needed.");
     }];
 }
@@ -608,8 +705,10 @@ static const NSTimeInterval kMaxRecord = 15;
     if (!v) return;
     v.name = name;
     v.refText = text;
-    v.language = [self sampleLanguage];
+    v.languageAuto = [self sampleLanguageIsAuto];
+    if (!v.languageAuto) v.language = [self sampleLanguage];
     [v save];
+    NSString *vid = v.identifier;
     NSString *pending = [self hasPending] ? [self pendingPath] : nil;
 
     NSMutableDictionary *req = [@{@"cmd": @"clone", @"model": spec, @"audio": audio,
@@ -621,16 +720,27 @@ static const NSTimeInterval kMaxRecord = 15;
     [[OVWorker shared] request:req status:^(NSString *m) { w.status.stringValue = m; } progress:nil
                           done:^(NSDictionary *data, NSString *error) {
         if (error) { w.status.stringValue = error; [[OVVoices shared] reload]; return; }
+        OVVoice *v = [[OVVoices shared] voiceWithId:vid];  // fresh copy: it may have been renamed meanwhile
+        if (!v) return;
+        NSFileManager *fm = NSFileManager.defaultManager;
+        NSString *trimmed = data[@"trimmed"];
+        if (trimmed.length) { // a long recording was cut to its best seconds: the cut is the sample now, the original is kept
+            NSString *orig = [v.folder stringByAppendingPathComponent:@"reference.orig.wav"];
+            if (![fm fileExistsAtPath:orig]) [fm moveItemAtPath:audio toPath:orig error:nil];
+            [fm removeItemAtPath:audio error:nil];
+            [fm moveItemAtPath:trimmed toPath:audio error:nil];
+        }
         if (pending) { // the new sample is now the voice's reference
-            [NSFileManager.defaultManager removeItemAtPath:v.referencePath error:nil];
-            [NSFileManager.defaultManager moveItemAtPath:pending toPath:v.referencePath error:nil];
+            [fm removeItemAtPath:v.referencePath error:nil];
+            [fm moveItemAtPath:pending toPath:v.referencePath error:nil];
         }
         v.refText = data[@"ref_text"] ?: text;
         v.seconds = [data[@"seconds"] doubleValue] ?: v.seconds;
+        [w voice:v heardLanguage:data[@"language"]];
         [v save];
         [NSUserDefaults.standardUserDefaults setObject:v.identifier forKey:@"voice"];
-        [NSFileManager.defaultManager removeItemAtPath:[v.folder stringByAppendingPathComponent:@"preview.wav"] error:nil];
-        [[OVVoices shared] reload];
+        [fm removeItemAtPath:[v.folder stringByAppendingPathComponent:@"preview.wav"] error:nil];
+        v = [[OVVoices shared] voiceWithId:vid] ?: v;  // saving reloaded the list
         [w showVoice:v];
         NSDictionary *mm = data[@"mismatch"];
         if (mm) {
@@ -649,7 +759,7 @@ static const NSTimeInterval kMaxRecord = 15;
             }
         }
         w.status.stringValue = L(@"Done! The voice is selected on the Speech page.");
-        [w makePreviewFor:v];
+        [w makePreviewFor:v trimmed:trimmed.length > 0];
     }];
 }
 

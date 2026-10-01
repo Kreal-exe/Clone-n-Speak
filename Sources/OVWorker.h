@@ -2,7 +2,8 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-extern NSNotificationName const OVWorkerDidChangeNotification;
+extern NSNotificationName const OVWorkerDidChangeNotification;        // started / busy / finished / status
+extern NSNotificationName const OVWorkerMemoryDidChangeNotification;  // the once-a-second memory sample
 
 typedef void (^OVWorkerStatus)(NSString *msg);
 typedef void (^OVWorkerProgress)(double value);
@@ -26,7 +27,7 @@ typedef void (^OVWorkerResult)(NSDictionary *_Nullable data, NSString *_Nullable
          status:(nullable OVWorkerStatus)status
        progress:(nullable OVWorkerProgress)progress
            done:(OVWorkerResult)done;
-/// Kills the current job (and the process). The next request restarts it.
+/// Kills the current job (and the process); its `done` gets "Stopped". The next request starts a fresh process.
 - (void)stop;
 - (void)shutdown;
 @end
