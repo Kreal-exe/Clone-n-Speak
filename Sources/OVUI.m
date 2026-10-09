@@ -1,5 +1,6 @@
 #import "OVUI.h"
 #import <objc/runtime.h>
+#import <QuartzCore/QuartzCore.h>
 
 NSNotificationName const OVLogBufferNotification = @"OVLogBuffer";
 
@@ -9,18 +10,36 @@ static NSColor *Dynamic(NSColor *light, NSColor *dark) {
     }];
 }
 
+static NSColor *RGB(CGFloat r, CGFloat g, CGFloat b) { return [NSColor colorWithSRGBRed:r green:g blue:b alpha:1]; }
+
 NSColor *OVCardColor(void) {
     static NSColor *c;
-    if (!c) c = Dynamic([NSColor colorWithWhite:1 alpha:1], [NSColor colorWithWhite:0.17 alpha:1]);
+    if (!c) c = Dynamic([NSColor colorWithWhite:1 alpha:1], RGB(0.150, 0.156, 0.176));
     return c;
 }
 NSColor *OVWindowColor(void) {
     static NSColor *c;
-    if (!c) c = Dynamic([NSColor colorWithSRGBRed:0.955 green:0.958 blue:0.965 alpha:1], [NSColor colorWithWhite:0.115 alpha:1]);
+    if (!c) c = Dynamic(RGB(0.953, 0.957, 0.972), RGB(0.090, 0.094, 0.110));
     return c;
 }
-NSColor *OVAccent(void) { return NSColor.controlAccentColor; }
+NSColor *OVAccent(void) {
+    static NSColor *c;
+    if (!c) c = Dynamic(RGB(0.14, 0.42, 0.96), RGB(0.42, 0.64, 1.0));
+    return c;
+}
 NSColor *OVGreen(void) { return NSColor.systemGreenColor; }
+
+NSGradient *OVBrandGradient(void) {
+    static NSGradient *g;
+    if (!g) g = [[NSGradient alloc] initWithStartingColor:RGB(0.16, 0.50, 1.0) endingColor:RGB(0.43, 0.33, 0.95)];
+    return g;
+}
+
+NSFont *OVRoundedFont(CGFloat size, NSFontWeight weight) {
+    NSFont *f = [NSFont systemFontOfSize:size weight:weight];
+    NSFontDescriptor *d = [f.fontDescriptor fontDescriptorWithDesign:NSFontDescriptorSystemDesignRounded];
+    return (d ? [NSFont fontWithDescriptor:d size:size] : nil) ?: f;
+}
 
 NSTextField *OVLabel(NSString *text, CGFloat size, NSFontWeight weight, NSColor *color) {
     NSTextField *l = [NSTextField labelWithString:text ?: @""];
@@ -40,8 +59,16 @@ NSTextField *OVWrapLabel(NSString *text, CGFloat size, NSColor *color) {
     return l;
 }
 
-NSTextField *OVTitle(NSString *text) { return OVLabel(text, 26, NSFontWeightBold, nil); }
-NSTextField *OVSectionTitle(NSString *text) { return OVLabel(text, 15, NSFontWeightSemibold, nil); }
+NSTextField *OVTitle(NSString *text) {
+    NSTextField *l = OVLabel(text, 28, NSFontWeightBold, nil);
+    l.font = OVRoundedFont(28, NSFontWeightBold);
+    return l;
+}
+NSTextField *OVSectionTitle(NSString *text) {
+    NSTextField *l = OVLabel(text, 15, NSFontWeightSemibold, nil);
+    l.font = OVRoundedFont(15, NSFontWeightSemibold);
+    return l;
+}
 
 NSTextField *OVField(NSString *placeholder) {
     NSTextField *f = [NSTextField textFieldWithString:@""];
@@ -59,14 +86,89 @@ NSButton *OVButton(NSString *title, id target, SEL action) {
     return b;
 }
 
+/// Borderless button drawn as a gradient pill with a white title (and symbol).
+@interface OVPillButton : NSButton
+@end
+@implementation OVPillButton
+- (NSSize)intrinsicContentSize {
+    CGFloat w = ceil([self.title sizeWithAttributes:@{NSFontAttributeName: self.font}].width) + 36 + (self.image ? 20 : 0);
+    return NSMakeSize(w, 34);
+}
+- (void)setTitle:(NSString *)title { [super setTitle:title]; [self invalidateIntrinsicContentSize]; self.needsDisplay = YES; }
+- (void)setImage:(NSImage *)image { [super setImage:image]; [self invalidateIntrinsicContentSize]; self.needsDisplay = YES; }
+- (void)setEnabled:(BOOL)enabled { [super setEnabled:enabled]; self.needsDisplay = YES; }
+- (void)drawRect:(NSRect)dirty {
+    NSRect b = self.bounds;
+    NSBezierPath *pill = [NSBezierPath bezierPathWithRoundedRect:b xRadius:10 yRadius:10];
+    [NSGraphicsContext saveGraphicsState];
+    if (!self.enabled) CGContextSetAlpha(NSGraphicsContext.currentContext.CGContext, 0.4);
+    [OVBrandGradient() drawInBezierPath:pill angle:self.isFlipped ? 90 : -90];
+    if (self.isHighlighted) { [[NSColor colorWithWhite:0 alpha:0.18] setFill]; [pill fill]; }
+    NSDictionary *attrs = @{NSFontAttributeName: self.font, NSForegroundColorAttributeName: NSColor.whiteColor};
+    NSSize ts = [self.title sizeWithAttributes:attrs];
+    NSImage *img = [self.image imageWithSymbolConfiguration:
+                    [[NSImageSymbolConfiguration configurationWithPointSize:12 weight:NSFontWeightBold]
+                     configurationByApplyingConfiguration:[NSImageSymbolConfiguration configurationWithPaletteColors:@[NSColor.whiteColor]]]];
+    CGFloat iw = img ? img.size.width + 7 : 0;
+    CGFloat x = round((NSWidth(b) - ts.width - iw) / 2);
+    if (img) [img drawInRect:NSMakeRect(x, round((NSHeight(b) - img.size.height) / 2), img.size.width, img.size.height)
+                    fromRect:NSZeroRect operation:NSCompositingOperationSourceOver fraction:1 respectFlipped:YES hints:nil];
+    [self.title drawAtPoint:NSMakePoint(x + iw, round((NSHeight(b) - ts.height) / 2) - (self.isFlipped ? 1 : -1)) withAttributes:attrs];
+    [NSGraphicsContext restoreGraphicsState];
+}
+@end
+
 NSButton *OVPrimaryButton(NSString *title, id target, SEL action) {
-    NSButton *b = OVButton(title, target, action);
-    b.bezelColor = OVAccent();
-    b.keyEquivalent = @"";
+    OVPillButton *b = [OVPillButton buttonWithTitle:title target:target action:action];
+    b.bordered = NO;
     b.font = [NSFont systemFontOfSize:14 weight:NSFontWeightSemibold];
-    if (@available(macOS 14.0, *)) b.hasDestructiveAction = NO;
+    [b setContentHuggingPriority:NSLayoutPriorityDefaultHigh forOrientation:NSLayoutConstraintOrientationHorizontal];
+    [b setContentCompressionResistancePriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
     return b;
 }
+
+#pragma mark - Avatar
+
+@interface OVAvatar ()
+@property (nonatomic, copy) NSString *initials;
+@property (nonatomic) NSGradient *gradient;
+@property CGFloat side;
+@end
+
+@implementation OVAvatar
++ (instancetype)avatarWithSize:(CGFloat)size {
+    OVAvatar *a = [[OVAvatar alloc] initWithFrame:NSZeroRect];
+    a.side = size;
+    [a.widthAnchor constraintEqualToConstant:size].active = YES;
+    [a.heightAnchor constraintEqualToConstant:size].active = YES;
+    [a setName:nil];
+    return a;
+}
+- (void)setName:(NSString *)name {
+    if (!name) {
+        self.initials = @"AI";
+        self.gradient = OVBrandGradient();
+    } else {
+        NSMutableString *out = [NSMutableString string];
+        for (NSString *w in [name componentsSeparatedByCharactersInSet:NSCharacterSet.whitespaceCharacterSet])
+            if (w.length && out.length < 2) [out appendString:[w substringToIndex:[w rangeOfComposedCharacterSequenceAtIndex:0].length].uppercaseString];
+        self.initials = out.length ? out : @"•";
+        // a stable colour per name: the same voice looks the same everywhere
+        NSUInteger h = 5381;
+        for (NSUInteger i = 0; i < name.length; i++) h = h * 33 + [name characterAtIndex:i];
+        CGFloat hue = (h % 360) / 360.0;
+        self.gradient = [[NSGradient alloc] initWithStartingColor:[NSColor colorWithHue:hue saturation:0.62 brightness:0.92 alpha:1]
+                                                      endingColor:[NSColor colorWithHue:fmod(hue + 0.09, 1) saturation:0.72 brightness:0.74 alpha:1]];
+    }
+    self.needsDisplay = YES;
+}
+- (void)drawRect:(NSRect)r {
+    [self.gradient drawInBezierPath:[NSBezierPath bezierPathWithOvalInRect:self.bounds] angle:-60];
+    NSDictionary *a = @{NSFontAttributeName: OVRoundedFont(self.side * 0.38, NSFontWeightBold), NSForegroundColorAttributeName: NSColor.whiteColor};
+    NSSize s = [self.initials sizeWithAttributes:a];
+    [self.initials drawAtPoint:NSMakePoint((NSWidth(self.bounds) - s.width) / 2, (NSHeight(self.bounds) - s.height) / 2) withAttributes:a];
+}
+@end
 
 NSButton *OVIconButton(NSString *symbol, NSString *tooltip, id target, SEL action) {
     NSImage *img = [NSImage imageWithSystemSymbolName:symbol accessibilityDescription:tooltip];
@@ -161,11 +263,12 @@ NSView *OVSpacer(void) {
 NSView *OVCard(NSView *content, CGFloat padding) {
     OVCardView *card = [OVCardView new];
     card.wantsLayer = YES;
-    card.layer.cornerRadius = 12;
+    card.layer.cornerRadius = 14;
+    card.layer.cornerCurve = kCACornerCurveContinuous;
     card.layer.borderWidth = 0.5;
-    card.layer.shadowOpacity = 0.06;
-    card.layer.shadowRadius = 3;
-    card.layer.shadowOffset = CGSizeMake(0, -1);
+    card.layer.shadowOpacity = 0.07;
+    card.layer.shadowRadius = 10;
+    card.layer.shadowOffset = CGSizeMake(0, -3);
     [card addSubview:content];
     OVPin(content, card, NSEdgeInsetsMake(padding, padding + 2, padding, padding + 2));
     return card;

@@ -5,8 +5,11 @@ NS_ASSUME_NONNULL_BEGIN
 // Colors
 NSColor *OVCardColor(void);
 NSColor *OVWindowColor(void);
-NSColor *OVAccent(void);
+NSColor *OVAccent(void);                 // brand blue of the app icon
 NSColor *OVGreen(void);
+NSGradient *OVBrandGradient(void);       // blue → violet: primary buttons, the app's own avatar
+/// System font in the rounded design (titles).
+NSFont *OVRoundedFont(CGFloat size, NSFontWeight weight);
 
 // Text
 NSTextField *OVLabel(NSString *text, CGFloat size, NSFontWeight weight, NSColor *_Nullable color);
@@ -17,6 +20,7 @@ NSTextField *OVField(NSString *placeholder);
 
 // Controls
 NSButton *OVButton(NSString *title, id _Nullable target, SEL _Nullable action);
+/// The one main action of a page: a gradient pill.
 NSButton *OVPrimaryButton(NSString *title, id _Nullable target, SEL _Nullable action);
 NSButton *OVIconButton(NSString *symbol, NSString *tooltip, id _Nullable target, SEL _Nullable action);
 NSButton *OVCheckbox(NSString *title, NSString *defaultsKey);
@@ -34,6 +38,13 @@ NSView *OVCard(NSView *content, CGFloat padding);
 NSScrollView *OVScrollPage(NSStackView *content);
 void OVPin(NSView *view, NSView *container, NSEdgeInsets insets);
 void OVFillWidth(NSArray<NSView *> *views, NSStackView *stack);
+
+/// Round badge with initials on a gradient picked from `name` (every voice gets its own colour).
+@interface OVAvatar : NSView
++ (instancetype)avatarWithSize:(CGFloat)size;
+/// nil name = the model's own voice ("AI" on the brand gradient).
+- (void)setName:(nullable NSString *)name;
+@end
 
 /// A slider bound to a user-defaults key with a value label.
 @interface OVSliderRow : NSStackView

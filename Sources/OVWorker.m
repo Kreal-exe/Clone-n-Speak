@@ -7,6 +7,7 @@
 #import "OVMemory.h"
 
 NSNotificationName const OVWorkerDidChangeNotification = @"OVWorkerDidChange";
+NSNotificationName const OVWorkerMemoryDidChangeNotification = @"OVWorkerMemoryDidChange";
 
 @interface OVWorker ()
 @property (nullable) NSTask *task;
@@ -19,7 +20,6 @@ NSNotificationName const OVWorkerDidChangeNotification = @"OVWorkerDidChange";
 @property (readwrite) BOOL busy;
 @property (readwrite, nullable) NSString *loadedModelPath;
 @property (readwrite, copy) NSString *lastStatus;
-@property BOOL stopping;
 @property (nullable) NSTimer *idleTimer;
 @property (readwrite) double memoryActive, memoryPeak;
 @property (readwrite) unsigned long long engineFootprint, peakFootprint, availableMemory;
@@ -47,7 +47,8 @@ NSNotificationName const OVWorkerDidChangeNotification = @"OVWorkerDidChange";
     self.engineFootprint = self.task.isRunning ? [OVMemory footprintOfPID:self.task.processIdentifier] : 0;
     self.peakFootprint = MAX(self.peakFootprint, self.engineFootprint);
     if (!self.task.isRunning) { [self.memoryTimer invalidate]; self.memoryTimer = nil; }
-    [NSNotificationCenter.defaultCenter postNotificationName:OVWorkerDidChangeNotification object:self];
+    // its own notification: pages redo their whole state on "did change", which is too much once a second
+    [NSNotificationCenter.defaultCenter postNotificationName:OVWorkerMemoryDidChangeNotification object:self];
 }
 
 - (void)resetPeak { self.peakFootprint = self.engineFootprint; }
@@ -100,15 +101,16 @@ NSNotificationName const OVWorkerDidChangeNotification = @"OVWorkerDidChange";
     self.errBuf = [NSMutableData data];
 
     __weak typeof(self) w = self;
+    __weak NSTask *wt = t;
     outP.fileHandleForReading.readabilityHandler = ^(NSFileHandle *h) {
         NSData *d = h.availableData;
         if (!d.length) { h.readabilityHandler = nil; return; }
-        dispatch_async(dispatch_get_main_queue(), ^{ [w consume:d stderr:NO]; });
+        dispatch_async(dispatch_get_main_queue(), ^{ [w consume:d stderr:NO from:wt]; });
     };
     errP.fileHandleForReading.readabilityHandler = ^(NSFileHandle *h) {
         NSData *d = h.availableData;
         if (!d.length) { h.readabilityHandler = nil; return; }
-        dispatch_async(dispatch_get_main_queue(), ^{ [w consume:d stderr:YES]; });
+        dispatch_async(dispatch_get_main_queue(), ^{ [w consume:d stderr:YES from:wt]; });
     };
     t.terminationHandler = ^(NSTask *task) {
         int code = task.terminationStatus;
@@ -125,7 +127,8 @@ NSNotificationName const OVWorkerDidChangeNotification = @"OVWorkerDidChange";
     return YES;
 }
 
-- (void)consume:(NSData *)d stderr:(BOOL)isErr {
+- (void)consume:(NSData *)d stderr:(BOOL)isErr from:(NSTask *)task {
+    if (task != self.task) return; // output of a process that was stopped: its buffers are gone
     NSMutableData *buf = isErr ? self.errBuf : self.outBuf;
     [buf appendData:d];
     while (YES) {
@@ -159,7 +162,7 @@ NSNotificationName const OVWorkerDidChangeNotification = @"OVWorkerDidChange";
     } else if ([kind isEqualToString:@"memory"]) {
         self.memoryActive = [ev[@"active"] doubleValue];
         self.memoryPeak = [ev[@"peak"] doubleValue];
-        [self changed];
+        [NSNotificationCenter.defaultCenter postNotificationName:OVWorkerMemoryDidChangeNotification object:self];
     } else if ([kind isEqualToString:@"model_loaded"]) {
         self.loadedModelPath = ev[@"path"];
         [self changed];
@@ -194,23 +197,27 @@ NSNotificationName const OVWorkerDidChangeNotification = @"OVWorkerDidChange";
     }];
 }
 
-- (void)terminated:(NSTask *)task code:(int)code {
-    if (task != self.task) return;
+/// Forgets the process (it may still be exiting) and returns the callback of the request it was working on.
+- (OVWorkerResult)detach {
     self.task = nil;
     self.input = nil;
     self.loadedModelPath = nil;
     self.memoryActive = 0;
     self.engineFootprint = 0;
-    [[OVRuntime shared] log:[NSString stringWithFormat:L(@"Worker exited (code %d)"), code]];
     OVWorkerResult done = self.doneBlock;
-    BOOL stopped = self.stopping;
-    self.stopping = NO;
     [self clearRequest];
+    return done;
+}
+
+- (void)terminated:(NSTask *)task code:(int)code {
+    [[OVRuntime shared] log:[NSString stringWithFormat:L(@"Worker exited (code %d)"), code]];
+    if (task != self.task) return; // stopped on purpose: already detached, a new process may be running
+    OVWorkerResult done = [self detach];
     if (done) {
-        NSString *msg = stopped ? L(@"Stopped") :
-            [NSString stringWithFormat:L(@"The Python process quit unexpectedly (code %d). See the Log for details."), code];
-        if (!stopped && code == 9) msg = L(@"The Python process was terminated by the system — probably out of memory.");
-        done(nil, msg);
+        // SIGKILL (9) without us asking for it is macOS reclaiming memory
+        BOOL killed = task.terminationReason == NSTaskTerminationReasonUncaughtSignal && code == SIGKILL;
+        done(nil, killed ? L(@"The Python process was terminated by the system — probably out of memory.")
+                         : [NSString stringWithFormat:L(@"The Python process quit unexpectedly (code %d). See the Log for details."), code]);
     }
 }
 
@@ -248,20 +255,26 @@ NSNotificationName const OVWorkerDidChangeNotification = @"OVWorkerDidChange";
 }
 
 - (void)stop {
-    if (!self.task) return;
-    self.stopping = YES;
-    [self.task terminate];
     NSTask *t = self.task;
+    if (!t) return;
+    // detach first: a request made right after stop must start a new process, not talk to the dying one
+    OVWorkerResult done = [self detach];
+    [t terminate];
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (t.isRunning) kill(t.processIdentifier, SIGKILL);
     });
+    if (done) done(nil, L(@"Stopped"));
 }
 
 - (void)shutdown {
-    if (!self.task) return;
-    @try { [self.input writeData:[@"{\"cmd\":\"quit\"}\n" dataUsingEncoding:NSUTF8StringEncoding]]; } @catch (NSException *e) {}
     NSTask *t = self.task;
-    usleep(200000);
-    if (t.isRunning) [t terminate];
+    if (!t) return;
+    if (self.busy) { [self stop]; return; }
+    @try { [self.input writeData:[@"{\"cmd\":\"quit\"}\n" dataUsingEncoding:NSUTF8StringEncoding]]; } @catch (NSException *e) {}
+    OVWorkerResult done = [self detach];
+    if (done) done(nil, L(@"Stopped"));
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (t.isRunning) [t terminate];
+    });
 }
 @end

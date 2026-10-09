@@ -9,7 +9,7 @@ import pathlib
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 NAME = "Clone'n'Speak"
-FRAMEWORKS = ["Cocoa", "AVFAudio", "AVFoundation", "UniformTypeIdentifiers", "NaturalLanguage"]
+FRAMEWORKS = ["Cocoa", "AVFAudio", "AVFoundation", "UniformTypeIdentifiers", "NaturalLanguage", "QuartzCore"]
 
 
 def gid(tag):

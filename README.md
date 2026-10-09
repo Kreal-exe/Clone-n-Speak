@@ -35,16 +35,35 @@ The app shows the engine's memory and the free memory live, and on Macs with les
 
 ## Features
 
-- **Voice cloning from 3–10 seconds** — pick a file or record from the microphone.
+- **Voice cloning from 3–10 seconds** — pick a file, drop it on the window or record from the microphone.
+  - *Sample language*: detected automatically from the recording (or pick it by hand).
   - *Sample check*: loudness, noise, clipping, pauses → a 0–100 score with tips.
   - *Improve sample*: noise reduction, rumble filter, shorter pauses, level normalisation (the original is kept).
-  - *Transcript check*: Whisper listens to the sample (in the sample's language you pick, Ukrainian by default) and warns when your transcript doesn't match it —
+  - *Long recordings* are cut to their best ~10 seconds at a pause (the original is kept).
+  - *Transcript check*: Whisper listens to the sample and warns when your transcript doesn't match it —
     the most common reason for a bad clone.
   - *Instant preview*: the new voice says a short phrase right after cloning.
+- **Accent removal across languages**: record the sample in Russian, speak Ukrainian (or any other pair). A cloned
+  voice normally keeps the accent of its sample's language; the app lets the voice say two short phrases in the new
+  language three times each, scores the takes by how much they sound like you (a speaker-verification model) and how
+  native they sound (Whisper), and uses the two best as the voice's sample for that language from then on.
+  [How it was measured ↓](#accent-removal)
+- **Voice likeness** after every take: how much the result sounds like the sample, measured by an ECAPA
+  speaker-verification model (speechbrain, run on MLX).
+- **Voice style** on the Speech page: mood presets (calm, cheerful, energetic, serious, warm, sad, storyteller),
+  intonation (flat ↔ lively), energy, pitch, tone (warm ↔ bright), speed, pauses, volume.
+  For the model's own voice: gender, age, pitch, whisper and English accents. Sounds between words:
+  `[laughter]`, `[sigh]`, surprise, questions.
 - **600+ languages**, auto-detected while you type (Apple NaturalLanguage) or picked from the list.
-- **✨ Auto-improve**: every phrase is spoken, checked by speech recognition and re-spoken if unclear; you get a clarity
-  score and the list of phrases that stayed hard.
-- **Stress marks**: select a vowel and press **Stress ´** (⌘') — `виши́вка` — to fix a misplaced stress.
+- **✨ Auto-improve**: every phrase is spoken several times and the best take is kept — the one with the fewest
+  recognition errors, the most native pronunciation (Whisper's likelihood of the text, which also catches a Russian
+  «и» in Ukrainian), the most like the sample and, for Ukrainian, with the most words on their dictionary stress.
+- **Stress marks**: select a vowel and press **Stress ´** (⌘') — `виши́вка` — to fix a misplaced stress. Only marks
+  you place reach the model: marking every word from a dictionary was tried and made Ukrainian worse
+  ([measured below](#stress)). The dictionary is used to judge takes instead.
+- **Sample checks for Ukrainian**: Whisper can't tell accented Ukrainian from Russian, so the app shows both readings
+  and asks; words of the transcript that aren't in the Ukrainian dictionary (misheard ones) are highlighted;
+  Russian letters typed into Ukrainian text (`оксамыт`) are fixed.
 - **Ukrainian text preparation**: years (`у 2025 р.` → *у дві тисячі двадцять п'ятому році*), numbers with units in the
   right grammatical form (`21 грн` → *двадцять одна гривня*), abbreviations, apostrophes.
 - **LoRA adapters and fine-tunes** from Hugging Face are discovered automatically; the chosen one is downloaded,
@@ -67,14 +86,19 @@ The app shows the engine's memory and the free memory live, and on Macs with les
 
 ## Tips for a great clone
 
-1. **Record the sample in the language you will synthesize.** The sample's accent carries over; the app warns you when
-   the languages differ.
+1. **A sample in the language you will synthesize is still the best start.** For another language *accent removal*
+   (on by default, under the sliders button) makes the first phrase take about two minutes longer while the voice
+   learns the language. On the Voices page you can listen to what it learned on.
+   **Your own accent carries over too**: a clone copies how the sample is spoken, so Ukrainian read with a Russian
+   accent stays accented. For the cleanest Ukrainian, record the sample as a native speaker would read it.
 2. 5–10 seconds of natural speech from one person, in a quiet room, without music or echo. Aim for a quality score of 80+.
 3. **The transcript must match the recording word for word.** Leave it empty to let Whisper fill it in, or let the app
    check it for you.
 4. Noisy recording? Press **Improve sample**, then re-clone.
 5. For long texts turn on **✨ Auto-improve**; rewrite phrases it reports as unclear (expand abbreviations, add commas).
-6. Want a different accent or a narrow domain? Train a LoRA adapter on a rented NVIDIA GPU with the
+6. **The mood of a clone comes from its sample**: OmniVoice has no emotion switch. Record the sample the way the result
+   should feel, then shape it with the style sliders — they change the melody, pace, pitch and tone, not the acting.
+7. Want a different accent or a narrow domain? Train a LoRA adapter on a rented NVIDIA GPU with the
    [official recipe](https://github.com/k2-fsa/OmniVoice/blob/master/docs/lora_finetuning.md) and add the folder in
    *Models → Add your own model or LoRA*. (As of now there are no public Ukrainian OmniVoice adapters; OmniVoice was
    pre-trained on ~1,850 hours of Ukrainian, so a clean Ukrainian sample already gives native pronunciation.)
@@ -107,11 +131,13 @@ Only the Xcode Command Line Tools are needed (`xcode-select --install`):
 ./build.sh --dmg    # + dist/CloneNSpeak-<version>.dmg
 ```
 
-- Tests: `python3 -m unittest discover -s tests` (needs `pip install num2words`)
+- Tests: `python3 -m unittest discover -s tests` (needs `pip install num2words numpy scipy`)
 - Translations: `python3 tools/strings.py check`
 - Xcode project: `python3 tools/gen_xcodeproj.py`
 - Signed & notarized DMG: `SIGN_IDENTITY="Developer ID Application: …" NOTARY_PROFILE=notary ./build.sh --dmg`.
-  Pushing a `v*` tag builds the DMG in GitHub Actions and attaches it to a release.
+- Releasing: bump `CFBundleShortVersionString` in `Sources/Info.plist`, add a `## x.y.z` section to `CHANGELOG.md`
+  and push to `main`. GitHub Actions runs the tests, builds the DMG, tags `vx.y.z` and publishes the release with
+  that section as its notes (`tools/release_notes.py x.y.z` shows them). Nothing is built or uploaded by hand.
 
 ### How it works
 
@@ -120,8 +146,66 @@ AppKit UI (Objective-C) ──JSON lines──▶ worker.py (Python, one long-li
   OVRuntime  installs Python + MLX with uv       OmniVoice on MLX (mlx-audio), 4/8/16-bit
   OVModels   Hugging Face cache, catalog, LoRA   Whisper on MLX for transcripts & clarity checks
   OVWorker   requests, progress, idle unload     sample analysis / cleanup, Ukrainian text prep
-  OVLocale   UI language, language detection, theme
+  OVLocale   UI language, language detection, theme   voice style: melody, pitch, tone, pauses (numpy/scipy)
 ```
+
+### Voice style
+
+OmniVoice exposes speed, sampling temperature and guidance — and no emotion or intonation control. Measured on the
+installed model, guidance and temperature do not move the pitch range at all, so the style sliders work on the
+finished take instead:
+
+| Control | What happens |
+|---|---|
+| Intonation | the pitch melody is narrowed or widened by replaying the take at a gently varying rate (no vocoder) |
+| Pitch | the model speaks slower or faster and the take is resampled back: pitch and timbre shift, length stays |
+| Tone | tilt EQ: low shelf against high shelf, loudness kept |
+| Energy | pace, pauses, melody, presence and a light compressor together |
+| Mood | a preset of the above |
+| Gender, age, pitch, whisper, accent | OmniVoice voice-design tags; they only affect the model's own voice |
+
+### Accent removal
+
+Cross-lingual cloning keeps the accent of the sample's language: the model continues the way its prompt sounds
+(the OmniVoice authors say the same). The app turns the cross-lingual case into a same-language one: the cloned voice
+says two phrases in the target language three times each; every take is scored by likeness to the real sample
+(ECAPA speaker embeddings) and by Whisper (teacher-forced log-probability of the text, character error rate); the
+two best takes together become the prompt for that language (`adapted-<lang>.npz` in the voice's folder, built once).
+
+Measured on a Russian sample speaking five Ukrainian sentences (likeness: ECAPA cosine to the sample, 1 = same
+voice, different people ≈ 0.1–0.4):
+
+| Prompt | Whisper errors | Likeness |
+|---|---|---|
+| original Russian sample | 5.7 % | 0.81 |
+| one take, picked by pronunciation only | 5.2 % | 0.78 |
+| one take, picked by likeness | 4.1 % | 0.79 |
+| **two best takes (current)** | **2.6 %** | 0.78–0.82 |
+
+### Stress
+
+OmniVoice was not trained on stress marks. A paired test on a cloned voice (same seed, the combining acute moved
+between two syllables of 12 words) shows it follows a mark weakly: the marked syllable comes out stressed 56 % of
+the time; upper-case vowels (`вИшивка`) and `+` (`в+ишивка`) do nothing. So a hand-placed mark is worth trying on
+a stubborn word — and that is all the marks are good for. Marking *every* word from the
+[lang-uk dictionary](https://github.com/lang-uk/ukrainian-word-stress) was tried and made things worse on two Ukrainian
+clones, six sentences, two seeds each:
+
+| Marks | Whisper errors, clone A | clone B | Words on dictionary stress |
+|---|---|---|---|
+| none (current) | **4.3 %** | **1.0 %** | 44 % / 60 % |
+| on every word of the text | 5.9 % | 4.3 % | 42 % / 58 % |
+| …and in the sample's transcript | 7.9 % | 8.3 % | 38 % / 58 % |
+
+The dictionary still has a job: with auto-improve on, each phrase's takes are judged for stress against it
+(vowel length, loudness and pitch inside Whisper's word timestamps — right 64 % of the time on real speech), as one
+of four votes next to recognition errors, Whisper's likelihood of the text and likeness to the sample.
+
+### Other engines tried
+
+Fish Speech 1.5 Ukrainian (fine-tuned on 240 h of Ukrainian) was compared on the same six sentences and three voices:
+likeness to the sample 0.64–0.75 against OmniVoice's 0.80–0.87, Whisper errors about the same, ~4 GB of RAM on
+PyTorch and several times slower. Not worth a second engine; OmniVoice stays the only one.
 
 | Where | What |
 |---|---|
@@ -172,14 +256,33 @@ Clone'n'Speak — небольшое нативное macOS-приложение
 
 ## Возможности
 
-- **Клонирование по 3–10 секундам** — из файла или записью с микрофона:
+- **Клонирование по 3–10 секундам** — из файла, перетаскиванием или записью с микрофона:
+  **язык образца определяется автоматически** (можно выбрать вручную);
   оценка качества образца (шум, громкость, перегруз, паузы) с подсказками; кнопка **«Улучшить образец»**
   (шумоподавление, срез гула, сокращение пауз, выравнивание громкости, оригинал сохраняется);
+  длинная запись сама обрезается до лучших ~10 секунд;
   **проверка текста образца** — Whisper слушает запись и предупреждает, если текст не совпадает (главная причина плохого
   клона); **пробная фраза** новым голосом сразу после клонирования.
+- **Удаление акцента между языками**: записали образец на русском — озвучиваете украинский (или любую другую пару).
+  Обычно клон сохраняет акцент языка образца; приложение один раз даёт голосу произнести две фразы на новом языке
+  по три раза, оценивает дубли по похожести на вас (модель верификации диктора) и «родности» произношения (Whisper)
+  и дальше использует два лучших как образец для этого языка. Цифры — в разделе [Accent removal](#accent-removal).
+- **Похожесть голоса** после каждой озвучки — насколько результат похож на образец, по модели верификации диктора
+  ECAPA (speechbrain, запускается на MLX).
+- **Стиль голоса** на странице «Озвучка»: настроение (спокойное, радостное, бодрое, серьёзное, тёплое, грустное,
+  рассказчик), интонация (ровная ↔ живая), бодрость, высота, тембр (тёплый ↔ яркий), темп, паузы, громкость.
+  Для собственного голоса модели — пол, возраст, высота, шёпот и английские акценты. Звуки между словами:
+  `[laughter]`, `[sigh]`, удивление, вопросы.
 - **600+ языков** с автоопределением по тексту или выбором из списка.
-- **✨ Автоулучшение**: каждая фраза проверяется распознаванием речи и переозвучивается, если звучит неразборчиво.
+- **✨ Автоулучшение**: каждая фраза озвучивается несколько раз, и остаётся лучший дубль — с наименьшим числом ошибок
+  распознавания, самым «родным» произношением (ловит и русское «и» в украинском), больше всего похожий на образец и,
+  для украинского, с ударениями по словарю.
 - **Ударения**: выделите гласную и нажмите **«Ударение ´»** (⌘') — `виши́вка`, — чтобы исправить неверное ударение.
+  До модели доходят только ваши пометки: пометки на каждом слове из словаря пробовались и сделали украинский хуже
+  (замеры — в разделе [Stress](#stress)). Словарь используется для оценки дублей.
+- **Проверка образца для украинского**: Whisper не отличает украинский с акцентом от русского — приложение показывает
+  оба варианта расшифровки и спрашивает; слова расшифровки, которых нет в украинском словаре, подсвечиваются;
+  русские буквы в украинском тексте (`оксамыт`) исправляются.
 - **Подготовка украинского текста**: годы, числа с единицами в правильной форме, сокращения, апострофы.
 - **LoRA-адаптеры и дообученные модели** с Hugging Face находятся сами, выбранные скачиваются, вливаются и
   квантуются под ваш Mac; свой адаптер подключается из папки.
@@ -189,13 +292,19 @@ Clone'n'Speak — небольшое нативное macOS-приложение
 
 ## Как получить качественный клон
 
-1. **Записывайте образец на том языке, на котором будете озвучивать** — акцент образца переносится (приложение
-   предупредит, если языки различаются).
+1. **Образец на языке озвучки — по-прежнему лучший старт.** Для другого языка работает «удаление акцента»
+   (включено по умолчанию, под кнопкой с ползунками): первая фраза займёт примерно на две минуты больше, пока голос
+   учит язык. На странице «Голоса» можно послушать, на чём он учился.
+   **Ваш собственный акцент тоже переносится**: клон копирует то, как говорят в образце, поэтому украинский, прочитанный
+   с русским акцентом, так и останется с акцентом. Для самого чистого украинского запишите образец так, как его прочитал
+   бы носитель языка.
 2. 5–10 секунд естественной речи одного человека в тишине, без музыки и эха; оценка качества — от 80.
 3. **Текст образца должен совпадать с записью слово в слово** — оставьте поле пустым, и его заполнит Whisper.
 4. Шумная запись — нажмите **«Улучшить образец»** и пересоздайте голос.
 5. Для длинных текстов включайте **✨ Автоулучшение** и переписывайте фразы, которые оно отметит.
-6. Нужен особый акцент или тематика — обучите LoRA на арендованной видеокарте NVIDIA по
+6. **Настроение клона берётся из образца**: у OmniVoice нет переключателя эмоций. Запишите образец так, как должен
+   звучать результат, а ползунками стиля подправьте мелодику, темп, высоту и тембр.
+7. Нужен особый акцент или тематика — обучите LoRA на арендованной видеокарте NVIDIA по
    [официальному рецепту](https://github.com/k2-fsa/OmniVoice/blob/master/docs/lora_finetuning.md) и подключите папку
    в «Модели». Публичных украинских адаптеров OmniVoice пока нет, но в обучении модели было ~1850 часов украинской речи —
    чистый украинский образец уже даёт естественное произношение.

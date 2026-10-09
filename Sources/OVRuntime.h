@@ -39,6 +39,9 @@ NSTask *_Nullable OVRunTask(NSString *path, NSArray<NSString *> *args, NSDiction
 - (void)install;
 - (void)cancelInstall;
 - (void)log:(NSString *)line;
+/// uv (downloaded into the app folder or found on the system) and the environment it runs with.
+- (nullable NSString *)findUV;
+- (NSDictionary *)uvEnv;
 @end
 
 NS_ASSUME_NONNULL_END

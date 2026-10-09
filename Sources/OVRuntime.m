@@ -2,6 +2,7 @@
 #import "OVPaths.h"
 #import "OVLocale.h"
 #import "OVDownloader.h"
+#import "OVWorker.h"
 #include <sys/stat.h>
 
 NSNotificationName const OVRuntimeDidChangeNotification = @"OVRuntimeDidChange";
@@ -9,7 +10,11 @@ NSNotificationName const OVLogNotification = @"OVLog";
 
 static NSString *const kPythonVersion = @"3.11";
 // Apple-Silicon-native stack: MLX instead of PyTorch (~360 MB instead of ~1.1 GB, a third of the RAM)
-static NSString *const kRequirements[] = {@"mlx-audio>=0.5.7", @"num2words", @"scipy"};
+// mlx-audio is held to the 0.5 line: worker.py reaches into its OmniVoice and Whisper modules
+static NSString *const kRequirements[] = {@"mlx-audio>=0.5.7,<0.6", @"num2words", @"scipy"};
+// Installed with --no-deps: the Ukrainian stress dictionary lists Stanza (PyTorch) as a dependency but runs
+// without it in dictionary mode; marisa-trie is what it really needs.
+static NSString *const kExtras[] = {@"ukrainian-word-stress>=2.1", @"marisa-trie"};
 
 NSTask *OVRunTask(NSString *path, NSArray<NSString *> *args, NSDictionary *env,
                   void (^onLine)(NSString *), void (^done)(int)) {
@@ -125,7 +130,8 @@ NSTask *OVRunTask(NSString *path, NSArray<NSString *> *args, NSDictionary *env,
         @"import importlib.util as u\n"
         @"import mlx.core as mx, mlx_audio\n"
         @"print('OVINFO'+json.dumps({'python':sys.version.split()[0],'mlx':m.version('mlx'),"
-        @"'mlx_audio':m.version('mlx-audio'),'metal':bool(mx.metal.is_available())}))\n";
+        @"'mlx_audio':m.version('mlx-audio'),'metal':bool(mx.metal.is_available()),"
+        @"'stress':u.find_spec('ukrainian_word_stress') is not None}))\n";
     NSTask *t = [NSTask new];
     t.executableURL = [NSURL fileURLWithPath:py];
     t.arguments = @[@"-c", code];
@@ -183,6 +189,8 @@ NSTask *OVRunTask(NSString *path, NSArray<NSString *> *args, NSDictionary *env,
                 self.state = OVRuntimeReady;
                 [self log:[NSString stringWithFormat:L(@"Found MLX %@ · mlx-audio %@ — %@"),
                            foundInfo[@"mlx"], foundInfo[@"mlx_audio"], found]];
+                // environments installed by 1.0.x lack the stress dictionary: add it quietly
+                if (![foundInfo[@"stress"] boolValue] && [found isEqualToString:[OVPaths ownPython]]) [self installExtras];
             } else {
                 self.pythonPath = nil;
                 self.info = nil;
@@ -321,8 +329,36 @@ NSTask *OVRunTask(NSString *path, NSArray<NSString *> *args, NSDictionary *env,
         }
     }, ^(int st) {
         if (w.cancelled || st != 0) { [w fail:L(@"Couldn’t install packages (see the log for details)")]; return; }
-        [w verifyInstall];
+        [w installExtrasWithUV:uv done:^{ [w verifyInstall]; }];
     });
+}
+
+/// The small extras (Ukrainian stress dictionary, ~13 MB) on top of a working environment.
+- (void)installExtrasWithUV:(NSString *)uv done:(void (^)(void))done {
+    NSMutableArray *args = [@[@"pip", @"install", @"--no-deps", @"--python", [OVPaths ownPython]] mutableCopy];
+    for (size_t i = 0; i < sizeof(kExtras) / sizeof(kExtras[0]); i++) [args addObject:kExtras[i]];
+    __weak typeof(self) w = self;
+    OVRunTask(uv, args, [self uvEnv], ^(NSString *l) { [w log:l]; }, ^(int st) {
+        if (st != 0) [w log:L(@"The stress dictionary could not be installed — Ukrainian speech will do without it")];
+        done();
+    });
+}
+
+/// Called when an installed environment is missing the extras: installs them in the background, the engine keeps working.
+- (void)installExtras {
+    NSString *uv = [self findUV];
+    if (!uv) return;  // no uv around: the next full install brings everything
+    [self log:L(@"Adding the Ukrainian stress dictionary to the environment…")];
+    __weak typeof(self) w = self;
+    [self installExtrasWithUV:uv done:^{
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+            NSDictionary *info = [w probe:[OVPaths ownPython]];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (info) { w.info = info; [w changed]; }
+                if ([info[@"stress"] boolValue] && ![OVWorker shared].busy) [[OVWorker shared] stop];  // the next request starts a worker that sees the dictionary
+            });
+        });
+    }];
 }
 
 - (void)verifyInstall {
