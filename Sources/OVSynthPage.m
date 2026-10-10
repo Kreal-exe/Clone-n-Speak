@@ -212,7 +212,7 @@ static NSString *const kAutoVoice = @"__auto__";
     // text tools live with the text: stress mark and sounds on the left, the counter on the right
     NSButton *stress = OVButton(L(@"Stress ´"), self, @selector(toggleStress:));
     stress.controlSize = NSControlSizeSmall;
-    stress.toolTip = L(@"Put a stress mark on the selected vowel (or the one before the cursor): виши́вка. Press again to remove it. Shortcut ⌘'");
+    stress.toolTip = L(@"Mark the stress on the selected vowel (or the one before the cursor): виши́вка. Press again to remove it. Shortcut ⌘'. The mark steers ✨ Auto-improve: of the takes of that phrase, the one that stresses this syllable wins. It is not sent to the model — marks make Ukrainian sound Russian.");
     NSButton *sounds = OVButton(L(@"Sound"), self, @selector(showSounds:));
     sounds.controlSize = NSControlSizeSmall;
     sounds.image = [NSImage imageWithSystemSymbolName:@"face.smiling" accessibilityDescription:nil];
@@ -726,8 +726,13 @@ static NSString *const kAutoVoice = @"__auto__";
     NSString *textLang = [self textLanguage];
     BOOL mismatch = sampleLang && textLang && ![sampleLang isEqualToString:textLang];
     BOOL adapts = mismatch && [v adaptsToLanguage:textLang];
+    BOOL cleans = !mismatch && v.accented && textLang && [v adaptsToLanguage:textLang];  // accented sample, its own language
     NSString *from = mismatch ? [OVLocale nameForLanguage:sampleLang] : nil, *to = mismatch ? [OVLocale nameForLanguage:textLang] : nil;
-    if (adapts)
+    if (cleans)
+        hint = [v.adaptedLanguages containsObject:textLang]
+            ? [NSString stringWithFormat:L(@"%@ sample with an accent → clean %@"), OVFormatDuration(v.seconds), [OVLocale nameForLanguage:textLang]]
+            : [NSString stringWithFormat:L(@"%@ sample with an accent → clean %@ after the first run (about two minutes)"), OVFormatDuration(v.seconds), [OVLocale nameForLanguage:textLang]];
+    else if (adapts)
         hint = [v.adaptedLanguages containsObject:textLang]
             ? [NSString stringWithFormat:L(@"%@ sample → %@ without its accent"), from, to]
             : [NSString stringWithFormat:L(@"%@ sample → %@: the accent is removed on the first run (about a minute)"), from, to];
@@ -735,7 +740,8 @@ static NSString *const kAutoVoice = @"__auto__";
         hint = [NSString stringWithFormat:L(@"%@ sample — its accent carries over into %@"), from, to];
     self.voiceHint.stringValue = hint;
     self.voiceHint.textColor = mismatch && !adapts ? NSColor.systemOrangeColor : NSColor.secondaryLabelColor;
-    self.voiceHint.toolTip = adapts ? L(@"The voice first says a short phrase in the new language; the cleanest take becomes its sample for that language, so the accent of the original sample doesn’t carry over. Switch it off under the sliders button to keep the accent.")
+    self.voiceHint.toolTip = cleans ? L(@"The sample has a noticeable accent (Whisper finds its own transcript unlikely). The voice first says two short phrases in this language several times; the takes that sound most like you and most native become its sample, so the accent fades. Switch it off under the sliders button to keep the accent.")
+                           : adapts ? L(@"The voice first says a short phrase in the new language; the cleanest take becomes its sample for that language, so the accent of the original sample doesn’t carry over. Switch it off under the sliders button to keep the accent.")
                            : mismatch ? L(@"Turn on “Remove the sample’s accent” under the sliders button, or record the sample in the language of the text.") : nil;
     self.designRow.hidden = v != nil;  // voice design tags only work for the model’s own voice
 }
@@ -836,6 +842,11 @@ static BOOL IsVowel(unichar c) {
     [tv didChangeText];
     tv.selectedRange = NSMakeRange(after + replacement.length, 0);
     [self.view.window makeFirstResponder:tv];
+    if (!has) {
+        self.status.stringValue = self.improveSwitch.state == NSControlStateValueOn
+            ? L(@"Stress marked: of this phrase’s takes, the one that stresses it will be kept")
+            : L(@"Stress marked. It counts only with ✨ Auto-improve on, which picks the take that stresses it — the model itself ignores marks");
+    }
 }
 
 #pragma mark Actions

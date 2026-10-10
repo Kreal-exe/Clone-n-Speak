@@ -12,6 +12,7 @@ extern NSNotificationName const OVHistoryDidChangeNotification;
 @property (copy) NSString *identifier, *folder, *name, *refText;
 @property (nullable, copy) NSString *language;   // language spoken in the sample (e.g. "uk"); nil = unknown
 @property BOOL languageAuto;                      // the language is detected from the sample, not picked by hand
+@property BOOL accented;                          // the sample has a noticeable accent: its own language is adapted too
 @property (copy) NSDate *created;
 @property double seconds;
 @property (readonly) NSString *referencePath, *promptPath;
@@ -21,7 +22,7 @@ extern NSNotificationName const OVHistoryDidChangeNotification;
 /// Same, for speech in `language`: when it differs from the sample's language (and accent removal is on),
 /// the worker is told where to keep the prompt it adapts to that language.
 - (NSDictionary *)workerSpecForLanguage:(nullable NSString *)language;
-/// Whether speech in `language` goes through accent removal.
+/// Whether speech in `language` goes through accent removal (another language than the sample's, or an accented sample).
 - (BOOL)adaptsToLanguage:(nullable NSString *)language;
 /// Languages this voice has already learned to pronounce (adapted-<code>.npz in its folder).
 @property (readonly) NSArray<NSString *> *adaptedLanguages;

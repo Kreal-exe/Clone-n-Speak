@@ -2,7 +2,7 @@ name: Release
 
 # Releases publish themselves: bump CFBundleShortVersionString in Sources/Info.plist, describe the version in
 # CHANGELOG.md ("## 1.2.3") and push to main. When that version has no tag yet, this workflow runs the tests,
-# builds the DMG, tags vX.Y.Z and publishes the release with the changelog section as its notes.
+# builds the zip, tags vX.Y.Z and publishes the release with the changelog section as its notes.
 # Pushing a v* tag by hand still works (a release that already exists keeps its hand-written notes).
 #
 # Optional signing & notarization — add these repository secrets:
@@ -91,7 +91,7 @@ jobs:
           xcrun notarytool store-credentials notary --apple-id "${{ secrets.APPLE_ID }}" \
             --team-id "${{ secrets.APPLE_TEAM_ID }}" --password "${{ secrets.APPLE_APP_PASSWORD }}"
 
-      - name: Build DMG
+      - name: Build zip
         if: steps.meta.outputs.release == 'true'
         env:
           SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
@@ -99,7 +99,7 @@ jobs:
         run: |
           [ -z "$SIGN_IDENTITY" ] && unset SIGN_IDENTITY
           [ -z "$NOTARY_PROFILE" ] && unset NOTARY_PROFILE
-          ./build.sh --dmg
+          INSTALL_DIR="$RUNNER_TEMP/app" ./build.sh --zip
 
       - name: Publish release
         if: steps.meta.outputs.release == 'true'
@@ -109,6 +109,6 @@ jobs:
           target_commitish: ${{ github.sha }}
           name: Clone'n'Speak ${{ steps.meta.outputs.version }}
           body_path: ${{ steps.meta.outputs.notes }}
-          files: dist/*.dmg
+          files: dist/*.zip
           make_latest: "true"
           generate_release_notes: false

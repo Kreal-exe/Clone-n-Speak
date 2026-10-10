@@ -29,7 +29,7 @@ NSNotificationName const OVHistoryDidChangeNotification = @"OVHistoryDidChange";
 }
 - (NSString *)adaptedSamplePath:(NSString *)language { return [self adaptedPath:language ext:@"wav"]; }
 - (BOOL)adaptsToLanguage:(NSString *)language {
-    return [OVSettings adaptAccent] && language.length && self.language.length && ![language isEqualToString:self.language];
+    return [OVSettings adaptAccent] && language.length && self.language.length && (![language isEqualToString:self.language] || self.accented);
 }
 - (NSDictionary *)workerSpecForLanguage:(NSString *)language {
     if (![self adaptsToLanguage:language]) return self.workerSpec;
@@ -55,6 +55,7 @@ NSNotificationName const OVHistoryDidChangeNotification = @"OVHistoryDidChange";
                                 @"created": self.created ?: NSDate.date, @"seconds": @(self.seconds)} mutableCopy];
     if (self.language.length) d[@"language"] = self.language;
     d[@"languageAuto"] = @(self.languageAuto);
+    if (self.accented) d[@"accented"] = @YES;
     [d writeToFile:[self.folder stringByAppendingPathComponent:@"meta.plist"] atomically:YES];
     // refresh the list first so observers already find this voice in it (reload posts the change notification)
     [[OVVoices shared] reload];
@@ -92,6 +93,7 @@ NSNotificationName const OVHistoryDidChangeNotification = @"OVHistoryDidChange";
         v.language = meta[@"language"];
         // voices made before 1.0.1 had their language picked by hand
         v.languageAuto = meta[@"languageAuto"] ? [meta[@"languageAuto"] boolValue] : v.language == nil;
+        v.accented = [meta[@"accented"] boolValue];
         [list addObject:v];
     }
     [list sortUsingComparator:^NSComparisonResult(OVVoice *a, OVVoice *b) { return [b.created compare:a.created]; }];

@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.0.2
+
+**Ukrainian speech sounds Ukrainian again**
+- Stress marks no longer reach the model. Every mark in the text pulls OmniVoice towards Russian pronunciation:
+  with dictionary marks on every word (the 1.0.1 development builds) Whisper took a Russian-accented clone's Ukrainian
+  for Russian more often than not (P(ru) 0.21 → 0.43, errors 2.1 % → 4.7 %), and even ten hand-placed marks cost a
+  native Ukrainian clone its clarity (errors 1.3 % → 2.9 %, P(uk) 0.79 → 0.67). Measurements in README → Stress.
+- A hand-placed mark (**Stress ´**, ⌘') now works through ✨ Auto-improve: of the takes of that phrase, the one that
+  stresses the marked syllable wins (a hand-marked word weighs three dictionary words in the stress judge). The
+  status line says so when a mark is placed, and reminds you to switch auto-improve on.
+
+**Voices**
+- Ukrainian or Russian sample: both readings are still made, but Whisper's likelihood of each now decides on its own
+  for clean speech (a clean Russian recording reads as Russian at −0.02…−0.05 and as Ukrainian at −0.3; clean
+  Ukrainian the other way round) — no question asked. Only Ukrainian with a heavy Russian accent, where both readings
+  are poor, is cloned as Ukrainian and shown for a choice, with the misheard words highlighted.
+- Accented samples: when Whisper finds a sample's own transcript unlikely (Ukrainian read with a Russian accent),
+  the voice goes through accent removal in its *own* language too before it first speaks it. Measured on such a
+  sample: Whisper took 60 % of its direct Ukrainian for Russian (P(uk) 0.33, errors 5.3 %); after accent removal
+  P(uk) 0.72, errors 2.8 %, likeness to the sample 0.81. The Speech page says so under the voice.
+
 ## 1.0.1
 
 **Ukrainian**
