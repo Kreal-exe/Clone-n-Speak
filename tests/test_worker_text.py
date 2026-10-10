@@ -136,9 +136,33 @@ class UkrainianStress(unittest.TestCase):
         self.assertEqual(worker.encode_stress("ви́шивка", "none"), "вишивка")
         self.assertEqual(worker.encode_stress("ви́шивка", "combining"), "ви́шивка")
 
+    def test_marks_never_reach_the_model(self):
+        self.assertEqual(worker.STRESS_NOTATION, "none")
+        self.assertEqual(worker.encode_stress("Ви́шивка та жака́рд"), "Вишивка та жакард")
+
+    def test_hand_marked_words_weigh_more_in_the_judge(self):
+        targets = worker.stress_targets("Оксамит із ви́шивкою та за́мок.")
+        self.assertEqual(targets, [("оксамит", 3, 1), ("вишивкою", 1, worker.HAND_STRESS_WEIGHT),
+                                   ("замок", 1, worker.HAND_STRESS_WEIGHT)])  # a hand mark settles a heteronym too
+        self.assertEqual(worker.stress_targets("тюль із"), [])  # one-syllable words are not judged
+
     def test_notations_are_invisible_to_the_clarity_check(self):
         for how in ("upper", "plus", "acute", "combining"):
             self.assertEqual(worker.char_error_rate(worker.encode_stress("Ви́шивка та жака́рд", how), "вишивка та жакард"), 0.0)
+
+
+class EastSlavicReadings(unittest.TestCase):
+    """Whisper's fluency of the Ukrainian and the Russian reading of a sample (numbers from real samples)."""
+
+    def test_clean_speech_is_sure(self):
+        self.assertEqual(worker.pick_reading({"uk": -0.333, "ru": -0.044}), ("ru", True))   # Russian recording
+        self.assertEqual(worker.pick_reading({"uk": -0.011, "ru": -0.168}), ("uk", True))   # Ukrainian recording
+
+    def test_accented_ukrainian_is_asked_about(self):
+        # both readings are poor, the Russian gibberish slightly "better": Ukrainian is assumed, the user asked
+        self.assertEqual(worker.pick_reading({"uk": -0.237, "ru": -0.203}), ("uk", False))
+        self.assertEqual(worker.pick_reading({"uk": -0.358, "ru": -0.240}), ("uk", False))
+        self.assertEqual(worker.pick_reading({"uk": -0.10, "ru": -0.05}), ("uk", False))  # too close to call
 
 
 class VoiceStyle(unittest.TestCase):

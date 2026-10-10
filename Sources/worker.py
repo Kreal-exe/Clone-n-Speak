@@ -241,8 +241,10 @@ _TAG_RE = re.compile(r"\[(?:" + "|".join(NONVERBAL_TAGS) + r")\]")
 # Ukrainian word stress
 # --------------------------------------------------------------------------
 STRESS = "́"   # combining acute: виши́вка
-# How a stress is written for the model (see tools/stress_eval.py for the measurement behind the choice).
-STRESS_NOTATION = os.environ.get("OV_STRESS_NOTATION", "combining")
+# How a stress is written for the model. "none": marks never reach it — OmniVoice follows a mark only weakly (56 %)
+# and every mark pushes Ukrainian towards Russian pronunciation (see README → Stress); marks steer the choice of
+# takes in auto-improve instead. Other notations exist for tools/stress_eval.py.
+STRESS_NOTATION = os.environ.get("OV_STRESS_NOTATION", "none")
 _stressifier = None   # (one stress per word, ambiguous words skipped), (all variants) — or False when unavailable
 
 
@@ -960,12 +962,33 @@ def fluency(stt, wav, text, language):
 _EAST_SLAVIC = ("uk", "ru", "be")
 
 
+ACCENT_FLUENCY = -0.12  # Whisper's likelihood of a sample's own transcript below this: accented or slurred speech
+
+
+def pick_reading(fluent):
+    """Which East Slavic reading to trust, from Whisper's fluency of each: (language, sure).
+
+    Measured on eleven samples: a clean Russian recording reads as Russian at -0.02…-0.05 and as Ukrainian at
+    -0.28…-0.33; clean Ukrainian reads as Ukrainian at -0.01…-0.02 and as Russian at -0.15…-0.17 — a clear winner
+    either way. Ukrainian with a Russian accent reads badly both ways (-0.20…-0.36), the Russian gibberish even a
+    little "better": then nothing is sure, Ukrainian (the app's main language) is assumed and the user is asked."""
+    best = max(fluent, key=fluent.get)
+    others = [v for k, v in fluent.items() if k != best]
+    sure = fluent[best] > ACCENT_FLUENCY and (not others or fluent[best] - max(others) > 0.08)
+    return (best if sure else "uk"), sure
+
+
 def east_slavic_readings(stt, wav):
-    """Ukrainian and Russian transcripts of a recording Whisper places in that group — for the user to pick."""
+    """Ukrainian and Russian transcripts of a recording Whisper places in that group, with the language Whisper's
+    fluency points to ("likely") and whether that is beyond doubt ("sure"); None for other languages."""
     ranked = detect_language(stt, wav)
     if ranked[0][0] not in _EAST_SLAVIC:
         return None
-    return {"uk": transcribe_wave(stt, wav, "uk"), "ru": transcribe_wave(stt, wav, "ru")}
+    out = {lang: transcribe_wave(stt, wav, lang) for lang in ("uk", "ru")}
+    fluent = {lang: fluency(stt, wav, out[lang], lang) if out[lang] else -9.0 for lang in ("uk", "ru")}
+    out["likely"], out["sure"] = pick_reading(fluent)
+    out["fluency"] = {k: round(v, 3) for k, v in fluent.items()}
+    return out
 
 
 def transcribe_auto(stt, wav, prefer="uk"):
@@ -973,14 +996,17 @@ def transcribe_auto(stt, wav, prefer="uk"):
 
     Whisper's language guess is useless between Ukrainian, Russian and Belarusian: Ukrainian spoken with any
     Russian accent comes out as "ru" with probability 1.0, and the Russian transcript of it is gibberish
-    ("Остальным часом мы все чистише отрымываем…"), which then ruins the clone. So within that group the
-    preferred language (Ukrainian — the app's main one, or the language of the text the user typed) wins;
-    the Voices page shows the choice and a wrong one is fixed with one click. Other languages: when Whisper
-    is unsure, both readings are transcribed and the one it finds more convincing wins."""
+    ("Остальным часом мы все чистише отрымываем…"), which then ruins the clone. So within that group both
+    readings are made and Whisper's fluency decides when it can (pick_reading); otherwise the preferred language
+    (Ukrainian — the app's main one, or the language of the text the user typed) wins; the Voices page shows the
+    choice and a wrong one is fixed with one click. Other languages: when Whisper is unsure, both readings are
+    transcribed and the one it finds more convincing wins."""
     ranked = detect_language(stt, wav)
     (lang, p1), (second, p2) = ranked[0], ranked[1]
     if lang in _EAST_SLAVIC and prefer in _EAST_SLAVIC:
-        return transcribe_wave(stt, wav, prefer), prefer
+        readings = east_slavic_readings(stt, wav)
+        lang = readings["likely"] if readings["sure"] else prefer
+        return readings.get(lang) or transcribe_wave(stt, wav, lang), lang
     text = transcribe_wave(stt, wav, lang)
     if lang in _EAST_SLAVIC:
         prefer = None
@@ -1373,7 +1399,11 @@ def cmd_transcribe(req):
     wav = load_mono(req["audio"])
     readings = _readings(req, wav)
     if readings:
-        return _check_words({"text": readings["uk"], "language": "uk", "readings": readings}, readings["uk"], "uk")
+        lang = readings["likely"]
+        result = {"text": readings[lang], "language": lang}
+        if not readings["sure"]:
+            result["readings"] = readings  # the app asks
+        return _check_words(result, readings[lang], lang)
     text, language = _listen(req, wav, req.get("language"))
     return _check_words({"text": text, "language": language}, text, language)
 
@@ -1409,10 +1439,12 @@ def cmd_clone(req):
     heard = None
     readings = _readings(req, wav) if auto and not ref_text and req.get("asr_path") else None
     if readings:
-        # Whisper can't tell accented Ukrainian from Russian: clone as Ukrainian, the app asks which it was
-        heard = ref_text = readings["uk"]
-        language = "uk"
-        result["readings"] = readings
+        # Whisper can't tell accented Ukrainian from Russian; its fluency can, for clean speech. When it can't,
+        # the sample is cloned as Ukrainian and the app asks which it was.
+        language = readings["likely"]
+        heard = ref_text = readings[language]
+        if not readings["sure"]:
+            result["readings"] = readings
         emit("transcript", text=ref_text)
     elif not ref_text or (req.get("asr_path") and req.get("check_text", True)):
         # a transcript that doesn't match the recording is the #1 cause of bad clones — check it
@@ -1420,6 +1452,12 @@ def cmd_clone(req):
         if not ref_text:
             ref_text = heard
             emit("transcript", text=ref_text)
+    if req.get("asr_path") and language in _EAST_SLAVIC and ref_text:
+        # Ukrainian with a Russian accent cloned as Ukrainian speaks Ukrainian with that accent (Whisper takes 60 %
+        # of it for Russian); the app then runs accent removal for the sample's own language too (see ensure_adapted)
+        stt = ensure_stt(req.get("asr_path"), req.get("low_memory"), req.get("asr_bits") or 8)
+        fl = fluency(stt, wav, ref_text, language)
+        result["accent"] = {"fluency": round(fl, 3), "accented": fl < ACCENT_FLUENCY}
     tts = ensure_tts(dict(req["model"], low_memory=bool(req.get("low_memory"))))
     status(T("Creating the voice profile…"))
     tokens = build_prompt(tts, audio, ref_text)
@@ -1506,30 +1544,43 @@ def _plain_word(w):
     return re.sub(r"[^а-яіїєґ']", "", w.replace("’", "'").replace("ʼ", "'"))
 
 
-def stress_agreement(stt, wav, text):
-    """Share of dictionary-stressed words (2+ syllables) spoken with that stress, or None when there are none."""
-    marked = []
-    for tok in stress_uk_text(text).split():
-        tok = unicodedata.normalize("NFC", tok)
+HAND_STRESS_WEIGHT = 3  # a word the user marked by hand counts as this many dictionary words in the judge
+
+
+def stress_targets(text):
+    """Words of a Ukrainian text whose stress a take is judged on: [(plain word, stressed syllable 1-based, weight)].
+    Dictionary words with a single known stress weigh 1; words the user marked by hand weigh HAND_STRESS_WEIGHT —
+    the mark never reaches the model, so the take that happens to stress that syllable has to win here."""
+    out = []
+    for tok in stress_uk_text(unicodedata.normalize("NFC", text)).split():
         plain = _plain_word(tok)
         if sum(c in _VOWELS for c in plain) < 2 or tok.count(STRESS) != 1:
             continue
+        hand = STRESS in text and any(_plain_word(t) == plain and STRESS in t
+                                      for t in unicodedata.normalize("NFC", text).split())
         before = _plain_word(tok[: tok.index(STRESS)])
-        marked.append((plain, sum(c in _VOWELS for c in before)))
+        out.append((plain, sum(c in _VOWELS for c in before), HAND_STRESS_WEIGHT if hand else 1))
+    return out
+
+
+def stress_agreement(stt, wav, text):
+    """Weighted share of the words in stress_targets() spoken with that stress, or None when there are none
+    (or none could be judged)."""
+    marked = stress_targets(text)
     if not marked:
         return None
     res = stt.generate(_resample_16k(wav), language="uk", word_timestamps=True, temperature=0.0)
     heard = [(_plain_word(w["word"]), float(w["start"]), float(w["end"])) for sg in (res.segments or []) for w in sg.get("words", [])]
     hits = total = j = 0
-    for word, truth in marked:
+    for word, truth, weight in marked:
         for k in range(j, len(heard)):
             if heard[k][0] == word:
                 j = k + 1
                 a, b = max(0, int((heard[k][1] - 0.02) * SR)), min(len(wav), int((heard[k][2] + 0.02) * SR))
                 got = stressed_syllable(wav[a:b], sum(c in _VOWELS for c in word)) if b - a > SR * 0.08 else 0
                 if got:
-                    total += 1
-                    hits += got == truth
+                    total += weight
+                    hits += weight * (got == truth)
                 break
     return hits / total if total else None
 
@@ -1577,9 +1628,9 @@ def _speak(tts, text, language, prompt, gen, speed=1.0, seed=None, pitch=0.0, me
     if seed is not None:
         mx.random.seed(seed)
     plain = text.replace(STRESS, "")  # the pace is estimated from the letters, not the marks
-    # Only marks placed by hand reach the model. Dictionary marks on every word were tried and hurt:
-    # on two Ukrainian clones Whisper's error rate went 4.3 % → 5.9 % (text) → 7.9 % (text + sample transcript),
-    # 1.0 % → 4.3 % → 8.3 % on the other, with no gain in stress placement. See README → Stress.
+    # No stress marks reach the model (STRESS_NOTATION = "none"): marks on every word turned a Ukrainian clone
+    # Russian-sounding (Whisper: P(ru) 0.21 → 0.43, errors 2.1 % → 4.7 %), and even hand-placed ones cost a native
+    # Ukrainian voice its clarity (errors 1.3 % → 2.9 %). Hand-placed marks pick the take instead (score_take).
     text = encode_stress(text)
     kw = dict(gen)
     # a pitch change is "speak slower, play faster" (see change_pitch): the model's own pace absorbs it

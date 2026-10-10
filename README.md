@@ -58,11 +58,12 @@ The app shows the engine's memory and the free memory live, and on Macs with les
 - **✨ Auto-improve**: every phrase is spoken several times and the best take is kept — the one with the fewest
   recognition errors, the most native pronunciation (Whisper's likelihood of the text, which also catches a Russian
   «и» in Ukrainian), the most like the sample and, for Ukrainian, with the most words on their dictionary stress.
-- **Stress marks**: select a vowel and press **Stress ´** (⌘') — `виши́вка` — to fix a misplaced stress. Only marks
-  you place reach the model: marking every word from a dictionary was tried and made Ukrainian worse
-  ([measured below](#stress)). The dictionary is used to judge takes instead.
-- **Sample checks for Ukrainian**: Whisper can't tell accented Ukrainian from Russian, so the app shows both readings
-  and asks; words of the transcript that aren't in the Ukrainian dictionary (misheard ones) are highlighted;
+- **Stress marks**: select a vowel and press **Stress ´** (⌘') — `виши́вка` — to fix a misplaced stress. The mark
+  steers ✨ Auto-improve: of the takes of that phrase, the one that stresses the marked syllable wins. No mark is
+  sent to the model: marks in the text make Ukrainian sound Russian ([measured below](#stress)).
+- **Sample checks for Ukrainian**: Whisper can't tell accented Ukrainian from Russian, so the app makes both readings;
+  Whisper's likelihood of each settles clean speech by itself, and only an accented sample is shown for a choice; an
+  accented sample also learns clean pronunciation in its own language (accent removal, once per voice); words of the transcript that aren't in the Ukrainian dictionary (misheard ones) are highlighted;
   Russian letters typed into Ukrainian text (`оксамыт`) are fixed.
 - **Ukrainian text preparation**: years (`у 2025 р.` → *у дві тисячі двадцять п'ятому році*), numbers with units in the
   right grammatical form (`21 грн` → *двадцять одна гривня*), abbreviations, apostrophes.
@@ -186,20 +187,23 @@ voice, different people ≈ 0.1–0.4):
 
 OmniVoice was not trained on stress marks. A paired test on a cloned voice (same seed, the combining acute moved
 between two syllables of 12 words) shows it follows a mark weakly: the marked syllable comes out stressed 56 % of
-the time; upper-case vowels (`вИшивка`) and `+` (`в+ишивка`) do nothing. So a hand-placed mark is worth trying on
-a stubborn word — and that is all the marks are good for. Marking *every* word from the
-[lang-uk dictionary](https://github.com/lang-uk/ukrainian-word-stress) was tried and made things worse on two Ukrainian
-clones, six sentences, two seeds each:
+the time; upper-case vowels (`вИшивка`) and `+` (`в+ишивка`) do nothing. Worse, a mark in the text pulls the
+pronunciation towards Russian — the language whose texts carry stress marks. Measured on four Ukrainian sentences,
+two seeds each, with Whisper as the judge (how sure it is the speech is Ukrainian, its error rate, and the
+likelihood it gives the text — the closer to 0, the more native the speech sounds):
 
-| Marks | Whisper errors, clone A | clone B | Words on dictionary stress |
-|---|---|---|---|
-| none (current) | **4.3 %** | **1.0 %** | 44 % / 60 % |
-| on every word of the text | 5.9 % | 4.3 % | 42 % / 58 % |
-| …and in the sample's transcript | 7.9 % | 8.3 % | 38 % / 58 % |
+| Marks in the text | Native Ukrainian clone: P(uk) · errors · likelihood | Russian-accented clone: P(uk) / P(ru) · errors |
+|---|---|---|
+| none (current) | **0.79 · 1.3 % · −0.17** | 0.61 / 0.21 · 2.1 % |
+| only the ten placed by hand | 0.67 · 2.9 % · −0.29 | 0.61 / 0.24 · 1.8 % |
+| on every word, from the [lang-uk dictionary](https://github.com/lang-uk/ukrainian-word-stress) | 0.73 · 3.7 % · −0.38 | 0.41 / **0.43** · 4.7 % |
 
-The dictionary still has a job: with auto-improve on, each phrase's takes are judged for stress against it
-(vowel length, loudness and pitch inside Whisper's word timestamps — right 64 % of the time on real speech), as one
-of four votes next to recognition errors, Whisper's likelihood of the text and likeness to the sample.
+Dictionary marks on every word turned the accented clone's Ukrainian into something Whisper takes for Russian more
+often than not — that was release 1.0.1's "stress fight", and it is why no mark reaches the model any more. A
+hand-placed mark now works through auto-improve instead: each take of the phrase is judged for stress (vowel length,
+loudness and pitch inside Whisper's word timestamps — right 64 % of the time on real speech), a hand-marked word
+counting three times a dictionary word, and the judged stress is one of four votes next to recognition errors,
+Whisper's likelihood of the text and likeness to the sample.
 
 ### Other engines tried
 
@@ -278,10 +282,13 @@ Clone'n'Speak — небольшое нативное macOS-приложение
   распознавания, самым «родным» произношением (ловит и русское «и» в украинском), больше всего похожий на образец и,
   для украинского, с ударениями по словарю.
 - **Ударения**: выделите гласную и нажмите **«Ударение ´»** (⌘') — `виши́вка`, — чтобы исправить неверное ударение.
-  До модели доходят только ваши пометки: пометки на каждом слове из словаря пробовались и сделали украинский хуже
-  (замеры — в разделе [Stress](#stress)). Словарь используется для оценки дублей.
-- **Проверка образца для украинского**: Whisper не отличает украинский с акцентом от русского — приложение показывает
-  оба варианта расшифровки и спрашивает; слова расшифровки, которых нет в украинском словаре, подсвечиваются;
+  Пометка управляет ✨ автоулучшением: из дублей фразы остаётся тот, где ударение падает на этот слог. В модель
+  пометки не передаются — ударения в тексте делают украинскую речь русской по звучанию (замеры — в разделе
+  [Stress](#stress)).
+- **Проверка образца для украинского**: Whisper не отличает украинский с акцентом от русского — приложение делает
+  обе расшифровки, по правдоподобию Whisper само узнаёт чистую русскую или украинскую речь, а в сомнительном случае
+  показывает оба варианта и спрашивает; образец с акцентом учится чистому произношению и на своём языке (снятие
+  акцента, один раз для голоса); слова расшифровки, которых нет в украинском словаре, подсвечиваются;
   русские буквы в украинском тексте (`оксамыт`) исправляются.
 - **Подготовка украинского текста**: годы, числа с единицами в правильной форме, сокращения, апострофы.
 - **LoRA-адаптеры и дообученные модели** с Hugging Face находятся сами, выбранные скачиваются, вливаются и

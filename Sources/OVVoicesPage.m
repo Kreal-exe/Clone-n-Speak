@@ -779,6 +779,7 @@ static const NSTimeInterval kMaxRecord = 15;
         v.refText = data[@"ref_text"] ?: text;
         v.seconds = [data[@"seconds"] doubleValue] ?: v.seconds;
         [w voice:v heardLanguage:data[@"language"]];
+        v.accented = [data[@"accent"][@"accented"] boolValue];
         [v save];
         [NSUserDefaults.standardUserDefaults setObject:v.identifier forKey:@"voice"];
         [fm removeItemAtPath:[v.folder stringByAppendingPathComponent:@"preview.wav"] error:nil];
@@ -826,7 +827,9 @@ static const NSTimeInterval kMaxRecord = 15;
             [a addButtonWithTitle:L(@"Keep as is")];
             if ([a runModal] == NSAlertFirstButtonReturn) { [w flagWords:odd]; return; }
         }
-        w.status.stringValue = L(@"Done! The voice is selected on the Speech page.");
+        w.status.stringValue = v.accented
+            ? L(@"Done! The sample has a noticeable accent: before its first speech in its own language the voice learns clean pronunciation (about two minutes, once). The voice is selected on the Speech page.")
+            : L(@"Done! The voice is selected on the Speech page.");
         [w makePreviewFor:v trimmed:trimmed.length > 0];
     }];
 }
