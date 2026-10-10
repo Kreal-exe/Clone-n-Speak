@@ -1,95 +1,113 @@
-#!/bin/zsh
-# Builds "Clone'n'Speak.app" with clang — Xcode is not required, the Command Line Tools are enough.
+#!/bin/bash
+# Builds Clone'n'Speak and installs it into /Applications. Only the Command Line Tools are needed.
 #
-#   ./build.sh                 → build/Clone'n'Speak.app (ad-hoc signed)
-#   ./build.sh --run           → build and launch
-#   ./build.sh --dmg           → also dist/CloneNSpeak-<version>.dmg for publishing
+#   ./build.sh          build and install (relaunches the app if it was running)
+#   ./build.sh --test   run the Python tests first
+#   ./build.sh --zip    also write dist/CloneNSpeak-v<version>.zip for a release
 #
-# Publishing with a Developer ID (no Gatekeeper warning for users):
-#   SIGN_IDENTITY="Developer ID Application: Name (TEAMID)" NOTARY_PROFILE=notary ./build.sh --dmg
-#   (create the profile once: xcrun notarytool store-credentials notary --apple-id … --team-id …)
+# INSTALL_DIR=~/Applications ./build.sh installs somewhere else.
+# SIGN_IDENTITY="Developer ID Application: …" signs for distribution (default: ad-hoc);
+# with NOTARY_PROFILE=<notarytool keychain profile> the --zip is notarized and stapled too.
 set -euo pipefail
-cd "$(dirname "$0")"
-
+ROOT="$(cd "$(dirname "$0")" && pwd)"
 NAME="Clone'n'Speak"
-SLUG="CloneNSpeak"
-SRC=Sources
-BUILD=build
-FINAL="$BUILD/$NAME.app"
-# Built and signed in a temporary folder, swapped into place at the end (safe while the app is running).
-# Not inside the project: in a synced folder (iCloud Drive's Documents, Dropbox…) the file provider tags
-# bundles with Finder attributes, and codesign refuses to sign "detritus".
-OBJ="$(mktemp -d "${TMPDIR:-/tmp}/clonenspeak.XXXXXX")"
-trap 'rm -rf "$OBJ"' EXIT
-APP="$OBJ/stage/$NAME.app"
-VERSION=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" "$SRC/Info.plist")
-SIGN_IDENTITY="${SIGN_IDENTITY:--}"
-FRAMEWORKS=(-framework Cocoa -framework AVFAudio -framework AVFoundation -framework UniformTypeIdentifiers -framework NaturalLanguage -framework QuartzCore)
+BUNDLE_ID="com.clonenspeak.mac"
+VERSION="$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" "$ROOT/Sources/Info.plist")"
+DEST="${INSTALL_DIR:-/Applications}"
+SIGN="${SIGN_IDENTITY:--}"
+TEST=0; ZIP=0
+for arg in "$@"; do
+  case "$arg" in
+    --test) TEST=1 ;;
+    --zip)  ZIP=1 ;;
+    *) echo "Unknown option: $arg" >&2; exit 1 ;;
+  esac
+done
 
-rm -rf "$BUILD/obj"   # left by earlier versions of this script
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$BUILD"
+python3 "$ROOT/tools/strings.py" check
 
-echo "▶ Translations"
-python3 tools/strings.py check
+if [ "$TEST" = 1 ]; then
+  # The tests need num2words/numpy/scipy; the app's own runtime has them once it has been set up.
+  PY="${PYTHON:-$HOME/Library/Application Support/$NAME/runtime/.venv/bin/python}"
+  [ -x "$PY" ] || PY=python3
+  (cd "$ROOT" && "$PY" -m unittest discover -s tests)
+fi
 
-echo "▶ Compile ($VERSION)"
-clang -fobjc-arc -O2 -mmacosx-version-min=13.0 -arch arm64 -Wall -Werror "${FRAMEWORKS[@]}" \
-  "$SRC"/*.m -o "$APP/Contents/MacOS/$NAME"
+# Build outside the project: synced folders (iCloud Documents) attach extended
+# attributes to everything, and codesign refuses bundles that carry them.
+OUT="$(mktemp -d -t clonenspeak)"
+trap 'rm -rf "$OUT"' EXIT
+APP="$OUT/$NAME.app"
+RES="$APP/Contents/Resources"
 
-echo "▶ Resources"
-cp "$SRC/Info.plist" "$APP/Contents/Info.plist"
-cp "$SRC/worker.py" "$APP/Contents/Resources/worker.py"
-for lproj in Resources/*.lproj; do
-  mkdir -p "$APP/Contents/Resources/${lproj:t}"
-  cp "$lproj"/*.strings "$APP/Contents/Resources/${lproj:t}/"
+echo "Building $NAME $VERSION..."
+mkdir -p "$APP/Contents/MacOS" "$RES" "$OUT/AppIcon.iconset"
+
+clang -fobjc-arc -O2 -mmacosx-version-min=13.0 -arch arm64 -Wall -Werror \
+  -framework Cocoa -framework AVFAudio -framework AVFoundation -framework UniformTypeIdentifiers \
+  -framework NaturalLanguage -framework QuartzCore \
+  "$ROOT"/Sources/*.m -o "$APP/Contents/MacOS/$NAME"
+
+cp "$ROOT/Sources/Info.plist" "$APP/Contents/Info.plist"
+cp "$ROOT/Sources/worker.py" "$RES/worker.py"   # the app copies it into its Python runtime
+for lproj in "$ROOT"/Resources/*.lproj; do
+  mkdir -p "$RES/$(basename "$lproj")"
+  cp "$lproj"/*.strings "$RES/$(basename "$lproj")/"
 done
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 
-echo "▶ Icon"
-clang -fobjc-arc -mmacosx-version-min=13.0 -framework Cocoa tools/make_icon.m -o "$OBJ/make_icon"
-"$OBJ/make_icon" "$OBJ/icon_1024.png"
-ICONSET="$OBJ/AppIcon.iconset"
-mkdir -p "$ICONSET"
+# The icon is drawn in code.
+clang -fobjc-arc -mmacosx-version-min=13.0 -framework Cocoa "$ROOT/tools/make_icon.m" -o "$OUT/make_icon"
+"$OUT/make_icon" "$OUT/icon.png"
 for s in 16 32 128 256 512; do
-  sips -z $s $s "$OBJ/icon_1024.png" --out "$ICONSET/icon_${s}x${s}.png" >/dev/null
-  sips -z $((s*2)) $((s*2)) "$OBJ/icon_1024.png" --out "$ICONSET/icon_${s}x${s}@2x.png" >/dev/null
+  sips -z $s $s "$OUT/icon.png" --out "$OUT/AppIcon.iconset/icon_${s}x${s}.png" >/dev/null
+  sips -z $((s*2)) $((s*2)) "$OUT/icon.png" --out "$OUT/AppIcon.iconset/icon_${s}x${s}@2x.png" >/dev/null
 done
-iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
+iconutil -c icns "$OUT/AppIcon.iconset" -o "$RES/AppIcon.icns"
 
-echo "▶ Sign (${SIGN_IDENTITY})"
-xattr -cr "$APP"
-if [[ "$SIGN_IDENTITY" == "-" ]]; then
-  codesign --force --sign - --entitlements "$SRC/CloneNSpeak.entitlements" "$APP"
+# Ad-hoc signature unless a Developer ID is given; the entitlement allows the microphone.
+if [ "$SIGN" = "-" ]; then
+  codesign --force --sign - --entitlements "$ROOT/Sources/CloneNSpeak.entitlements" "$APP"
 else
-  codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" \
-    --entitlements "$SRC/CloneNSpeak.entitlements" "$APP"
+  codesign --force --options runtime --timestamp --sign "$SIGN" \
+    --entitlements "$ROOT/Sources/CloneNSpeak.entitlements" "$APP"
 fi
 codesign --verify --strict "$APP"
 
-if [[ " $* " == *" --dmg "* ]]; then
-  mkdir -p dist
-  DMG="dist/$SLUG-$VERSION.dmg"
-  STAGE="$OBJ/dmg"
-  rm -rf "$DMG"
-  mkdir -p "$STAGE"
-  cp -R "$APP" "$STAGE/"
-  ln -s /Applications "$STAGE/Applications"
-  hdiutil create -volname "$NAME" -srcfolder "$STAGE" -ov -format UDZO "$DMG" >/dev/null
-  if [[ "$SIGN_IDENTITY" != "-" ]]; then
-    codesign --sign "$SIGN_IDENTITY" --timestamp "$DMG"
-    if [[ -n "${NOTARY_PROFILE:-}" ]]; then
-      xcrun notarytool submit "$DMG" --keychain-profile "$NOTARY_PROFILE" --wait
-      xcrun stapler staple "$DMG"
-    fi
+if [ "$ZIP" = 1 ]; then
+  mkdir -p "$ROOT/dist"
+  ZIPFILE="$ROOT/dist/CloneNSpeak-v$VERSION.zip"
+  rm -f "$ZIPFILE"
+  ditto -c -k --norsrc --keepParent "$APP" "$ZIPFILE"
+  if [ "$SIGN" != "-" ] && [ -n "${NOTARY_PROFILE:-}" ]; then
+    xcrun notarytool submit "$ZIPFILE" --keychain-profile "$NOTARY_PROFILE" --wait
+    xcrun stapler staple "$APP"
+    rm -f "$ZIPFILE"
+    ditto -c -k --norsrc --keepParent "$APP" "$ZIPFILE"
   fi
-  echo "✔ $DMG"
+  echo "Release zip: $ZIPFILE"
 fi
 
-rm -rf "$FINAL"
-mv "$APP" "$FINAL"
-APP="$FINAL"
-echo "✔ $APP"
-
-if [[ " $* " == *" --run "* ]]; then
-  open "$APP"
+# Quit a running copy first (the app may ask to finish a generation; if it stays open, stop).
+WAS_RUNNING=0
+if pgrep -f "$DEST/$NAME.app/Contents/MacOS/" >/dev/null 2>&1; then
+  WAS_RUNNING=1
+  echo "Quitting the running $NAME..."
+  osascript -e "tell application id \"$BUNDLE_ID\" to quit" >/dev/null 2>&1 || true
+  for _ in $(seq 1 50); do
+    pgrep -f "$DEST/$NAME.app/Contents/MacOS/" >/dev/null 2>&1 || break
+    sleep 0.2
+  done
+  if pgrep -f "$DEST/$NAME.app/Contents/MacOS/" >/dev/null 2>&1; then
+    echo "$NAME is still running. Quit it and run the build again." >&2
+    exit 1
+  fi
 fi
+
+mkdir -p "$DEST"
+rm -rf "$DEST/$NAME.app"
+ditto "$APP" "$DEST/$NAME.app"
+echo "Installed: $DEST/$NAME.app"
+
+[ "$WAS_RUNNING" = 1 ] && open "$DEST/$NAME.app"
+exit 0
