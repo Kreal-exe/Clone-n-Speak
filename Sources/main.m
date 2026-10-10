@@ -345,6 +345,7 @@
             v.language = d[@"language"];  // auto-detected; a text in another language then goes through accent removal
             v.refText = d[@"ref_text"] ?: v.refText;
             v.seconds = [d[@"seconds"] doubleValue] ?: v.seconds;
+            v.accented = [d[@"accent"][@"accented"] boolValue];
             [v save];
             NSString *text = env[@"OV_SELFTEST_SPEAK"] ?: @"Привіт! Це перевірка нового рушія на Apple Silicon.";
             NSString *out = [[OVHistory shared] newOutputPathForText:text];

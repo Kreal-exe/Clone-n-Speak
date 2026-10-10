@@ -46,6 +46,7 @@ static const NSTimeInterval kMaxRecord = 15;
 
 @property (nullable) OVVoice *voice;          // nil = drafting a new voice
 @property (nullable) AVAudioRecorder *recorder;
+@property (nullable, copy) NSString *recordingVoiceId;  // the voice a recording belongs to ("" = a new voice)
 @property (nullable) NSTimer *recTimer;
 @end
 
@@ -317,7 +318,10 @@ static const NSTimeInterval kMaxRecord = 15;
 
 /// Saves a freshly recorded / imported sample to disk right away, so nothing is lost
 /// if the app quits before cloning.
-- (BOOL)keepSample:(NSString *)wav {
+- (BOOL)keepSample:(NSString *)wav { return [self keepSample:wav fresh:NO]; }
+
+/// `fresh`: a new recording or import, not the improved or restored version of the current one.
+- (BOOL)keepSample:(NSString *)wav fresh:(BOOL)fresh {
     NSFileManager *fm = NSFileManager.defaultManager;
     if (!self.voice) {
         NSString *name = [self.nameField.stringValue stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
@@ -329,6 +333,9 @@ static const NSTimeInterval kMaxRecord = 15;
     }
     NSString *dst = self.voice.ready ? [self pendingPath] : self.voice.referencePath;
     [fm removeItemAtPath:dst error:nil];
+    // The kept original belonged to the sample being replaced; a stale one would later be
+    // "restored" instead of this sample, and would stop a long new recording from being kept.
+    if (fresh) [fm removeItemAtPath:[self originalPath] error:nil];
     NSError *err = nil;
     if (![fm copyItemAtPath:wav toPath:dst error:&err]) {
         self.status.stringValue = [NSString stringWithFormat:L(@"Couldn’t save the sample: %@"), err.localizedDescription ?: @"?"];
@@ -429,7 +436,7 @@ static const NSTimeInterval kMaxRecord = 15;
     }
     if (!self.voice && [self.nameField.stringValue hasPrefix:[L(@"Voice %lu") componentsSeparatedByString:@"%"].firstObject])
         self.nameField.stringValue = src.lastPathComponent.stringByDeletingPathExtension;
-    BOOL kept = [self keepSample:dst];
+    BOOL kept = [self keepSample:dst fresh:YES];
     [NSFileManager.defaultManager removeItemAtPath:dst error:nil];
     if (kept) self.status.stringValue = L(@"Sample saved. Check the text and click “Clone voice”.");
     [self refreshButtons];
@@ -462,6 +469,7 @@ static const NSTimeInterval kMaxRecord = 15;
         self.recorder = nil;
         return;
     }
+    self.recordingVoiceId = self.voice.identifier ?: @"";
     self.status.stringValue = L(@"Speak naturally in a quiet room. Recording stops automatically after 15 s.");
     __weak typeof(self) w = self;
     self.recTimer = [NSTimer scheduledTimerWithTimeInterval:0.2 repeats:YES block:^(NSTimer *t) {
@@ -482,8 +490,16 @@ static const NSTimeInterval kMaxRecord = 15;
         self.recordButton.image = [NSImage imageWithSystemSymbolName:@"mic.fill" accessibilityDescription:nil];
         NSString *path = r.url.path;
         self.recorder = nil;
+        // Another voice (or a new one) was opened while recording: this take isn't its sample.
+        BOOL sameVoice = [(self.voice.identifier ?: @"") isEqualToString:self.recordingVoiceId ?: @""];
+        self.recordingVoiceId = nil;
+        if (!sameVoice) {
+            [NSFileManager.defaultManager removeItemAtPath:path error:nil];
+            [self refreshButtons];
+            return;
+        }
         if (ok && OVAudioDuration(path) > 0.5) {
-            if ([self keepSample:path])
+            if ([self keepSample:path fresh:YES])
                 self.status.stringValue = L(@"Recording saved. Listen to it and enter (or transcribe) the text.");
         } else {
             self.status.stringValue = L(@"Recording failed.");
@@ -598,9 +614,12 @@ static const NSTimeInterval kMaxRecord = 15;
     NSFileManager *fm = NSFileManager.defaultManager;
     if (![fm fileExistsAtPath:[self originalPath]]) [fm copyItemAtPath:audio toPath:[self originalPath] error:nil];
     NSString *tmp = [self draftPath:[NSUUID.UUID.UUIDString stringByAppendingPathExtension:@"wav"]];
+    NSString *vid = self.voice.identifier;
     self.status.stringValue = L(@"Cleaning the sample…");
     __weak typeof(self) w = self;
     [[OVWorker shared] request:@{@"cmd": @"enhance", @"audio": audio, @"out": tmp} status:nil progress:nil done:^(NSDictionary *data, NSString *error) {
+        // Another voice was opened meanwhile: the cleaned sample belongs to the old one, drop it.
+        if (![w.voice.identifier isEqualToString:vid]) { [NSFileManager.defaultManager removeItemAtPath:tmp error:nil]; return; }
         if (error) { w.status.stringValue = error; return; }
         if ([w keepSample:tmp]) {
             w.analysis[[w analysisKey:[w currentAudio]]] = data;
@@ -779,6 +798,7 @@ static const NSTimeInterval kMaxRecord = 15;
         v.refText = data[@"ref_text"] ?: text;
         v.seconds = [data[@"seconds"] doubleValue] ?: v.seconds;
         [w voice:v heardLanguage:data[@"language"]];
+        v.accented = [data[@"accent"][@"accented"] boolValue];
         [v save];
         [NSUserDefaults.standardUserDefaults setObject:v.identifier forKey:@"voice"];
         [fm removeItemAtPath:[v.folder stringByAppendingPathComponent:@"preview.wav"] error:nil];
@@ -826,7 +846,9 @@ static const NSTimeInterval kMaxRecord = 15;
             [a addButtonWithTitle:L(@"Keep as is")];
             if ([a runModal] == NSAlertFirstButtonReturn) { [w flagWords:odd]; return; }
         }
-        w.status.stringValue = L(@"Done! The voice is selected on the Speech page.");
+        w.status.stringValue = v.accented
+            ? L(@"Done! The sample has a noticeable accent: before its first speech in its own language the voice learns clean pronunciation (about two minutes, once). The voice is selected on the Speech page.")
+            : L(@"Done! The voice is selected on the Speech page.");
         [w makePreviewFor:v trimmed:trimmed.length > 0];
     }];
 }
