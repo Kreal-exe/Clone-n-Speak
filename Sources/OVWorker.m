@@ -8,6 +8,7 @@
 
 NSNotificationName const OVWorkerDidChangeNotification = @"OVWorkerDidChange";
 NSNotificationName const OVWorkerMemoryDidChangeNotification = @"OVWorkerMemoryDidChange";
+NSNotificationName const OVWorkerEventNotification = @"OVWorkerEvent";
 
 @interface OVWorker ()
 @property (nullable) NSTask *task;
@@ -172,6 +173,8 @@ NSNotificationName const OVWorkerMemoryDidChangeNotification = @"OVWorkerMemoryD
         [self clearRequest];
         if ([kind isEqualToString:@"error"]) [[OVRuntime shared] log:[NSString stringWithFormat:L(@"Error: %@"), ev[@"msg"] ?: @"?"]];
         if (done) done(ev[@"data"], [kind isEqualToString:@"error"] ? (ev[@"msg"] ?: L(@"Error")) : nil);
+    } else if (kind) {
+        [NSNotificationCenter.defaultCenter postNotificationName:OVWorkerEventNotification object:self userInfo:ev];
     }
 }
 

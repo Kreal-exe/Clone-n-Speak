@@ -4,6 +4,7 @@ NS_ASSUME_NONNULL_BEGIN
 
 extern NSNotificationName const OVWorkerDidChangeNotification;        // started / busy / finished / status
 extern NSNotificationName const OVWorkerMemoryDidChangeNotification;  // the once-a-second memory sample
+extern NSNotificationName const OVWorkerEventNotification;            // any other event of the request (userInfo: the event)
 
 typedef void (^OVWorkerStatus)(NSString *msg);
 typedef void (^OVWorkerProgress)(double value);

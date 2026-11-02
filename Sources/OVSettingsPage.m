@@ -50,6 +50,7 @@
     self.seedField.stringValue = [NSString stringWithFormat:@"%ld", (long)[NSUserDefaults.standardUserDefaults integerForKey:@"seed"]];
     self.seedField.target = self;
     self.seedField.action = @selector(seedChanged:);
+    self.seedField.cell.sendsActionOnEndEditing = YES;  // saved when focus leaves too, not only on Return
     [self.seedField.widthAnchor constraintEqualToConstant:90].active = YES;
     NSStackView *seedLeft = OVVStack(@[OVLabel(@"Seed", 13, NSFontWeightMedium, nil),
                                        OVWrapLabel(L(@"-1 gives a different result each time. A number gives a repeatable result."), 11, nil)], 2);

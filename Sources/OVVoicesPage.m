@@ -123,6 +123,9 @@ static const NSTimeInterval kMaxRecord = 15;
     self.refText.textContainerInset = NSMakeSize(6, 6);
     self.refText.delegate = self;
     self.refText.automaticQuoteSubstitutionEnabled = NO;
+    self.refText.automaticDashSubstitutionEnabled = NO;
+    self.refText.automaticTextReplacementEnabled = NO;
+    self.refText.automaticSpellingCorrectionEnabled = NO;  // the transcript must stay word for word what was said
     ts.borderType = NSBezelBorder;
     [ts.heightAnchor constraintEqualToConstant:84].active = YES;
     self.transcribeButton = OVButton(L(@"Transcribe automatically"), self, @selector(transcribe:));
@@ -279,11 +282,14 @@ static const NSTimeInterval kMaxRecord = 15;
 - (void)showVoice:(OVVoice *)v {
     self.status.textColor = NSColor.secondaryLabelColor;
     [self stopRecording];
+    // every keystroke saves the voice, and saving reloads the list, which shows the voice again: leave the field
+    // being typed in alone, or it loses a trailing space, the cursor jumps to the end and undo breaks
+    BOOL same = [v.identifier isEqualToString:self.voice.identifier];
     self.voice = v;
     self.heading.stringValue = v.name ?: @"";
-    self.nameField.stringValue = v.name ?: @"";
+    if (!(same && self.nameField.currentEditor)) self.nameField.stringValue = v.name ?: @"";
     [self showSampleLanguage:v.language isAuto:v.languageAuto];
-    self.refText.string = v.refText ?: @"";
+    if (!(same && self.view.window.firstResponder == self.refText)) self.refText.string = v.refText ?: @"";
     self.status.stringValue = [self hasPending] ? L(@"New sample saved. Click “Re-clone voice” to apply it.") :
                               v.ready ? L(@"The voice is ready — you can select it on the Speech page.") :
                                         L(@"Sample saved. Enter the sample text and click “Clone voice”.");

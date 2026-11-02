@@ -29,7 +29,48 @@ NSNotificationName const OVHistoryDidChangeNotification = @"OVHistoryDidChange";
 }
 - (NSString *)adaptedSamplePath:(NSString *)language { return [self adaptedPath:language ext:@"wav"]; }
 - (BOOL)adaptsToLanguage:(NSString *)language {
+    // a trained language is always spoken from its trained sample
+    if (language.length && [NSFileManager.defaultManager fileExistsAtPath:[self adaptedPath:language ext:@"npz"]] && [self trainingInfo:language][@"trained"])
+        return YES;
     return [OVSettings adaptAccent] && language.length && self.language.length && (![language isEqualToString:self.language] || self.accented);
+}
+- (NSString *)trainingBase:(NSString *)language {
+    return [self.folder stringByAppendingPathComponent:[@"adapted-" stringByAppendingString:language]];
+}
+- (NSDictionary *)trainingInfo:(NSString *)language {
+    NSData *d = [NSData dataWithContentsOfFile:[[self trainingBase:language] stringByAppendingPathExtension:@"json"]];
+    id info = d ? [NSJSONSerialization JSONObjectWithData:d options:0 error:nil] : nil;
+    return [info isKindOfClass:NSDictionary.class] ? info : nil;
+}
+- (BOOL)useTrainingRound:(NSInteger)round language:(NSString *)language {
+    NSString *base = [self trainingBase:language];
+    NSFileManager *fm = NSFileManager.defaultManager;
+    NSString *npz = [NSString stringWithFormat:@"%@.r%ld.npz", base, (long)round], *wav = [NSString stringWithFormat:@"%@.r%ld.wav", base, (long)round];
+    if (![fm fileExistsAtPath:npz]) return NO;
+    for (NSArray *p in @[@[npz, [base stringByAppendingPathExtension:@"npz"]], @[wav, [base stringByAppendingPathExtension:@"wav"]]]) {
+        [fm removeItemAtPath:p[1] error:nil];
+        [fm copyItemAtPath:p[0] toPath:p[1] error:nil];
+    }
+    NSMutableDictionary *info = [[self trainingInfo:language] mutableCopy] ?: [NSMutableDictionary dictionary];
+    for (NSDictionary *h in info[@"history"])
+        if ([h[@"round"] integerValue] == round)
+            info[@"trained"] = @{@"pronunciation": h[@"pronunciation"], @"likeness": h[@"likeness"], @"round": @(round)};
+    [[NSJSONSerialization dataWithJSONObject:info options:NSJSONWritingPrettyPrinted error:nil]
+        writeToFile:[base stringByAppendingPathExtension:@"json"] atomically:YES];
+    [[OVVoices shared] reload];
+    return YES;
+}
+- (void)forgetTraining:(NSString *)language {
+    NSString *base = [self trainingBase:language];
+    NSFileManager *fm = NSFileManager.defaultManager;
+    for (NSString *ext in @[@"npz", @"wav"]) [fm removeItemAtPath:[base stringByAppendingPathExtension:ext] error:nil];
+    NSMutableDictionary *info = [[self trainingInfo:language] mutableCopy];
+    if (info) {
+        [info removeObjectForKey:@"trained"];
+        [[NSJSONSerialization dataWithJSONObject:info options:NSJSONWritingPrettyPrinted error:nil]
+            writeToFile:[base stringByAppendingPathExtension:@"json"] atomically:YES];
+    }
+    [[OVVoices shared] reload];
 }
 - (NSDictionary *)workerSpecForLanguage:(NSString *)language {
     if (![self adaptsToLanguage:language]) return self.workerSpec;

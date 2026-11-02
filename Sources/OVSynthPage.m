@@ -1,5 +1,6 @@
 #import "OVPages.h"
 #import "OVUI.h"
+#import "OVTrainSheet.h"
 #import "OVRuntime.h"
 #import "OVModels.h"
 #import "OVWorker.h"
@@ -129,7 +130,9 @@ static NSString *const kAutoVoice = @"__auto__";
 @property NSPopUpButton *voicePopup, *langPopup, *loraPopup;
 @property NSButton *sampleButton, *tuneButton, *styleButton, *adaptCheck;
 @property NSSegmentedControl *quality;
-@property NSTextField *counter, *status, *banner, *voiceHint, *memoryLabel;
+@property NSTextField *counter, *status, *banner, *voiceHint, *memoryLabel, *pronLabel, *pronDetail;
+@property NSView *pronCard;
+@property NSButton *pronButton;
 @property NSView *stylePanel, *designRow;
 @property NSSegmentedControl *moodPicker;
 @property NSTextField *moodName;
@@ -177,7 +180,16 @@ static NSString *const kAutoVoice = @"__auto__";
     self.sampleButton.controlSize = NSControlSizeRegular;
     self.sampleButton.image = [NSImage imageWithSystemSymbolName:@"waveform" accessibilityDescription:nil];
     self.sampleButton.imagePosition = NSImageLeading;
-    NSStackView *header = OVHStack(@[self.avatar, voiceText, OVSpacer(), self.sampleButton], 10);
+    // pronunciation of the selected voice in the language of the text, and its training
+    self.pronLabel = OVLabel(@"", 12, NSFontWeightSemibold, nil);
+    self.pronDetail = OVLabel(@"", 11, NSFontWeightRegular, NSColor.secondaryLabelColor);
+    self.pronButton = OVButton(L(@"Train…"), self, @selector(showTraining:));
+    self.pronButton.controlSize = NSControlSizeRegular;
+    self.pronButton.toolTip = L(@"Teach the voice clean pronunciation in this language, round by round, with the numbers of every round");
+    NSStackView *pron = OVHStack(@[OVSymbol(@"graduationcap", 15, OVAccent()), OVVStack(@[self.pronLabel, self.pronDetail], 1), self.pronButton], 9);
+    pron.alignment = NSLayoutAttributeCenterY;
+    self.pronCard = OVCard(pron, 8);
+    NSStackView *header = OVHStack(@[self.avatar, voiceText, OVSpacer(), self.pronCard, self.sampleButton], 10);
     header.alignment = NSLayoutAttributeCenterY;
 
     // ── banner shown when something is missing
@@ -590,12 +602,14 @@ static NSString *const kAutoVoice = @"__auto__";
 
 - (void)openSettings:(id)s { [self.tunePopover close]; OVNavigate(@"settings"); }
 
+
 - (void)adaptToggled:(NSButton *)b {
     [NSUserDefaults.standardUserDefaults setBool:b.state == NSControlStateValueOn forKey:@"adaptAccent"];
     [self refreshVoiceHint];
 }
 
 #pragma mark State
+
 
 - (void)syncControls {
     NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
@@ -742,8 +756,30 @@ static NSString *const kAutoVoice = @"__auto__";
     self.voiceHint.textColor = mismatch && !adapts ? NSColor.systemOrangeColor : NSColor.secondaryLabelColor;
     self.voiceHint.toolTip = cleans ? L(@"The sample has a noticeable accent (Whisper finds its own transcript unlikely). The voice first says two short phrases in this language several times; the takes that sound most like you and most native become its sample, so the accent fades. Switch it off under the sliders button to keep the accent.")
                            : adapts ? L(@"The voice first says a short phrase in the new language; the cleanest take becomes its sample for that language, so the accent of the original sample doesn’t carry over. Switch it off under the sliders button to keep the accent.")
-                           : mismatch ? L(@"Turn on “Remove the sample’s accent” under the sliders button, or record the sample in the language of the text.") : nil;
+                           : mismatch ? L(@"Train the voice’s pronunciation in this language (Train… next to the voice), or turn on “Remove the sample’s accent” under the sliders button.") : nil;
     self.designRow.hidden = v != nil;  // voice design tags only work for the model’s own voice
+    [self refreshPronunciation];
+}
+
+/// "Pronunciation · English — 72% · likeness 66%": the last numbers measured for this voice and language.
+- (void)refreshPronunciation {
+    OVVoice *v = [self selectedVoice];
+    NSString *lang = [self textLanguage] ?: v.language;
+    self.pronCard.hidden = !v.ready || !lang.length;
+    if (self.pronCard.hidden) return;
+    NSDictionary *info = [v trainingInfo:lang];
+    NSDictionary *now = info[@"trained"] ?: info[@"original"];
+    self.pronLabel.stringValue = [NSString stringWithFormat:L(@"Pronunciation · %@"), [OVLocale nameForLanguage:lang]];
+    self.pronDetail.stringValue = now ? [NSString stringWithFormat:L(@"%.0f%% · likeness %.0f%%%@"), [now[@"pronunciation"] doubleValue] * 100,
+                                         [now[@"likeness"] doubleValue] * 100, info[@"trained"] ? L(@" · trained") : @""]
+                                      : L(@"not trained yet");
+    self.pronButton.title = info[@"trained"] ? L(@"Retrain…") : L(@"Train…");
+}
+
+- (void)showTraining:(id)s {
+    OVVoice *v = [self selectedVoice];
+    if (!v) return;
+    [OVTrainSheet showForVoice:v language:[self textLanguage] ?: v.language text:self.editor.string window:self.view.window];
 }
 
 /// Language the text will be spoken in; nil while there is nothing to go by (empty editor, auto-detect).

@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.0.3
+
+**Pronunciation training**
+- *Train…* next to the voice on the Speech page: teaches the voice clean pronunciation in a language, in up to three
+  rounds, judging every round on phrases it never learned on by two numbers — pronunciation (Whisper) and likeness to
+  the original sample. Every round can be heard and picked by ear; *Back to the original sample* undoes it. The numbers
+  of the voice in the language of the text stay next to it.
+- With the optional Seed-VC download (~2.7 GB, Models page or the training sheet) the voice learns from a native
+  narrator — the model's own voice or another voice of yours — converted to its own timbre. That removes even an accent
+  in the sample's own language: an English voice cloned from a Russian-accented sample went from 72 % to 87 %
+  pronunciation at 52 % likeness (66 % before); learning from its own takes only got it worse (59 %).
+  Seed-VC (GPL-3.0) is fetched from its repository into its own PyTorch environment and runs as a separate program.
+
+**Typing**
+- Voice name: a space at the end of the name was swallowed on every key press, so "My voice" couldn't be typed.
+  The sample text lost its cursor position and undo the same way: every key press saved the voice, which reloaded
+  the list and refilled the editor. The field being typed in is left alone now.
+- The sample text no longer autocorrects, replaces text or turns `--` into dashes: it has to stay word for word.
+- The seed (Settings), the Hugging Face token and the mirror (Models) are saved when you leave the field, not only on
+  Return.
+
 ## 1.0.2
 
 **Ukrainian speech sounds Ukrainian again**

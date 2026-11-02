@@ -9,6 +9,7 @@ NS_ASSUME_NONNULL_BEGIN
 + (NSString *)ownVenv;        // …/runtime/.venv
 + (NSString *)ownPython;      // …/runtime/.venv/bin/python
 + (NSString *)binDir;         // …/runtime/bin (downloaded uv lives here)
++ (NSString *)accent;       // …/accent (optional: Seed-VC for native-accent speech)
 + (NSString *)models;         // …/models (legacy: moved into the HF cache on first run)
 + (NSString *)voices;         // …/voices
 + (NSString *)logs;           // …/logs

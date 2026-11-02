@@ -5,6 +5,7 @@
 #import "OVPaths.h"
 #import "OVRuntime.h"
 #import "OVLocale.h"
+#import "OVNativeAccent.h"
 
 static NSString *const kNoLoRA = @"__none__";
 
@@ -151,6 +152,9 @@ static NSTextField *Badge(NSString *text, NSColor *color) {
 @property NSTextField *catalogStatus, *repoField, *addStatus, *endpointField, *cacheLabel;
 @property NSPopUpButton *kindPopup;
 @property NSSecureTextField *tokenField;
+@property NSTextField *accentMeta;
+@property NSProgressIndicator *accentBar;
+@property NSStackView *accentButtons;
 @property (copy) NSString *layoutSignature;
 @end
 
@@ -200,10 +204,12 @@ static NSTextField *Badge(NSString *text, NSColor *color) {
     self.tokenField.stringValue = [NSUserDefaults.standardUserDefaults stringForKey:@"hfToken"] ?: @"";
     self.tokenField.target = self;
     self.tokenField.action = @selector(saveAccess:);
+    self.tokenField.cell.sendsActionOnEndEditing = YES;  // saved when focus leaves too, not only on Return
     self.endpointField = OVField(@"https://huggingface.co");
     self.endpointField.stringValue = [NSUserDefaults.standardUserDefaults stringForKey:@"hfEndpoint"] ?: @"";
     self.endpointField.target = self;
     self.endpointField.action = @selector(saveAccess:);
+    self.endpointField.cell.sendsActionOnEndEditing = YES;
     NSButton *cacheBtn = OVButton(L(@"Choose folder…"), self, @selector(chooseCache:));
     NSButton *cacheReset = OVButton(L(@"Default"), self, @selector(resetCache:));
     cacheBtn.controlSize = cacheReset.controlSize = NSControlSizeRegular;
@@ -224,22 +230,80 @@ static NSTextField *Badge(NSString *text, NSColor *color) {
     NSButton *openCache = OVButton(L(@"Open cache in Finder"), self, @selector(openCache:));
     rescan.controlSize = openCache.controlSize = NSControlSizeRegular;
 
+    // native accent (optional download)
+    NSTextField *accentTitle = OVLabel(L(@"Seed-VC · native narrator"), 14, NSFontWeightSemibold, nil);
+    NSTextField *accentDetails = OVWrapLabel(L(@"For pronunciation training without an accent: a native speaker (the model’s own voice or "
+                                               @"another voice of yours) reads the learning phrases and Seed-VC gives the reading your voice, "
+                                               @"so the trained voice speaks without your accent. About 2.7 GB (PyTorch, Seed-VC and its "
+                                               @"models) in the app’s folder. Seed-VC (GPL-3.0) is downloaded from its authors and runs as "
+                                               @"a separate program."), 12, nil);
+    self.accentMeta = OVLabel(@"", 11, NSFontWeightRegular, NSColor.tertiaryLabelColor);
+    self.accentBar = OVProgressBar();
+    self.accentButtons = OVHStack(@[], 6);
+    NSStackView *accentBody = OVVStack(@[accentTitle, accentDetails, self.accentMeta, self.accentBar], 4);
+    OVFillWidth(@[accentDetails, self.accentMeta, self.accentBar], accentBody);
+    NSStackView *accentRow = OVHStack(@[accentBody, self.accentButtons], 12);
+    accentRow.alignment = NSLayoutAttributeTop;
+    [accentBody setHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
+    [self.accentButtons setHuggingPriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
+    NSView *accentCard = OVCard(accentRow, 18);
+
     NSTextField *loraTitle = OVSectionTitle(L(@"LoRA adapter"));
     NSArray *views = @[title, self.cacheLabel,
                        OVSectionTitle(L(@"Speech synthesis model")), ttsCard,
                        loraTitle, loraHint, loraCard,
                        OVSectionTitle(L(@"Speech recognition")), asrCard,
+                       OVSectionTitle(L(@"Accent removal")), accentCard,
                        OVSectionTitle(L(@"Hugging Face catalog")), catCard,
                        addCard, accessCard, OVHStack(@[rescan, openCache], 8)];
     for (NSView *v in views) [page addArrangedSubview:v];
     [page setCustomSpacing:6 afterView:title];
     [page setCustomSpacing:4 afterView:loraTitle];
-    for (NSView *c in @[self.cacheLabel, ttsCard, loraCard, asrCard, catCard]) [page setCustomSpacing:24 afterView:c];
-    OVFillWidth(@[self.cacheLabel, ttsCard, loraHint, loraCard, asrCard, catCard, addCard, accessCard], page);
+    for (NSView *c in @[self.cacheLabel, ttsCard, loraCard, asrCard, accentCard, catCard]) [page setCustomSpacing:24 afterView:c];
+    OVFillWidth(@[self.cacheLabel, ttsCard, loraHint, loraCard, asrCard, accentCard, catCard, addCard, accessCard], page);
     self.view = OVScrollPage(page);
 
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(refresh) name:OVModelsDidChangeNotification object:nil];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(refreshAccent) name:OVNativeAccentDidChangeNotification object:nil];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(refreshAccent) name:OVWorkerDidChangeNotification object:nil];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(refreshAccent) name:OVRuntimeDidChangeNotification object:nil];
     [self refresh];
+    [self refreshAccent];
+}
+
+- (void)refreshAccent {
+    OVNativeAccent *a = [OVNativeAccent shared];
+    for (NSView *v in self.accentButtons.arrangedSubviews.copy) [v removeFromSuperview];
+    self.accentBar.hidden = !a.installing;
+    self.accentBar.doubleValue = a.progress;
+    if (a.installing) {
+        self.accentMeta.stringValue = [NSString stringWithFormat:@"%.0f%% · %@", a.progress * 100, a.step];
+    } else if (a.installed) {
+        self.accentMeta.stringValue = [NSString stringWithFormat:L(@"✓ Installed · %@ · used by Train… next to the voice on the Speech page"),
+                                       [[OVPaths accent] stringByAbbreviatingWithTildeInPath]];
+        NSButton *rm = OVIconButton(@"trash", L(@"Delete"), self, @selector(removeAccent:));
+        [self.accentButtons addArrangedSubview:rm];
+    } else {
+        self.accentMeta.stringValue = a.error ? [NSString stringWithFormat:L(@"Error: %@"), a.error] : L(@"Not installed · ~2.7 GB");
+        NSButton *dl = OVButton(L(@"Download"), self, @selector(installAccent:));
+        dl.controlSize = NSControlSizeRegular;
+        dl.enabled = [OVRuntime shared].state == OVRuntimeReady && ![OVWorker shared].busy;
+        [self.accentButtons addArrangedSubview:dl];
+    }
+}
+
+- (void)installAccent:(id)s { [[OVNativeAccent shared] install]; }
+
+- (void)removeAccent:(id)s {
+    NSAlert *a = [NSAlert new];
+    a.messageText = L(@"Delete accent removal (Seed-VC)?");
+    a.informativeText = L(@"About 2.7 GB is freed. The files will be moved to the Trash; download it again any time.");
+    [a addButtonWithTitle:L(@"Move to Trash")];
+    [a addButtonWithTitle:L(@"Cancel")];
+    a.buttons.firstObject.hasDestructiveAction = YES;
+    if ([a runModal] != NSAlertFirstButtonReturn) return;
+    NSError *err = nil;
+    if (![[OVNativeAccent shared] remove:&err] && err) [[NSAlert alertWithError:err] runModal];
 }
 
 - (void)viewWillAppear {

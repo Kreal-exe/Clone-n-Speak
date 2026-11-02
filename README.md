@@ -48,6 +48,12 @@ The app shows the engine's memory and the free memory live, and on Macs with les
   language three times each, scores the takes by how much they sound like you (a speaker-verification model) and how
   native they sound (Whisper), and uses the two best as the voice's sample for that language from then on.
   [How it was measured ↓](#accent-removal)
+- **Pronunciation training** (Speech page, *Train…* next to the voice): teaches a voice clean pronunciation in a
+  language — a Russian voice speaking Ukrainian or English, or an English sample read with an accent — round by round,
+  showing two numbers for every round: pronunciation (how native Whisper finds it) and likeness to the original sample.
+  Every round can be heard and picked by ear. With the optional Seed-VC download (~2.7 GB) the voice learns from a
+  native narrator converted to its own timbre, which removes even an accent in the sample's own language.
+  [How it works ↓](#pronunciation-training)
 - **Voice likeness** after every take: how much the result sounds like the sample, measured by an ECAPA
   speaker-verification model (speechbrain, run on MLX).
 - **Voice style** on the Speech page: mood presets (calm, cheerful, energetic, serious, warm, sad, storyteller),
@@ -186,6 +192,37 @@ voice, different people ≈ 0.1–0.4):
 | one take, picked by likeness | 4.1 % | 0.79 |
 | **two best takes (current)** | **2.6 %** | 0.78–0.82 |
 
+### Pronunciation training
+
+*Train…* next to the voice on the Speech page re-samples the voice for one language, in up to three rounds. Each round
+makes a new sample out of learning phrases and judges it on held-out phrases it never learned on, by two numbers:
+**pronunciation** — Whisper's likelihood of the text, scaled so that −0.06 (clean native speech) is 100 % and −0.24
+(a strong accent) is 0 %, times one minus twice the error rate — and **likeness**, the ECAPA cosine to the original
+sample. The best round becomes `adapted-<lang>.npz`, which speech in that language starts from; every round stays to
+be heard and picked by ear.
+
+Where the learning takes come from decides what training can do:
+
+- **its own takes** (ensure_adapted's method, in rounds) work across languages — the 1.0.2 numbers above — but can't
+  remove an accent in the sample's own language: an English clone of a Russian-accented sample went from 72 % to
+  59 % and 57 % in two rounds;
+- **a native narrator** — the model's own voice, or another voice of the user's in that language — read through
+  [Seed-VC](https://github.com/Plachtaa/seed-vc), which gives the reading the person's timbre: the voice is re-cloned on
+  accent-free speech in its own voice. That is how the accent was taken out of a clone by hand before it became a
+  feature. On the same English voice:
+
+| Learns from | Pronunciation | Likeness |
+|---|---|---|
+| — (original sample) | 72 % | 66 % |
+| its own takes, best round | 59 % | 60 % |
+| native narrator: the model's own voice → Seed-VC | 87 % | 52 % |
+| native narrator: a native speaker's clone → Seed-VC | 89 % | 47 % |
+
+Seed-VC (GPL-3.0) needs PyTorch, so it is not part of the app: the Models page (or the training sheet) downloads it
+into `~/Library/Application Support/Clone'n'Speak/accent` — its own Python environment with PyTorch 2.8, the Seed-VC
+code at a pinned commit and its models, ~2.7 GB — and the engine runs it as a separate program, only while training.
+Chatterbox's converter (MLX, no PyTorch) came out as close by the numbers but garbled a short phrase on every run.
+
 ### Stress
 
 OmniVoice was not trained on stress marks. A paired test on a cloned voice (same seed, the combining acute moved
@@ -223,6 +260,7 @@ PyTorch and several times slower. Not worth a second engine; OmniVoice stays the
 ## License
 
 MIT — see [LICENSE](LICENSE). OmniVoice © k2-fsa (Apache-2.0); model weights keep their authors' licenses.
+Seed-VC © Plachtaa (GPL-3.0) is not included: the optional native-narrator download fetches it from its repository.
 Only clone a voice with the consent of its owner.
 
 ---
@@ -274,6 +312,12 @@ Clone'n'Speak — небольшое нативное macOS-приложение
   Обычно клон сохраняет акцент языка образца; приложение один раз даёт голосу произнести две фразы на новом языке
   по три раза, оценивает дубли по похожести на вас (модель верификации диктора) и «родности» произношения (Whisper)
   и дальше использует два лучших как образец для этого языка. Цифры — в разделе [Accent removal](#accent-removal).
+- **Обучение произношению** (страница «Озвучка», «Обучить…» рядом с голосом): учит голос чистому произношению на
+  языке — русский голос говорит по-украински или по-английски, английский образец записан с акцентом — раунд за раундом,
+  с двумя цифрами каждого раунда: произношение (насколько родным его считает Whisper) и похожесть на исходный образец.
+  Любой раунд можно послушать и выбрать на слух. С необязательной загрузкой Seed-VC (~2,7 ГБ) голос учится у
+  диктора-носителя, переведённого в его тембр, — так уходит даже акцент на языке самого образца. Подробности — в разделе
+  [Pronunciation training](#pronunciation-training).
 - **Похожесть голоса** после каждой озвучки — насколько результат похож на образец, по модели верификации диктора
   ECAPA (speechbrain, запускается на MLX).
 - **Стиль голоса** на странице «Озвучка»: настроение (спокойное, радостное, бодрое, серьёзное, тёплое, грустное,
@@ -336,4 +380,5 @@ open "/Applications/Clone'n'Speak.app"
 
 ## Лицензия
 
-MIT. OmniVoice © k2-fsa (Apache-2.0). Клонируйте голос только с согласия его владельца.
+MIT. OmniVoice © k2-fsa (Apache-2.0). Seed-VC © Plachtaa (GPL-3.0) в приложение не входит: его скачивает
+необязательная загрузка «Диктор-носитель». Клонируйте голос только с согласия его владельца.

@@ -28,6 +28,14 @@ extern NSNotificationName const OVHistoryDidChangeNotification;
 @property (readonly) NSArray<NSString *> *adaptedLanguages;
 - (NSString *)adaptedSamplePath:(NSString *)language;
 - (void)forgetAdaptations;
+/// Pronunciation training in `language` (adapted-<lang>.json): "original" and "trained" {pronunciation, likeness}
+/// and the rounds; nil when it was never checked.
+- (nullable NSDictionary *)trainingInfo:(NSString *)language;
+- (NSString *)trainingBase:(NSString *)language;   // adapted-<lang> without an extension
+/// Makes round `round` of the last training the voice's sample for `language` (picked by ear).
+- (BOOL)useTrainingRound:(NSInteger)round language:(NSString *)language;
+/// Back to the original sample in `language`.
+- (void)forgetTraining:(NSString *)language;
 - (void)save;
 @end
 

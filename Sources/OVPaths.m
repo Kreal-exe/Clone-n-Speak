@@ -18,6 +18,7 @@ static NSString *J(NSString *a, NSString *b) { return [a stringByAppendingPathCo
 + (NSString *)ownVenv      { return J([self runtime], @".venv"); }
 + (NSString *)ownPython    { return J([self ownVenv], @"bin/python"); }
 + (NSString *)binDir       { return J([self runtime], @"bin"); }
++ (NSString *)accent       { return J([self support], @"accent"); }
 + (NSString *)models       { return J([self legacySupport], @"models"); }
 + (NSString *)voices       { return J([self support], @"voices"); }
 + (NSString *)logs         { return J([self support], @"logs"); }

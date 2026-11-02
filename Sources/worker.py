@@ -86,6 +86,18 @@ _RU = {
     "Ukrainian or Russian? Transcribing both…": "Украинский или русский? Распознаю оба варианта…",
     " · take {a} of {b}": " · дубль {a} из {b}",
     "Choosing the best take of each phrase…": "Выбираю лучший дубль каждой фразы…",
+    "Listening to how the voice speaks {lang} now…": "Слушаю, как голос говорит сейчас: {lang}…",
+    "Round {r} of {n}: the voice practises {lang}…": "Раунд {r} из {n}: голос тренирует произношение ({lang})…",
+    "Round {r} of {n}: a native narrator in your voice…": "Раунд {r} из {n}: диктор-носитель вашим голосом…",
+    "Round {r} of {n}: choosing the takes that sound most native and most like you…": "Раунд {r} из {n}: выбираю дубли, которые звучат чище и больше похожи на вас…",
+    "Round {r} of {n}: listening to the result…": "Раунд {r} из {n}: слушаю результат…",
+    "Type a sentence or two in this language on the Speech page first: the voice learns on them.": "Сначала напишите на странице «Озвучка» пару предложений на этом языке: голос учится на них.",
+    "Accent removal failed — see the log on the Setup page.": "Не удалось убрать акцент — подробности в журнале на странице «Подготовка».",
+    "Couldn’t set up accent removal — see the log on the Setup page.": "Не удалось установить удаление акцента — подробности в журнале на странице «Подготовка».",
+    "Accent removal: Python environment…": "Удаление акцента: окружение Python…",
+    "Accent removal: PyTorch and Seed-VC (~900 MB)…": "Удаление акцента: PyTorch и Seed-VC (~900 МБ)…",
+    "Accent removal: downloading Seed-VC…": "Удаление акцента: скачиваю Seed-VC…",
+    "Accent removal: downloading its models (~1.6 GB)…": "Удаление акцента: скачиваю модели (~1,6 ГБ)…",
 }
 
 
@@ -1366,6 +1378,203 @@ def ensure_adapted(req, language, text):
 
 
 # --------------------------------------------------------------------------
+# Pronunciation training
+# --------------------------------------------------------------------------
+# ensure_adapted() learns a language once, in one round, on the first speech. Training does it on request and in
+# rounds, judging every new sample on held-out phrases by two numbers the app shows: pronunciation (Whisper) and
+# likeness to the real sample (ECAPA), until the voice sounds native or stops improving.
+#
+# The takes the voice learns on come from the voice itself and, with the optional Seed-VC download, from a native
+# narrator converted to the voice: the model's own voice (voice design) says the phrase without any accent and
+# Seed-VC (GPL-3.0, its own PyTorch environment, a separate program; ~0.9 GB + ~1.6 GB of models) gives it the
+# person's timbre. Measured on an English sample read with a Russian accent, that narrator → Seed-VC speech was
+# judged clearly better by ear than the clone (likeness 0.46 against 0.63, Whisper errors 2.6 % against 2.8 %).
+# Chatterbox's converter on MLX was as close by the numbers but garbled a short phrase on every run.
+SEEDVC_URL = "https://github.com/Plachtaa/seed-vc/archive/51383efd921027683c89e5348211d93ff12ac2a8.tar.gz"
+# torch 2.8: from 2.9 on torchaudio.save needs torchcodec; descript-audio-codec brings audiotools, which Seed-VC imports
+SEEDVC_DEPS = ["torch==2.8.0", "torchaudio==2.8.0", "numpy<2", "librosa==0.10.2", "munch==4.0.0", "einops==0.8.0",
+               "transformers==4.46.3", "huggingface-hub>=0.28.1,<1", "descript-audio-codec==1.0.0", "soundfile",
+               "pyyaml", "scipy"]
+
+
+def narrator_instruct(wav, language):
+    """Voice-design tags for a native narrator close to the person: gender and pitch from the sample's pitch.
+    The converter keeps the narrator's pronunciation and rhythm and takes the timbre from the sample."""
+    import numpy as np
+    f0 = track_f0(wav)
+    f0 = f0[f0 > 0]
+    hz = float(np.median(f0)) if len(f0) else 120.0
+    male = hz < 165
+    tags = ["male" if male else "female", "low pitch" if hz < (105 if male else 185) else "moderate pitch"]
+    if language == "en":
+        tags.append("american accent")
+    return clean_instruct(", ".join(tags), language)
+
+
+def convert_voice(spec, audio, target):
+    """Seed-VC v1 re-voices `audio` with the voice of the `target` recording (up to 25 s of it is used)."""
+    import subprocess
+    import tempfile
+    root = spec["dir"]
+    with tempfile.TemporaryDirectory(dir=root) as tmp:
+        source, ref = os.path.join(tmp, "source.wav"), os.path.join(tmp, "target.wav")
+        write_wav(source, audio)
+        write_wav(ref, load_mono(target)[: SR * 25])
+        cmd = [spec["python"], "inference.py", "--source", source, "--target", ref, "--output", tmp,
+               "--diffusion-steps", "50", "--length-adjust", "1.0", "--inference-cfg-rate", "0.7", "--fp16", "False"]
+        run = subprocess.run(cmd, cwd=os.path.join(root, "seed-vc"), capture_output=True, text=True,
+                             env=dict(os.environ, PYTORCH_ENABLE_MPS_FALLBACK="1"))
+        out = os.path.join(tmp, "vc_source_target_1.0_50_0.7.wav")
+        if run.returncode != 0 or not os.path.exists(out):
+            print(run.stdout[-2000:], run.stderr[-6000:], file=sys.stderr, flush=True)
+            raise RuntimeError(T("Accent removal failed — see the log on the Setup page."))
+        return load_mono(out)
+
+
+# Held-out phrases a voice is judged on: never the phrases it learns on, so a better score is better speech, not a
+# better-learned sentence. Other languages are judged on the first sentences of the text on the Speech page.
+_TRAIN_TEST = {
+    "en": ["My name is Alex, and I work with sound every single day.",
+           "Could you please send me the photos from yesterday's trip?"],
+    "uk": ["Мене звати Олекса, і я щодня працюю зі звуком.",
+           "Чи могли б ви надіслати мені фотографії з учорашньої поїздки?"],
+    "ru": ["Меня зовут Алексей, и я каждый день работаю со звуком.",
+           "Не могли бы вы прислать мне фотографии со вчерашней поездки?"],
+    "de": ["Ich heiße Alex und arbeite jeden Tag mit Klang.",
+           "Könnten Sie mir bitte die Fotos von der gestrigen Reise schicken?"],
+}
+
+# Whisper's likelihood of the text (fluency) for clean native speech and for a strong accent, the ends of the
+# pronunciation scale. Measured in English: a native speaker's recording −0.02, the model speaking with that voice
+# −0.09, a clone of a Russian-accented sample −0.12, the same sample's adapted prompt −0.10.
+PRON_CLEAN, PRON_ACCENT = -0.06, -0.24
+
+
+def pronunciation(stt, wav, text, language):
+    """0…1: how native and how clear this take sounds in `language` (1 = like a native speaker)."""
+    heard = transcribe_wave(stt, wav, language)
+    cer = char_error_rate(_spoken(text, language), _spoken(heard, language))
+    fl = fluency(stt, wav, _spoken(text, language), language) if _whisper_lang(language) else PRON_CLEAN
+    native = (fl - PRON_ACCENT) / (PRON_CLEAN - PRON_ACCENT)
+    return max(0.0, min(1.0, native)) * max(0.0, 1.0 - 2.0 * cer)
+
+
+def cmd_train_voice(req):
+    """Teaches a cloned voice clean pronunciation in `language`, round by round (rounds: 0 only measures it), and keeps
+    the best new sample as adapted-<lang>.npz (.wav: what it says, .json: the numbers): speech in that language then
+    starts from it, with no conversion at speech time.
+
+    With Seed-VC (req["native"]) the takes come from a native narrator — another voice of the user's in that language
+    (req["narrator"]) or the model's own voice — converted to the person's timbre: the voice is re-cloned on accent-free
+    speech in its own timbre. That is how "Kreal optimized" lost its accent (a native speaker's clone read the text,
+    Seed-VC gave it the person's voice, nine seconds of it became the new sample); Whisper rates such takes no higher
+    than the accented clone's own, so they don't compete with them. Without Seed-VC the voice learns from its own takes
+    (ensure_adapted's method, in rounds), which works across languages but can't lose an accent in its own one.
+    Each new sample is judged on held-out phrases: pronunciation (Whisper) and likeness to the real sample."""
+    import json as _json
+    import numpy as np
+    voice, language, out = req["voice"], req["language"], req["out"]
+    rounds, goal = int(req.get("rounds", 4)), float(req.get("goal", 0.9))
+    low_memory = bool(req.get("low_memory"))
+    spec = dict(req["model"], low_memory=low_memory)
+    asr, bits, native, narrator = req["asr_path"], req.get("asr_bits") or 8, req.get("native"), req.get("narrator")
+    text = req.get("text") or ""
+    learn = [b for b in (bridge_text(language, text), _BRIDGE_MORE.get(language)) if b]
+    tests = _TRAIN_TEST.get(language) or [seg for seg, _ in split_segments(text)][:2] or learn[:1]
+    if not learn:
+        raise ValueError(T("Type a sentence or two in this language on the Speech page first: the voice learns on them."))
+    me = sample_print(voice)
+    base, info_path = os.path.splitext(out)[0], os.path.splitext(out)[0] + ".json"
+    try:
+        with open(info_path) as f:
+            info = _json.load(f)
+    except Exception:
+        info = {}
+    if rounds:
+        import glob as _glob
+        for f in _glob.glob(_glob.escape(base) + ".r*.*"):
+            os.remove(f)  # rounds of an earlier training
+    takes_per_round = len(learn) * (3 if not native else 2) + len(tests)
+    total, done = len(tests) + rounds * takes_per_round, [0]
+
+    def tick():
+        done[0] += 1
+        emit("progress", value=min(0.99, done[0] / total))
+
+    def judge(prompt):
+        tts = ensure_tts(spec)
+        audio = []
+        for i, t in enumerate(tests):
+            audio.append(_speak(tts, t, language, prompt, {}, seed=777 + i))
+            tick()
+        stt = ensure_stt(asr, low_memory, bits)
+        pron = sum(pronunciation(stt, a, t, language) for a, t in zip(audio, tests)) / len(tests)
+        like = sum(likeness(voice_print(a), me) for a in audio) / len(audio) if me is not None else 0.0
+        return round(pron, 3), round(like, 3)
+
+    name = voice.get("adapt_name") or language
+    status(T("Listening to how the voice speaks {lang} now…", lang=name))
+    current = load_prompt(voice, ensure_tts(spec))
+    pron, like = judge(current)
+    info["original"] = {"pronunciation": pron, "likeness": like}
+    history = [{"round": 0, "pronunciation": pron, "likeness": like}]
+    emit("train", round=0, pronunciation=pron, likeness=like)
+    kept = info.get("trained")  # an earlier training wins unless this one does better
+    best = {"score": kept["pronunciation"] + kept["likeness"]} if kept and os.path.exists(out) else {"score": pron + like}
+    stale = 0
+    for r in range(1, rounds + 1):
+        if max(pron, (kept or {}).get("pronunciation", 0)) >= goal and r > 1 or stale >= 2:
+            break
+        status(T("Round {r} of {n}: the voice practises {lang}…", r=r, n=rounds, lang=name))
+        tts = ensure_tts(spec)
+        takes = []
+        if native:
+            # two readings of each phrase by the narrator, each converted to the person's voice
+            guide = load_prompt(narrator, tts) if narrator else None
+            gen = {} if narrator else {"instruct": narrator_instruct(load_mono(voice["audio"]), language)}
+            reads = [(phrase, _speak(tts, phrase, language, guide, gen, seed=55 + 31 * k + 1000 * r)) for phrase in learn for k in range(2)]
+            if low_memory:
+                unload_tts()
+            status(T("Round {r} of {n}: a native narrator in your voice…", r=r, n=rounds))
+            for phrase, wav in reads:
+                takes.append({"text": phrase, "wav": polish(convert_voice(native, wav, voice["audio"]), pad=0.0)})
+                tick()
+        else:
+            for phrase in learn:
+                for k in range(3):
+                    takes.append({"text": phrase, "wav": _speak(tts, phrase, language, current, {}, seed=4242 + 97 * k + 1000 * r)})
+                    tick()
+        status(T("Round {r} of {n}: choosing the takes that sound most native and most like you…", r=r, n=rounds))
+        stt = ensure_stt(asr, low_memory, bits)
+        for t in takes:
+            t["score"] = pronunciation(stt, t["wav"], t["text"], language) + (likeness(voice_print(t["wav"]), me) if me is not None else 0.0)
+        top = sorted(takes, key=lambda t: t["score"], reverse=True)[:2]
+        sample = f"{base}.r{r}.wav"  # every round stays to be heard and picked by ear
+        write_wav(sample, np.concatenate([top[0]["wav"], np.zeros(int(SR * 0.25), dtype=np.float32), top[1]["wav"]]))
+        words = " ".join(t["text"] for t in top)
+        candidate = {"tokens": build_prompt(ensure_tts(spec), sample, words), "ref_text": words}
+        save_prompt(f"{base}.r{r}.npz", candidate["tokens"], words, version=ADAPT_VERSION)
+        status(T("Round {r} of {n}: listening to the result…", r=r, n=rounds))
+        pron, like = judge(candidate)
+        history.append({"round": r, "pronunciation": pron, "likeness": like})
+        emit("train", round=r, pronunciation=pron, likeness=like, sample=sample)
+        if pron + like > best["score"] + 0.005 or (native and not info.get("trained") and r == 1):
+            best = {"score": pron + like}
+            shutil.copyfile(f"{base}.r{r}.npz", out)
+            shutil.copyfile(sample, f"{base}.wav")
+            _prompts.pop(out, None)
+            info["trained"] = kept = {"pronunciation": pron, "likeness": like, "round": r}
+            current, stale = candidate, 0
+        else:
+            stale += 1
+    info["history"] = history
+    with open(info_path, "w") as f:
+        _json.dump(info, f, ensure_ascii=False, indent=1)
+    emit("progress", value=1.0)
+    return info
+
+
+# --------------------------------------------------------------------------
 # Commands
 # --------------------------------------------------------------------------
 def cmd_hello(req):
@@ -1839,6 +2048,55 @@ def cmd_unload(req):
     return {}
 
 
+def cmd_install_accent(req):
+    """Sets up native-accent speech: a PyTorch environment, the Seed-VC code and, by converting a second of noise
+    once, its models. req: dir (where it goes), uv, env (uv's environment)."""
+    import subprocess
+    import tarfile
+    import urllib.request
+    import numpy as np
+    root, uv = req["dir"], req["uv"]
+    env = dict(os.environ, **(req.get("env") or {}))
+    os.makedirs(root, exist_ok=True)
+    python = os.path.join(root, ".venv", "bin", "python")
+
+    def run(args, what, lo, hi):
+        status(what)
+        p = subprocess.Popen(args, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        for n, line in enumerate(p.stdout):
+            print(line.rstrip(), file=sys.stderr, flush=True)
+            emit("progress", value=lo + (hi - lo) * (1 - 0.96 ** (n + 1)))
+        if p.wait():
+            raise RuntimeError(T("Couldn’t set up accent removal — see the log on the Setup page."))
+
+    emit("progress", value=0.01)
+    if not os.path.exists(python):
+        run([uv, "venv", "--relocatable", "--python", f"{sys.version_info.major}.{sys.version_info.minor}",
+             os.path.join(root, ".venv")], T("Accent removal: Python environment…"), 0.01, 0.05)
+    run([uv, "pip", "install", "--python", python, *SEEDVC_DEPS], T("Accent removal: PyTorch and Seed-VC (~900 MB)…"), 0.05, 0.6)
+    source = os.path.join(root, "seed-vc")
+    if not os.path.exists(os.path.join(source, "inference.py")):
+        status(T("Accent removal: downloading Seed-VC…"))
+        archive = os.path.join(root, "seed-vc.tar.gz")
+        urllib.request.urlretrieve(SEEDVC_URL, archive)
+        with tarfile.open(archive) as tar:
+            top = tar.getnames()[0].split("/")[0]
+            tar.extractall(root, filter="data")
+        shutil.rmtree(source, ignore_errors=True)
+        os.rename(os.path.join(root, top), source)
+        os.remove(archive)
+    status(T("Accent removal: downloading its models (~1.6 GB)…"))
+    emit("progress", value=0.65)
+    warmup = os.path.join(root, "warmup.wav")  # the first conversion only has to make Seed-VC fetch its models
+    write_wav(warmup, (np.random.default_rng(0).standard_normal(SR) * 0.01).astype(np.float32))
+    convert_voice({"python": python, "dir": root}, load_mono(warmup), warmup)
+    os.remove(warmup)
+    with open(os.path.join(root, "ready"), "w") as f:
+        f.write(SEEDVC_URL + "\n")
+    emit("progress", value=1.0)
+    return {"dir": root, "python": python}
+
+
 COMMANDS = {
     "hello": cmd_hello,
     "transcribe": cmd_transcribe,
@@ -1848,6 +2106,8 @@ COMMANDS = {
     "analyze": cmd_analyze,
     "enhance": cmd_enhance,
     "unload": cmd_unload,
+    "install_accent": cmd_install_accent,
+    "train_voice": cmd_train_voice,
 }
 
 
