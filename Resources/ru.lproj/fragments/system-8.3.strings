@@ -34,3 +34,10 @@
 "Speech, conversions, training and downloads appear here with their progress and log." = "Озвучка, конвертации, обучение и загрузки появятся здесь с ходом выполнения и журналом.";
 "Open Speech" = "Открыть озвучку";
 "Details" = "Подробнее";
+"Stop %@" = "Остановить: %@";
+"Retry %@" = "Повторить: %@";
+"Show %@ in Finder" = "Показать в Finder: %@";
+"Details of %@" = "Подробнее: %@";
+"No matching tasks" = "Подходящих задач нет";
+"No task fits the chosen filter." = "Ни одна задача не подходит под выбранный фильтр.";
+"Show all" = "Показать все";

@@ -296,8 +296,7 @@ static void JobRetry(OVJob *j, NSWindow *w) {
 - (void)deleteJob:(id)s {
     OVJob *j = self.job;
     JobConfirmRemoval(self.panel, L(@"Delete this task?"), L(@"Delete"), ^{
-        [OVJobs.shared remove:j];
-        [self close:nil];
+        [OVJobs.shared remove:j];   // the change notification closes the sheet
     });
 }
 @end
@@ -307,7 +306,7 @@ static void JobRetry(OVJob *j, NSWindow *w) {
 @interface OVJobRowCell : NSTableCellView
 @property NSImageView *icon;
 @property NSTextField *titleLabel, *metaLabel;
-@property NSStackView *badgeHolder;
+@property NSView *badgeHolder;
 @property NSProgressIndicator *bar;
 @property NSButton *stop, *retry, *reveal, *details;
 @property (copy) NSString *shownState;
@@ -332,17 +331,38 @@ static void JobRetry(OVJob *j, NSWindow *w) {
     self.bar.translatesAutoresizingMaskIntoConstraints = NO;
     [self.bar.widthAnchor constraintEqualToConstant:110].active = YES;
     [self.bar.heightAnchor constraintEqualToConstant:6].active = YES;
-    self.badgeHolder = OVHStack(@[], 0);
+    self.badgeHolder = [NSView new];
+    self.badgeHolder.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.badgeHolder.widthAnchor constraintEqualToConstant:100].active = YES;
     self.stop = OVIconButton(@"stop.circle", L(@"Stop"), nil, @selector(rowStop:));
     self.retry = OVIconButton(@"arrow.clockwise", L(@"Retry"), nil, @selector(rowRetry:));
     self.reveal = OVIconButton(@"folder", L(@"Show in Finder"), nil, @selector(rowReveal:));
     self.details = OVIconButton(@"info.circle", L(@"Details"), nil, @selector(rowDetails:));
-    NSStackView *row = OVHStack(@[self.icon, texts, self.bar, self.badgeHolder, self.stop, self.retry, self.reveal, self.details], 8);
-    [row setCustomSpacing:2 afterView:self.badgeHolder];
+    NSMutableArray *slots = [NSMutableArray array];
+    for (NSButton *b in @[self.stop, self.retry, self.reveal, self.details]) {   // fixed slots: a hidden button keeps its place
+        NSView *slot = [NSView new];
+        slot.translatesAutoresizingMaskIntoConstraints = NO;
+        b.translatesAutoresizingMaskIntoConstraints = NO;
+        [slot addSubview:b];
+        [NSLayoutConstraint activateConstraints:@[[slot.widthAnchor constraintEqualToConstant:28], [slot.heightAnchor constraintEqualToConstant:28],
+            [b.centerXAnchor constraintEqualToAnchor:slot.centerXAnchor], [b.centerYAnchor constraintEqualToAnchor:slot.centerYAnchor]]];
+        [slots addObject:slot];
+    }
+    NSStackView *row = OVHStack([@[self.icon, texts, self.bar, self.badgeHolder] arrayByAddingObjectsFromArray:slots], 8);
     [row setCustomSpacing:12 afterView:self.bar];
     [self addSubview:row];
     OVPin(row, self, NSEdgeInsetsMake(0, 10, 0, 8));
     return self;
+}
+
+- (void)updateMeta:(OVJob *)j {
+    NSMutableArray *meta = [NSMutableArray arrayWithObjects:JobKindName(j.kind), JobOriginName(j.origin), JobDateText(j.created), nil];
+    NSString *d = JobDurationText(j);
+    if (d) [meta addObject:d];
+    if (j.active && j.status.length) [meta addObject:j.status];
+    else if (j.error.length && !j.active) [meta addObject:j.error];
+    NSString *text = [meta componentsJoinedByString:@" · "];
+    if (![self.metaLabel.stringValue isEqualToString:text]) { self.metaLabel.stringValue = text; self.metaLabel.toolTip = text; }
 }
 
 - (void)configure:(OVJob *)j {
@@ -350,29 +370,35 @@ static void JobRetry(OVJob *j, NSWindow *w) {
     NSString *name = j.title.length ? j.title : JobKindName(j.kind);
     self.titleLabel.stringValue = name;
     self.titleLabel.toolTip = name;
-    NSMutableArray *meta = [NSMutableArray arrayWithObjects:JobKindName(j.kind), JobOriginName(j.origin), JobDateText(j.created), nil];
-    NSString *d = JobDurationText(j);
-    if (d) [meta addObject:d];
-    if (j.active && j.status.length) [meta addObject:j.status];
-    else if (j.error.length && !j.active) [meta addObject:j.error];
-    self.metaLabel.stringValue = [meta componentsJoinedByString:@" · "];
-    self.metaLabel.toolTip = self.metaLabel.stringValue;
+    [self updateMeta:j];
     // The badge is rebuilt only when the state changes.
     NSString *state = [NSString stringWithFormat:@"%ld", (long)j.state];
     if (![state isEqualToString:self.shownState]) {
         self.shownState = state;
         for (NSView *v in [self.badgeHolder.subviews copy]) [v removeFromSuperview];
-        [self.badgeHolder addArrangedSubview:OVBadge(JobStateName(j.state), JobStateTone(j.state))];
+        NSView *b = OVBadge(JobStateName(j.state), JobStateTone(j.state));
+        b.translatesAutoresizingMaskIntoConstraints = NO;
+        [self.badgeHolder addSubview:b];
+        [NSLayoutConstraint activateConstraints:@[[b.trailingAnchor constraintEqualToAnchor:self.badgeHolder.trailingAnchor],
+                                                  [b.centerYAnchor constraintEqualToAnchor:self.badgeHolder.centerYAnchor]]];
     }
     BOOL running = j.state == OVJobRunning;
     self.bar.hidden = !running;
     if (running) {
-        if (j.progress < 0) { self.bar.indeterminate = YES; [self.bar startAnimation:nil]; }
+        if (j.progress < 0) {
+            self.bar.indeterminate = YES;
+            if (!NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion) [self.bar startAnimation:nil];   // still under Reduce Motion
+            else [self.bar stopAnimation:nil];
+        }
         else { [self.bar stopAnimation:nil]; self.bar.indeterminate = NO; self.bar.doubleValue = MIN(1, j.progress); }
     } else if (self.bar.indeterminate) { [self.bar stopAnimation:nil]; self.bar.indeterminate = NO; }
     self.stop.hidden = !j.active;
     self.retry.hidden = !JobCanRetry(j);
     self.reveal.hidden = !j.outputs.count;
+    self.stop.accessibilityLabel = self.stop.toolTip = [NSString stringWithFormat:L(@"Stop %@"), name];
+    self.retry.accessibilityLabel = self.retry.toolTip = [NSString stringWithFormat:L(@"Retry %@"), name];
+    self.reveal.accessibilityLabel = self.reveal.toolTip = [NSString stringWithFormat:L(@"Show %@ in Finder"), name];
+    self.details.accessibilityLabel = self.details.toolTip = [NSString stringWithFormat:L(@"Details of %@"), name];
     NSString *spoken = JobSpokenState(j);
     self.accessibilityElement = YES;
     self.accessibilityRole = NSAccessibilityGroupRole;
@@ -402,6 +428,14 @@ static void JobRetry(OVJob *j, NSWindow *w) {
 
 #pragma mark - Page
 
+/// Tells the page when its view enters or leaves a window (the shell swaps pages without viewDidAppear/Disappear).
+@interface OVJobsRootView : NSView
+@property (copy) void (^onWindowChange)(BOOL inWindow);
+@end
+@implementation OVJobsRootView
+- (void)viewDidMoveToWindow { [super viewDidMoveToWindow]; if (self.onWindowChange) self.onWindowChange(self.window != nil); }
+@end
+
 @interface OVJobsPage () <NSTableViewDataSource, NSTableViewDelegate>
 @property OVJobsTable *table;
 @property NSScrollView *tableScroll;
@@ -414,6 +448,8 @@ static void JobRetry(OVJob *j, NSWindow *w) {
 @property (copy) NSString *kindFilter;        // nil = all kinds
 @property (copy) NSArray<NSString *> *kindsShown;
 @property NSTimer *clock;
+@property BOOL stale;
+@property NSView *noMatchState;
 @end
 
 @implementation OVJobsPage
@@ -490,6 +526,17 @@ static void JobRetry(OVJob *j, NSWindow *w) {
         [empty.centerYAnchor constraintEqualToAnchor:self.emptyHolder.centerYAnchor],
         [empty.widthAnchor constraintLessThanOrEqualToAnchor:self.emptyHolder.widthAnchor constant:-32]]];
 
+    NSView *nomatch = OVEmptyState(@"line.3.horizontal.decrease.circle", L(@"No matching tasks"),
+                                   L(@"No task fits the chosen filter."),
+                                   @[OVGhostButton(L(@"Show all"), nil, self, @selector(showAll:))]);
+    nomatch.translatesAutoresizingMaskIntoConstraints = NO;
+    self.noMatchState = nomatch;
+    [self.emptyHolder addSubview:nomatch];
+    [NSLayoutConstraint activateConstraints:@[
+        [nomatch.centerXAnchor constraintEqualToAnchor:self.emptyHolder.centerXAnchor],
+        [nomatch.centerYAnchor constraintEqualToAnchor:self.emptyHolder.centerYAnchor],
+        [nomatch.widthAnchor constraintLessThanOrEqualToAnchor:self.emptyHolder.widthAnchor constant:-32]]];
+
     OVBoxView *card = [OVBoxView boxWithFill:OVColor(OVRoleSurface) border:OVColor(OVRoleBorder) radius:12];
     for (NSView *v in @[sv, self.emptyHolder]) { [card addSubview:v]; OVPin(v, card, NSEdgeInsetsMake(6, 6, 6, 6)); }
     self.listCard = card;
@@ -499,7 +546,9 @@ static void JobRetry(OVJob *j, NSWindow *w) {
     NSStackView *page = OVVStack(@[header, stats, filters, card], 16);
     page.edgeInsets = NSEdgeInsetsMake(24, 28, 28, 28);
     OVFillWidth(page.arrangedSubviews, page);
-    NSView *root = [NSView new];
+    OVJobsRootView *root = [OVJobsRootView new];
+    __weak typeof(self) weakSelf = self;
+    root.onWindowChange = ^(BOOL in) { [weakSelf windowChanged:in]; };
     [root addSubview:page];
     OVPin(page, root, NSEdgeInsetsZero);
     self.view = root;
@@ -511,21 +560,23 @@ static void JobRetry(OVJob *j, NSWindow *w) {
 
 - (void)dealloc { [NSNotificationCenter.defaultCenter removeObserver:self]; [self.clock invalidate]; }
 
-- (void)viewDidAppear {
-    [super viewDidAppear];
-    [self rebuild];
-    // Durations of running jobs tick once a second while the page is shown.
+- (void)windowChanged:(BOOL)inWindow {
+    if (!inWindow) { [self.clock invalidate]; self.clock = nil; return; }
+    if (self.stale) { self.stale = NO; [self rebuild]; }
+    // Durations of running jobs tick once a second, only while the page is in a window.
     if (!self.clock) {
         __weak typeof(self) weak = self;
-        self.clock = [NSTimer scheduledTimerWithTimeInterval:1 repeats:YES block:^(NSTimer *t) { [weak tick]; }];
+        self.clock = [NSTimer timerWithTimeInterval:1 repeats:YES block:^(NSTimer *t) { [weak tick]; }];
+        [NSRunLoop.mainRunLoop addTimer:self.clock forMode:NSRunLoopCommonModes];
     }
 }
-- (void)viewDidDisappear { [super viewDidDisappear]; [self.clock invalidate]; self.clock = nil; }
 
 - (void)tick {
-    NSMutableIndexSet *idx = [NSMutableIndexSet indexSet];
-    [self.rows enumerateObjectsUsingBlock:^(OVJob *j, NSUInteger i, BOOL *stop) { if (j.state == OVJobRunning) [idx addIndex:i]; }];
-    if (idx.count) [self.table reloadDataForRowIndexes:idx columnIndexes:[NSIndexSet indexSetWithIndex:0]];
+    [self.rows enumerateObjectsUsingBlock:^(OVJob *j, NSUInteger i, BOOL *stop) {
+        if (j.state != OVJobRunning) return;
+        OVJobRowCell *cell = [self.table viewAtColumn:0 row:i makeIfNecessary:NO];
+        if ([cell isKindOfClass:OVJobRowCell.class]) [cell updateMeta:j];
+    }];
 }
 
 #pragma mark Data
@@ -583,10 +634,18 @@ static void JobRetry(OVJob *j, NSWindow *w) {
     self.rows = rows;
     BOOL same = rows.count == oldRows.count;
     for (NSUInteger i = 0; same && i < rows.count; i++) same = rows[i] == oldRows[i];
-    if (!same || !self.table.numberOfRows) [self.table reloadData];
-    BOOL none = OVJobs.shared.all.count == 0;
-    self.emptyHolder.hidden = !none;
-    self.tableScroll.hidden = none;
+    if (!same || !self.table.numberOfRows) {
+        NSInteger sel = self.table.selectedRow;
+        OVJob *selected = sel >= 0 && sel < (NSInteger)oldRows.count ? oldRows[sel] : nil;
+        [self.table reloadData];
+        NSUInteger at = selected ? [rows indexOfObjectIdenticalTo:selected] : NSNotFound;
+        if (at != NSNotFound) [self.table selectRowIndexes:[NSIndexSet indexSetWithIndex:at] byExtendingSelection:NO];
+    }
+    BOOL none = OVJobs.shared.all.count == 0, noMatch = !none && rows.count == 0;
+    self.emptyHolder.hidden = !(none || noMatch);
+    self.emptyState.hidden = !none;
+    self.noMatchState.hidden = !noMatch;
+    self.tableScroll.hidden = none || noMatch;
     [self.view.window recalculateKeyViewLoop];
     BOOL anyFinished = NO;
     for (OVJob *j in OVJobs.shared.all) if (!j.active) { anyFinished = YES; break; }
@@ -594,6 +653,7 @@ static void JobRetry(OVJob *j, NSWindow *w) {
 }
 
 - (void)jobsChanged:(NSNotification *)n {
+    if (!self.view.window) { self.stale = YES; return; }   // refreshed when the page comes back
     OVJob *j = n.object;
     if (![j isKindOfClass:OVJob.class]) { [self rebuild]; return; }
     // Same rows in the same order: refresh just this row.
@@ -652,6 +712,12 @@ static void JobRetry(OVJob *j, NSWindow *w) {
 }
 - (void)clearFinished:(id)s {
     JobConfirmRemoval(self.view.window, L(@"Clear all finished tasks?"), L(@"Clear finished"), ^{ [OVJobs.shared clearFinished]; });
+}
+- (void)showAll:(id)s {
+    self.filter.selectedIndex = 0;
+    self.kindFilter = nil;
+    [self.kindPopup selectItemAtIndex:0];
+    [self rebuild];
 }
 - (void)filterChanged:(id)s { [self rebuild]; }
 - (void)kindChanged:(NSPopUpButton *)p {
