@@ -247,8 +247,10 @@
     else if (w.busy) { t = L(@"Working…"); c = NSColor.systemBlueColor; }
     else if (w.loadedModelPath) { t = [NSString stringWithFormat:L(@"%@ loaded"), model]; c = OVGreen(); }
     else { t = [NSString stringWithFormat:L(@"Ready · %@"), model]; c = OVGreen(); }
-    unsigned long long avail = w.availableMemory ?: [OVMemory availableBytes];
-    BOOL engine = w.engineFootprint > 50 * 1024 * 1024;  // a process that is only starting isn't worth a "0.0 GB"
+    // OV_SNAPSHOT_DIR runs need reproducible pictures: a fixed memory reading instead of the live one
+    BOOL frozen = [NSProcessInfo.processInfo.environment[@"OV_SNAPSHOT_DIR"] length] > 0;
+    unsigned long long avail = frozen ? 8ull << 30 : (w.availableMemory ?: [OVMemory availableBytes]);
+    BOOL engine = !frozen && w.engineFootprint > 50 * 1024 * 1024;  // a process that is only starting isn't worth a "0.0 GB"
     NSString *mem = engine
         ? [NSString stringWithFormat:L(@"Engine %@ · free %@"), [OVMemory format:w.engineFootprint], [OVMemory format:avail]]
         : [NSString stringWithFormat:L(@"Free memory %@"), [OVMemory format:avail]];
@@ -603,7 +605,17 @@ static void OVDumpAX(id el, int depth, NSMutableSet *seen) {
     fflush(stderr);
 }
 
+/// Overlay scrollers fade in and out on their own: switch them off so two runs give the same pixels.
+static void OVHideScrollers(NSView *v) {
+    if ([v isKindOfClass:NSScrollView.class]) {
+        ((NSScrollView *)v).hasVerticalScroller = NO;
+        ((NSScrollView *)v).hasHorizontalScroller = NO;
+    }
+    for (NSView *c in v.subviews) OVHideScrollers(c);
+}
+
 static void OVWriteSnapshot(NSView *v, NSString *file) {
+    OVHideScrollers(v);
     [v displayIfNeeded];
     NSBitmapImageRep *rep = [v bitmapImageRepForCachingDisplayInRect:v.bounds];
     [v cacheDisplayInRect:v.bounds toBitmapImageRep:rep];

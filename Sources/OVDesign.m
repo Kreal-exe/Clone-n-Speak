@@ -753,8 +753,34 @@ void OVRepaintAll(void) {
 
 #pragma mark - Page header, scroll, field block, columns
 
+@interface OVTextAreaBox : OVBoxView
+@property (weak) NSTextView *textView;
+@property (weak) NSWindow *observedWindow;
+@property BOOL focused;
+@end
+
+/// The page title: a static text that VoiceOver reports as a heading.
+@interface OVHeadingField : NSTextField
+@end
+@implementation OVHeadingField
+- (NSAccessibilityRole)accessibilityRole { return @"AXHeading"; }   // no NSAccessibility constant for it
+- (id)accessibilityValue { return self.stringValue; }
+@end
+
 NSView *OVPageHeader(NSString *title, NSString *subtitle, NSView *accessory) {
-    NSTextField *t = OVTitle(title);
+    NSTextField *t = [[OVHeadingField alloc] initWithFrame:NSZeroRect];   // labelWithString: would not give the subclass
+    t.editable = NO;
+    t.selectable = NO;
+    t.bezeled = NO;
+    t.drawsBackground = NO;
+    t.stringValue = title ?: @"";
+    t.accessibilityRole = @"AXHeading";
+    [t.cell setAccessibilityRole:@"AXHeading"];
+    t.lineBreakMode = NSLineBreakByTruncatingTail;
+    [t setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+    t.attributedStringValue = [[NSAttributedString alloc] initWithString:title ?: @"" attributes:@{
+        NSFontAttributeName: [NSFont systemFontOfSize:28 weight:NSFontWeightBold],
+        NSForegroundColorAttributeName: C(OVRoleText), NSKernAttributeName: @(-0.7)}];
     NSMutableArray *texts = [NSMutableArray arrayWithObject:t];
     if (subtitle.length) {
         NSTextField *s = OVLabel(subtitle, 14, NSFontWeightRegular, C(OVRoleMuted));
@@ -766,7 +792,6 @@ NSView *OVPageHeader(NSString *title, NSString *subtitle, NSView *accessory) {
     NSStackView *h = OVHStack(row, 12);
     h.alignment = NSLayoutAttributeCenterY;
     h.edgeInsets = NSEdgeInsetsMake(0, 0, 4, 0);
-    t.accessibilityRole = NSAccessibilityStaticTextRole;
     return h;
 }
 
@@ -782,6 +807,13 @@ NSView *OVFieldBlock(NSString *label, NSString *hint, NSView *control) {
     NSMutableArray *rows = [NSMutableArray arrayWithObjects:l, control, nil];
     NSTextField *h = hint.length ? OVWrapLabel(hint, 13, C(OVRoleMuted)) : nil;
     if (h) [rows addObject:h];
+    // a control that has no name of its own is named by the label (the text view inside an OVTextArea gets it)
+    NSView *named = control;
+    if ([control isKindOfClass:OVTextAreaBox.class]) named = ((OVTextAreaBox *)control).textView ?: control;
+    if (!named.accessibilityLabel.length) {
+        named.accessibilityLabel = label;
+        if ([named isKindOfClass:NSControl.class]) [((NSControl *)named).cell setAccessibilityLabel:label];   // cell-based controls
+    }
     NSStackView *s = OVVStack(rows, 8);
     if (h) [s setCustomSpacing:6 afterView:control];
     BOOL natural = [control isKindOfClass:NSButton.class] || [control isKindOfClass:OVSwitch.class] ||
@@ -1043,6 +1075,24 @@ NSView *OVColumns(NSArray<NSView *> *cols, CGFloat gap) {
 - (NSString *)accessibilityLabel { return super.accessibilityLabel ?: self.title; }
 - (id)accessibilityValue { return @(self.state == NSControlStateValueOn); }
 - (BOOL)accessibilityPerformPress { [self performClick:nil]; return YES; }
+/// Turns the siblings with the same target+action off; the button itself stays on when clicked again.
+- (void)select {
+    for (NSView *v in self.superview.subviews)
+        if (v != self && [v isKindOfClass:OVRadio.class]) {
+            NSButton *o = (NSButton *)v;
+            if (o.action == self.action && o.target == self.target) o.state = NSControlStateValueOff;
+        }
+    self.state = NSControlStateValueOn;
+}
+- (void)mouseDown:(NSEvent *)e {
+    if (!self.enabled) return;
+    [self.window makeFirstResponder:self];
+    [super mouseDown:e];   // tracks the click and sends the action on mouse up
+}
+- (BOOL)sendAction:(SEL)a to:(id)t {
+    [self select];
+    return [super sendAction:a to:t];
+}
 @end
 
 NSButton *OVRadioButton(NSString *title, id target, SEL action) {
@@ -1055,11 +1105,6 @@ NSButton *OVRadioButton(NSString *title, id target, SEL action) {
 
 #pragma mark - Text area
 
-@interface OVTextAreaBox : OVBoxView
-@property (weak) NSTextView *textView;
-@property (weak) NSWindow *observedWindow;
-@property BOOL focused;
-@end
 @implementation OVTextAreaBox
 - (void)updateFocus {
     BOOL f = NO;
@@ -1106,7 +1151,12 @@ NSView *OVTextArea(NSScrollView *textScroll, CGFloat minHeight) {
     if (tv) {
         tv.drawsBackground = NO;
         tv.textContainerInset = NSMakeSize(8, 10);
-        if (!tv.textColor) tv.textColor = C(OVRoleText);
+        // palette-driven (dynamic) colors, set unconditionally: the default text color is the system label color
+        tv.textColor = C(OVRoleText);
+        tv.insertionPointColor = C(OVRoleText);
+        NSMutableDictionary *ta = [tv.typingAttributes mutableCopy] ?: [NSMutableDictionary dictionary];
+        ta[NSForegroundColorAttributeName] = C(OVRoleText);
+        tv.typingAttributes = ta;
         box.textView = tv;
         // Begin/EndEditing only cover typing; the first-responder observer in the box covers plain focus
         for (NSNotificationName n in @[NSTextDidBeginEditingNotification, NSTextDidEndEditingNotification])
@@ -1131,6 +1181,7 @@ NSView *OVTextArea(NSScrollView *textScroll, CGFloat minHeight) {
     [self addTrackingArea:[[NSTrackingArea alloc] initWithRect:NSZeroRect
         options:NSTrackingMouseEnteredAndExited | NSTrackingActiveInKeyWindow | NSTrackingInVisibleRect owner:self userInfo:nil]];
 }
+- (void)prepareForReuse { [super prepareForReuse]; self.hovered = NO; }
 - (void)mouseEntered:(NSEvent *)e { self.hovered = YES; }
 - (void)mouseExited:(NSEvent *)e { self.hovered = NO; }
 - (void)setHovered:(BOOL)h { if (h == _hovered) return; _hovered = h; self.needsDisplay = YES; }

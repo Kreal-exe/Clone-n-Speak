@@ -77,9 +77,10 @@ NSView *OVFieldBlock(NSString *label, NSString *_Nullable hint, NSView *control)
 NSView *OVCheckRow(NSButton *check, NSString *_Nullable hint);
 /// Equal-width columns, each at least 260 pt; when the width cannot fit them they stack vertically. Top-aligned.
 NSView *OVColumns(NSArray<NSView *> *cols, CGFloat gap);
-/// Round radio button drawn by hand: put several in one superview with the same action to make a group.
+/// Round radio button drawn by hand. Exclusive by itself: clicking (or Space/Return) turns on this button and turns off its siblings
+/// in the same superview that have the same target and action.
 NSButton *OVRadioButton(NSString *title, id _Nullable target, SEL _Nullable action);
-/// Wraps NSScrollView.scrollableTextView in a field-colored box (1px border, radius 10, OVRoleFocus border while the text view has focus).
+/// Wraps NSScrollView.scrollableTextView in a field-colored box (text, caret and typing color come from OVRoleText) (1px border, radius 10, OVRoleFocus border while the text view has focus).
 NSView *OVTextArea(NSScrollView *textScroll, CGFloat minHeight);
 
 /// 36 x 20 switch: on = OVRoleCTA track with an OVRoleCTAText knob. Space/Return toggle it and send the action.

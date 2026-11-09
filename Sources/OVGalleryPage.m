@@ -232,8 +232,7 @@ static NSView *Variant(NSString *caption, NSArray<NSView *> *views) {
 }
 
 - (void)radioPicked:(NSButton *)b {
-    for (NSView *v in b.superview.subviews)
-        if ([v isKindOfClass:NSButton.class] && v != b) ((NSButton *)v).state = NSControlStateValueOff;
+    self.modeLabel.toolTip = b.title;   // the buttons exclude each other by themselves; the action is only a notification
 }
 
 - (NSInteger)numberOfRowsInTableView:(NSTableView *)t { return 3; }

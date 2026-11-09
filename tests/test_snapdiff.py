@@ -52,6 +52,21 @@ class SnapDiffTests(unittest.TestCase):
         r = run(self.image("a.png"), self.image("b.png", color=(24, 34, 44)))   # +4 per channel, below 6
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def test_ignore_rectangles_are_left_out(self):
+        a = self.image("a.png")
+        img = Image.open(a).copy()
+        for x in range(10):
+            for y in range(10):
+                img.putpixel((x, y), (200, 30, 40))
+        for x in range(50, 55):
+            for y in range(50, 55):
+                img.putpixel((x, y), (200, 30, 40))
+        b = self.dir / "b.png"
+        img.save(b)
+        self.assertEqual(run(a, b).returncode, 1)
+        r = run(a, b, "--ignore", "0,0,10,10", "--ignore", "50,50,5,5")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()
