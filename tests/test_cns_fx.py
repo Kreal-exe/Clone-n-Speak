@@ -194,6 +194,21 @@ class FxTests(unittest.TestCase):
                     self.assertLessEqual(spec["min"], spec["default"])
                     self.assertLessEqual(spec["default"], spec["max"])
 
+    def test_fx_catalog_order_and_step(self):
+        effects = {e["id"]: e for e in fx.fx_catalog({})["effects"]}
+        eq = effects["eq"]
+        self.assertEqual(eq["order"], ["low_db", "mid_db", "high_db", "low_hz", "mid_hz", "high_hz"])   # registration order
+        for e in effects.values():
+            self.assertEqual(set(e["order"]), set(e["params"]))
+            for key, spec in e["params"].items():
+                if "choices" not in spec:
+                    self.assertGreater(spec["step"], 0, key)
+        self.assertEqual(effects["bitcrush"]["params"]["bits"]["step"], 1)
+        self.assertEqual(effects["bitcrush"]["params"]["downsample"]["step"], 1)
+        self.assertLess(effects["gain"]["params"]["gain_db"]["step"], 1)       # dB allows fractions
+        self.assertLess(effects["reverb"]["params"]["tail_s"]["step"], 1)      # so does the reverb tail
+        self.assertLess(effects["compressor"]["params"]["ratio"]["step"], 1)
+
     def test_post_synth_hook(self):
         x = tone(440, 1.0)
         with tempfile.TemporaryDirectory() as tmp:

@@ -1,0 +1,3 @@
+/* Cross-file polish (task 6.Y): effects panel load error, separation license gate. "Retry" is translated elsewhere. */
+"The list of effects could not be loaded." = "Не удалось загрузить список эффектов.";
+"The license text of the model is not available, so the download is turned off." = "Текст лицензии модели недоступен, поэтому загрузка отключена.";

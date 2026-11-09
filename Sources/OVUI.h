@@ -54,7 +54,13 @@ void OVFillWidth(NSArray<NSView *> *views, NSStackView *stack);
 @interface OVSliderRow : NSStackView
 + (instancetype)rowWithTitle:(NSString *)title hint:(nullable NSString *)hint key:(NSString *)key
                          min:(double)min max:(double)max format:(NSString *)format integer:(BOOL)integer;
+/// Defaults-free: the row keeps its own `value` (set it before or after; `onChange` fires on user moves only).
++ (instancetype)rowWithTitle:(NSString *)title hint:(nullable NSString *)hint value:(double)value
+                         min:(double)min max:(double)max format:(NSString *)format integer:(BOOL)integer;
 - (void)refresh;
+@property (nonatomic) double value;                                          // key-less rows own it; key rows read/write defaults
+@property (nonatomic) CGFloat titleWidth;                                    // compact title column, default 82
+@property (nonatomic, copy, nullable) NSString *accessibilityName;           // the slider's accessibilityLabel (default: title)
 @property (nonatomic) BOOL enabled;
 @property (nonatomic) double step;                                           // > 0 snaps the value to multiples of `step`
 @property (nonatomic, copy, nullable) NSString *(^valueFormatter)(double);   // overrides `format` for the pill text

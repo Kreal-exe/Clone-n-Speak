@@ -9,6 +9,7 @@ static id<OVBatchEnvironment> gEnv;
 #pragma mark - Request
 
 NSDictionary *OVBatchRequest(NSArray<NSDictionary *> *items, OVVoice *voice, NSString *language, OVPreset *preset, NSString *outDir) {
+    NSCAssert(gEnv != nil, @"OVBatchRegister must run before OVBatchRequest");
     NSMutableArray *list = [NSMutableArray array];
     for (NSDictionary *it in items)
         [list addObject:@{@"index": it[@"index"] ?: @0, @"text": it[@"text"] ?: @"", @"name": it[@"name"] ?: @""}];
@@ -24,8 +25,8 @@ NSDictionary *OVBatchRequest(NSArray<NSDictionary *> *items, OVVoice *voice, NSS
         if (fmt.length) {
             r[@"format"] = fmt;
             NSInteger q = [p[@"quality"] respondsToSelector:@selector(integerValue)] ? [p[@"quality"] integerValue] : -1;
-            // 0 is "unset" in a preset; for the kbps formats OVExport treats it as the default too
-            r[@"quality"] = @(q <= 0 ? -1 : q);
+            // OVPreset uses -1 for "unset"; 0 is a real OGG quality (and the kbps formats treat it as the default)
+            r[@"quality"] = @(q < 0 ? -1 : q);
         }
         if ([p[@"chain"] isKindOfClass:NSArray.class] && [p[@"chain"] count]) r[@"chain"] = p[@"chain"];
     }

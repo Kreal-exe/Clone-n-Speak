@@ -609,6 +609,32 @@ static void testStragglerInGroupIsKilled(BOOL forced) {
 static void testStragglerAfterStop(void) { testStragglerInGroupIsKilled(NO); }
 static void testStragglerAfterForcedKill(void) { testStragglerInGroupIsKilled(YES); }
 
+static void testErrorCodeIsDedicatedAndPersisted(void) {
+    NSString *root = tempDir();
+    OVJobs *jobs = [OVJobs jobsWithRoot:root];
+    registerManual(jobs, @"ec", OVJobLaneCompute, NO);
+    OVJob *failed = [jobs submitKind:@"ec" request:@{} origin:@"app" onFinish:nil error:nil];
+    [gRunners[failed.identifier].ctx failWithError:@"no engine" code:@"engine_missing"];
+    ASSERT(waitUntil(2, ^BOOL{ return failed.state == OVJobFailed; }));
+    ASSERT([failed.errorCode isEqual:@"engine_missing"] && failed.result == nil, "code %s", failed.errorCode.UTF8String);
+    NSString *file = [failed.folder stringByAppendingPathComponent:@"job.json"];
+    NSDictionary *disk = [NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfFile:file] options:0 error:nil];
+    ASSERT([disk[@"errorCode"] isEqual:@"engine_missing"] && disk[@"result"] == nil, "persisted in job.json");
+    OVJobs *again = [OVJobs jobsWithRoot:root];
+    ASSERT([[again jobWithId:failed.identifier].errorCode isEqual:@"engine_missing"], "survives a relaunch");
+
+    OVJob *stopped = [jobs submitKind:@"ec" request:@{} origin:@"app" onFinish:nil error:nil];
+    [jobs stop:stopped];
+    [gRunners[stopped.identifier].ctx failWithError:@"Stopped" code:@"engine_missing"];
+    ASSERT(waitUntil(2, ^BOOL{ return stopped.state == OVJobStopped; }));
+    ASSERT(stopped.errorCode == nil && stopped.result == nil, "a stopped job carries no code");
+
+    OVJob *plain = [jobs submitKind:@"ec" request:@{} origin:@"app" onFinish:nil error:nil];
+    [gRunners[plain.identifier].ctx failWithError:@"boom"];
+    ASSERT(waitUntil(2, ^BOOL{ return plain.state == OVJobFailed; }));
+    ASSERT(plain.errorCode == nil && plain.result == nil);
+}
+
 int main(void) {
     @autoreleasepool {
         setenv("OV_DATA_DIR", tempDir().fileSystemRepresentation, 1);   // Support/Outputs/voices of the test live here
@@ -620,6 +646,7 @@ int main(void) {
             testRetryUsesRawRequestInSessionAndRefusesAfterRelaunch, testStopBeforeLaunchEndsAtOnce, testBeforeStartTimesOut,
             testForcedStopKillsAtOnce, testStragglerAfterStop, testStragglerAfterForcedKill, testNilRunnerFailsJob, testStderrCrlfAndInvalidBytesAreKept, testRegisterAgainReplaces,
             testFilesAreOwnerOnly, testLogIsCapped, testProgressIsThrottled, testStopAllAndWait, testRemoveAndClearFinished,
+            testErrorCodeIsDedicatedAndPersisted,
         };
         for (size_t i = 0; i < sizeof tests / sizeof *tests; i++) tests[i]();
         if (gFailures) { fprintf(stderr, "%d assertion(s) failed\n", gFailures); return 1; }

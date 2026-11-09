@@ -13,8 +13,26 @@ CANONICAL = ["gain", "eq", "compressor", "limiter", "distortion", "bitcrush", "d
 SAFETY_KNEE, SAFETY_CEILING = 0.89, 0.99
 
 
-def _p(lo, hi, default, unit, title):
-    return {"min": lo, "max": hi, "default": default, "unit": unit, "title": title}
+def _p(lo, hi, default, unit, title, step=None):
+    spec = {"min": lo, "max": hi, "default": default, "unit": unit, "title": title}
+    if step is not None:
+        spec["step"] = step
+    return spec
+
+
+def _step(spec):
+    """Slider step of a numeric parameter: the explicit one, else a fraction suited to its unit and range."""
+    if spec.get("step"):
+        return spec["step"]
+    span = spec["max"] - spec["min"]
+    unit = spec.get("unit", "")
+    if unit in ("dB", ":1", "s"):
+        return 0.01 if unit == "s" else 0.1
+    if unit == "Hz":
+        return 1 if span >= 100 else 0.1
+    if unit == "ms":
+        return 1 if span >= 100 else 0.1
+    return 0.01 if span <= 10 else 0.1
 
 
 def _per_channel(fn):
@@ -268,7 +286,7 @@ _register("distortion", _per_channel(_distortion), {
     "drive_db": _p(0, 40, 12, "dB", "Drive"), "tone": _p(0, 1, 0.5, "", "Tone"), "mix": _p(0, 1, 1, "", "Mix"),
 }, "Distortion")
 _register("bitcrush", _per_channel(_bitcrush), {
-    "bits": _p(1, 16, 8, "bit", "Bit depth"), "downsample": _p(1, 32, 1, "x", "Downsample"),
+    "bits": _p(1, 16, 8, "bit", "Bit depth", step=1), "downsample": _p(1, 32, 1, "x", "Downsample", step=1),
     "mix": _p(0, 1, 1, "", "Mix"),
 }, "Bitcrusher")
 _register("delay", _per_channel(_delay), {
@@ -374,8 +392,16 @@ def apply_chain(wav, sr, chain, *, extend=True):
 # --------------------------------------------------------------------------
 def fx_catalog(req=None):
     ids = [n for n in CANONICAL if n in core.EFFECTS] + [n for n in core.EFFECTS if n not in CANONICAL]
-    return {"effects": [{"id": n, "title": core.EFFECTS[n]["title"],
-                         "params": {k: dict(v) for k, v in core.EFFECTS[n]["params"].items()}} for n in ids]}
+    def params(n):
+        out = {}
+        for k, v in core.EFFECTS[n]["params"].items():
+            out[k] = dict(v)
+            if "choices" not in v:
+                out[k]["step"] = _step(v)
+        return out
+
+    return {"effects": [{"id": n, "title": core.EFFECTS[n]["title"], "order": list(core.EFFECTS[n]["params"]),
+                         "params": params(n)} for n in ids]}
 
 
 def fx_apply(req):

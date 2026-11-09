@@ -13,6 +13,11 @@
 #import "OVDesign.h"
 #import "OVJobs.h"
 
+@interface OVSeparatorPage (LaunchSweep)
+/// Removes decoded inputs older than a day that no running or retryable task needs (implemented in OVSeparatorPage.m).
++ (void)sweepInputFolder;
+@end
+
 #pragma mark - Sidebar
 
 /// Thin bar under the status: how much of the Mac's memory the engine and everything else use.
@@ -487,6 +492,7 @@ static void OVRedrawTree(NSView *v) {
     [[OVVoices shared] reload];
     [[OVHistory shared] reload];
     [OVJobs registerBuiltinKinds];
+    [OVSeparatorPage sweepInputFolder];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(jobsChanged:) name:OVJobsDidChangeNotification object:nil];
     [self buildMenu];
     [self buildWindow];
