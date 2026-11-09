@@ -20,7 +20,7 @@ NSTextField *OVField(NSString *placeholder);
 
 // Controls
 NSButton *OVButton(NSString *title, id _Nullable target, SEL _Nullable action);
-/// The one main action of a page: a gradient pill.
+/// The one main action of a page: a flat CTA pill.
 NSButton *OVPrimaryButton(NSString *title, id _Nullable target, SEL _Nullable action);
 NSButton *OVIconButton(NSString *symbol, NSString *tooltip, id _Nullable target, SEL _Nullable action);
 NSButton *OVCheckbox(NSString *title, NSString *defaultsKey);
@@ -51,6 +51,7 @@ void OVFillWidth(NSArray<NSView *> *views, NSStackView *stack);
 + (instancetype)rowWithTitle:(NSString *)title hint:(nullable NSString *)hint key:(NSString *)key
                          min:(double)min max:(double)max format:(NSString *)format integer:(BOOL)integer;
 - (void)refresh;
+@property (nonatomic) BOOL enabled;
 @end
 
 /// Popup bound to a user-defaults key: items are @[@[title, value], …].

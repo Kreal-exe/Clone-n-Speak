@@ -1,5 +1,7 @@
 #import "OVUI.h"
 #import "OVTheme.h"
+#import "OVDesign.h"
+#import "OVLocale.h"
 #import <objc/runtime.h>
 #import <QuartzCore/QuartzCore.h>
 
@@ -27,7 +29,7 @@ NSFont *OVRoundedFont(CGFloat size, NSFontWeight weight) {
 NSTextField *OVLabel(NSString *text, CGFloat size, NSFontWeight weight, NSColor *color) {
     NSTextField *l = [NSTextField labelWithString:text ?: @""];
     l.font = [NSFont systemFontOfSize:size weight:weight];
-    l.textColor = color ?: NSColor.labelColor;
+    l.textColor = color ?: OVColor(OVRoleText);
     l.lineBreakMode = NSLineBreakByTruncatingTail;
     [l setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
     return l;
@@ -36,7 +38,7 @@ NSTextField *OVLabel(NSString *text, CGFloat size, NSFontWeight weight, NSColor 
 NSTextField *OVWrapLabel(NSString *text, CGFloat size, NSColor *color) {
     NSTextField *l = [NSTextField wrappingLabelWithString:text ?: @""];
     l.font = [NSFont systemFontOfSize:size];
-    l.textColor = color ?: NSColor.secondaryLabelColor;
+    l.textColor = color ?: OVColor(OVRoleMuted);
     l.selectable = NO;
     [l setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
     return l;
@@ -44,20 +46,77 @@ NSTextField *OVWrapLabel(NSString *text, CGFloat size, NSColor *color) {
 
 NSTextField *OVTitle(NSString *text) {
     NSTextField *l = OVLabel(text, 28, NSFontWeightBold, nil);
-    l.font = OVRoundedFont(28, NSFontWeightBold);
+    // tracking -0.025em
+    l.attributedStringValue = [[NSAttributedString alloc] initWithString:text ?: @"" attributes:@{
+        NSFontAttributeName: [NSFont systemFontOfSize:28 weight:NSFontWeightBold],
+        NSForegroundColorAttributeName: OVColor(OVRoleText), NSKernAttributeName: @(-0.7)}];
     return l;
 }
 NSTextField *OVSectionTitle(NSString *text) {
-    NSTextField *l = OVLabel(text, 15, NSFontWeightSemibold, nil);
-    l.font = OVRoundedFont(15, NSFontWeightSemibold);
-    return l;
+    return OVLabel(text, 18.5, NSFontWeightBold, nil);
 }
 
+#pragma mark - Text field
+
+@interface OVFieldCell : NSTextFieldCell
+@end
+@implementation OVFieldCell
+- (NSRect)drawingRectForBounds:(NSRect)r {
+    NSRect d = [super drawingRectForBounds:r];
+    d.origin.x += 12;
+    d.size.width -= 24;
+    CGFloat h = ceil(self.font.ascender - self.font.descender) + 2;   // center the line vertically
+    if (NSHeight(r) > h) { d.origin.y = NSMinY(r) + floor((NSHeight(r) - h) / 2); d.size.height = h; }
+    return d;
+}
+- (void)selectWithFrame:(NSRect)r inView:(NSView *)v editor:(NSText *)t delegate:(id)d start:(NSInteger)s length:(NSInteger)l {
+    [super selectWithFrame:[self drawingRectForBounds:r] inView:v editor:t delegate:d start:s length:l];
+}
+- (void)editWithFrame:(NSRect)r inView:(NSView *)v editor:(NSText *)t delegate:(id)d event:(NSEvent *)e {
+    [super editWithFrame:[self drawingRectForBounds:r] inView:v editor:t delegate:d event:e];
+}
+- (void)drawWithFrame:(NSRect)frame inView:(NSView *)v {
+    BOOL focus = [(NSControl *)v currentEditor] != nil && v.window.firstResponder == [(NSControl *)v currentEditor];
+    NSBezierPath *p = [NSBezierPath bezierPathWithRoundedRect:NSInsetRect(frame, 0.5, 0.5) xRadius:10 yRadius:10];
+    [NSGraphicsContext saveGraphicsState];
+    if (!self.enabled) CGContextSetAlpha(NSGraphicsContext.currentContext.CGContext, 0.6);
+    [OVColor(OVRoleField) setFill];
+    [p fill];
+    [(focus ? OVColor(OVRoleFocus) : OVColor(OVRoleBorder)) setStroke];
+    p.lineWidth = focus ? 2 : 1;
+    [p stroke];
+    [NSGraphicsContext restoreGraphicsState];
+    [self drawInteriorWithFrame:frame inView:v];
+}
+@end
+
+@interface OVFieldText : NSTextField
+@end
+@implementation OVFieldText
++ (Class)cellClass { return OVFieldCell.class; }
+- (NSSize)intrinsicContentSize { NSSize s = [super intrinsicContentSize]; s.height = 34; return s; }
+- (BOOL)becomeFirstResponder {
+    BOOL r = [super becomeFirstResponder];
+    self.needsDisplay = YES;
+    dispatch_async(dispatch_get_main_queue(), ^{ self.needsDisplay = YES; });
+    return r;
+}
+- (void)textDidEndEditing:(NSNotification *)n { [super textDidEndEditing:n]; self.needsDisplay = YES; }
+@end
+
 NSTextField *OVField(NSString *placeholder) {
-    NSTextField *f = [NSTextField textFieldWithString:@""];
+    OVFieldText *f = [[OVFieldText alloc] initWithFrame:NSZeroRect];
     f.placeholderString = placeholder;
     f.font = [NSFont systemFontOfSize:13];
-    f.bezelStyle = NSTextFieldRoundedBezel;
+    f.textColor = OVColor(OVRoleText);
+    f.bezeled = NO;
+    f.bordered = NO;
+    f.drawsBackground = NO;
+    f.focusRingType = NSFocusRingTypeNone;
+    f.editable = YES;
+    f.selectable = YES;
+    f.lineBreakMode = NSLineBreakByTruncatingTail;
+    f.usesSingleLineMode = YES;
     [f setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
     return f;
 }
@@ -69,45 +128,8 @@ NSButton *OVButton(NSString *title, id target, SEL action) {
     return b;
 }
 
-/// Borderless button drawn as a gradient pill with a white title (and symbol).
-@interface OVPillButton : NSButton
-@end
-@implementation OVPillButton
-- (NSSize)intrinsicContentSize {
-    CGFloat w = ceil([self.title sizeWithAttributes:@{NSFontAttributeName: self.font}].width) + 36 + (self.image ? 20 : 0);
-    return NSMakeSize(w, 34);
-}
-- (void)setTitle:(NSString *)title { [super setTitle:title]; [self invalidateIntrinsicContentSize]; self.needsDisplay = YES; }
-- (void)setImage:(NSImage *)image { [super setImage:image]; [self invalidateIntrinsicContentSize]; self.needsDisplay = YES; }
-- (void)setEnabled:(BOOL)enabled { [super setEnabled:enabled]; self.needsDisplay = YES; }
-- (void)drawRect:(NSRect)dirty {
-    NSRect b = self.bounds;
-    NSBezierPath *pill = [NSBezierPath bezierPathWithRoundedRect:b xRadius:10 yRadius:10];
-    [NSGraphicsContext saveGraphicsState];
-    if (!self.enabled) CGContextSetAlpha(NSGraphicsContext.currentContext.CGContext, 0.4);
-    [OVBrandGradient() drawInBezierPath:pill angle:self.isFlipped ? 90 : -90];
-    if (self.isHighlighted) { [[NSColor colorWithWhite:0 alpha:0.18] setFill]; [pill fill]; }
-    NSDictionary *attrs = @{NSFontAttributeName: self.font, NSForegroundColorAttributeName: NSColor.whiteColor};
-    NSSize ts = [self.title sizeWithAttributes:attrs];
-    NSImage *img = [self.image imageWithSymbolConfiguration:
-                    [[NSImageSymbolConfiguration configurationWithPointSize:12 weight:NSFontWeightBold]
-                     configurationByApplyingConfiguration:[NSImageSymbolConfiguration configurationWithPaletteColors:@[NSColor.whiteColor]]]];
-    CGFloat iw = img ? img.size.width + 7 : 0;
-    CGFloat x = round((NSWidth(b) - ts.width - iw) / 2);
-    if (img) [img drawInRect:NSMakeRect(x, round((NSHeight(b) - img.size.height) / 2), img.size.width, img.size.height)
-                    fromRect:NSZeroRect operation:NSCompositingOperationSourceOver fraction:1 respectFlipped:YES hints:nil];
-    [self.title drawAtPoint:NSMakePoint(x + iw, round((NSHeight(b) - ts.height) / 2) - (self.isFlipped ? 1 : -1)) withAttributes:attrs];
-    [NSGraphicsContext restoreGraphicsState];
-}
-@end
-
 NSButton *OVPrimaryButton(NSString *title, id target, SEL action) {
-    OVPillButton *b = [OVPillButton buttonWithTitle:title target:target action:action];
-    b.bordered = NO;
-    b.font = [NSFont systemFontOfSize:14 weight:NSFontWeightSemibold];
-    [b setContentHuggingPriority:NSLayoutPriorityDefaultHigh forOrientation:NSLayoutConstraintOrientationHorizontal];
-    [b setContentCompressionResistancePriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
-    return b;
+    return OVPillButtonMake(title, nil, target, action, NO);
 }
 
 #pragma mark - Avatar
@@ -161,9 +183,9 @@ NSButton *OVIconButton(NSString *symbol, NSString *tooltip, id target, SEL actio
     b.toolTip = tooltip;
     b.imageScaling = NSImageScaleProportionallyUpOrDown;
     b.symbolConfiguration = [NSImageSymbolConfiguration configurationWithPointSize:15 weight:NSFontWeightRegular];
-    b.contentTintColor = NSColor.secondaryLabelColor;
-    [b.widthAnchor constraintEqualToConstant:26].active = YES;
-    [b.heightAnchor constraintEqualToConstant:26].active = YES;
+    b.contentTintColor = OVColor(OVRoleMuted);
+    [b.widthAnchor constraintEqualToConstant:28].active = YES;
+    [b.heightAnchor constraintEqualToConstant:28].active = YES;
     return b;
 }
 
@@ -233,27 +255,10 @@ NSView *OVSpacer(void) {
     return v;
 }
 
-@interface OVCardView : NSView
-@end
-@implementation OVCardView
-- (BOOL)wantsUpdateLayer { return YES; }
-- (void)updateLayer {
-    self.layer.backgroundColor = OVCardColor().CGColor;
-    self.layer.borderColor = [NSColor.separatorColor colorWithAlphaComponent:0.5].CGColor;
-}
-@end
-
 NSView *OVCard(NSView *content, CGFloat padding) {
-    OVCardView *card = [OVCardView new];
-    card.wantsLayer = YES;
-    card.layer.cornerRadius = 14;
-    card.layer.cornerCurve = kCACornerCurveContinuous;
-    card.layer.borderWidth = 0.5;
-    card.layer.shadowOpacity = 0.07;
-    card.layer.shadowRadius = 10;
-    card.layer.shadowOffset = CGSizeMake(0, -3);
+    OVBoxView *card = [OVBoxView boxWithFill:OVColor(OVRoleSurface) border:OVColor(OVRoleBorder) radius:12];
     [card addSubview:content];
-    OVPin(content, card, NSEdgeInsetsMake(padding, padding + 2, padding, padding + 2));
+    OVPin(content, card, NSEdgeInsetsMake(padding, padding, padding, padding));
     return card;
 }
 
@@ -306,6 +311,7 @@ NSScrollView *OVScrollPage(NSStackView *content) {
 
 @interface OVSliderRow ()
 @property NSSlider *slider;
+@property NSView *valuePill;
 @property NSTextField *value;
 @property NSString *key, *format;
 @property BOOL integer;
@@ -326,15 +332,20 @@ NSScrollView *OVScrollPage(NSStackView *content) {
     NSStackView *left = OVVStack(hint ? @[t, OVWrapLabel(hint, 11, nil)] : @[t], 2);
     [left.widthAnchor constraintEqualToConstant:210].active = YES;
 
-    r.slider = [NSSlider sliderWithValue:[NSUserDefaults.standardUserDefaults doubleForKey:key]
+    r.slider = [OVSlider sliderWithValue:[NSUserDefaults.standardUserDefaults doubleForKey:key]
                                 minValue:min maxValue:max target:r action:@selector(moved:)];
     r.slider.continuous = YES;
     [r.slider.widthAnchor constraintGreaterThanOrEqualToConstant:110].active = YES;
-    r.value = OVLabel(@"", 13, NSFontWeightRegular, NSColor.secondaryLabelColor);
-    r.value.font = [NSFont monospacedDigitSystemFontOfSize:13 weight:NSFontWeightRegular];
-    r.value.alignment = NSTextAlignmentRight;
-    [r.value.widthAnchor constraintEqualToConstant:52].active = YES;
-    [r setViews:@[left, r.slider, r.value] inGravity:NSStackViewGravityLeading];
+    r.slider.accessibilityLabel = title;
+    r.value = OVLabel(@"", 13, NSFontWeightMedium, nil);
+    r.value.font = [NSFont monospacedDigitSystemFontOfSize:13 weight:NSFontWeightMedium];
+    r.value.alignment = NSTextAlignmentCenter;
+    OVBoxView *pill = [OVBoxView boxWithFill:OVColor(OVRoleField) border:OVColor(OVRoleBorder) radius:8];
+    [pill addSubview:r.value];
+    OVPin(r.value, pill, NSEdgeInsetsMake(4, 8, 4, 8));
+    [pill.widthAnchor constraintGreaterThanOrEqualToConstant:56].active = YES;
+    r.valuePill = pill;
+    [r setViews:@[left, r.slider, pill] inGravity:NSStackViewGravityLeading];
     [r refresh];
     return r;
 }
@@ -343,6 +354,8 @@ NSScrollView *OVScrollPage(NSStackView *content) {
     [NSUserDefaults.standardUserDefaults setDouble:v forKey:self.key];
     self.value.stringValue = [NSString stringWithFormat:self.format, v];
 }
+- (BOOL)enabled { return self.slider.enabled; }
+- (void)setEnabled:(BOOL)e { self.slider.enabled = e; self.value.alphaValue = e ? 1 : 0.5; }
 - (void)refresh {
     double v = [NSUserDefaults.standardUserDefaults doubleForKey:self.key];
     self.slider.doubleValue = v;

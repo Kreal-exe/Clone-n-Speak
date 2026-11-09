@@ -31,5 +31,7 @@ BOOL OVEverythingReady(void);
 @interface OVModelsPage : NSViewController @end
 @interface OVSettingsPage : NSViewController @end
 @interface OVLogPage : NSViewController @end
+/// Developer-only page with every OVDesign component (not in the sidebar; OVNavigate(@"gallery") or -OVStartPage gallery).
+@interface OVGalleryPage : NSViewController @end
 
 NS_ASSUME_NONNULL_END

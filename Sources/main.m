@@ -247,7 +247,7 @@
     NSViewController *vc = self.pages[page];
     if (!vc) {
         Class cls = @{@"setup": OVSetupPage.class, @"synth": OVSynthPage.class, @"voices": OVVoicesPage.class,
-                      @"models": OVModelsPage.class, @"settings": OVSettingsPage.class, @"log": OVLogPage.class}[page];
+                      @"models": OVModelsPage.class, @"settings": OVSettingsPage.class, @"log": OVLogPage.class, @"gallery": OVGalleryPage.class}[page];
         if (!cls) return;
         vc = [cls new];
         self.pages[page] = vc;
@@ -319,13 +319,16 @@ static void OVRedrawTree(NSView *v) {
 
     self.autoSwitch = YES;
     [self show:@"setup"];
+    // Developer aid: -OVStartPage gallery opens a page that is not in the sidebar.
+    NSString *start = [NSUserDefaults.standardUserDefaults stringForKey:@"OVStartPage"];
+    if (start.length) { self.autoSwitch = NO; [self show:start]; }
     [OVModels shared];
     [[OVRuntime shared] detect];
 
     // Developer aid: OV_SNAPSHOT_DIR=/path renders every page to PNG (no screen-recording permission needed).
     // Launch with `-autoSetup NO -disableLegacyMigration YES -migratedFromOmniVoiceUA YES` to keep it side-effect free.
     NSString *snap = NSProcessInfo.processInfo.environment[@"OV_SNAPSHOT_DIR"];
-    if (snap.length) [self snapshotPages:@[@"setup", @"synth", @"voices", @"models", @"settings", @"log"] into:snap index:0];
+    if (snap.length) [self snapshotPages:@[@"setup", @"synth", @"voices", @"models", @"settings", @"log", @"gallery"] into:snap index:0];
 
     // Developer aid: OV_SELFTEST_AUDIO=sample.wav OV_SELFTEST_TEXT="transcript" clones a voice and speaks a phrase
     // through the real app classes, prints the results and quits.
@@ -387,6 +390,30 @@ static void OVRedrawTree(NSView *v) {
             [v cacheDisplayInRect:v.bounds toBitmapImageRep:rep];
             NSString *file = [dir stringByAppendingPathComponent:[NSString stringWithFormat:@"%@.png", pages[i - 1]]];
             [[rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:file atomically:YES];
+            // A page taller than the window also gets <page>-2.png, <page>-3.png … (scrolled one screen at a time).
+            NSScrollView *sv = nil;
+            NSMutableArray<NSView *> *todo = [NSMutableArray arrayWithObject:v];
+            while (todo.count && !sv) {
+                NSView *c = todo.firstObject;
+                [todo removeObjectAtIndex:0];
+                if ([c isKindOfClass:NSScrollView.class] && NSHeight(((NSScrollView *)c).documentView.frame) > NSHeight(c.bounds) + 4) sv = (NSScrollView *)c;
+                [todo addObjectsFromArray:c.subviews];
+            }
+            if (sv) {
+                CGFloat page = NSHeight(sv.contentView.bounds) - 40, max = NSHeight(sv.documentView.frame) - NSHeight(sv.contentView.bounds);
+                for (int n = 2; n <= 8 && page > 0; n++) {
+                    CGFloat y = MIN((n - 1) * page, max);
+                    [sv.contentView scrollToPoint:NSMakePoint(0, y)];
+                    [sv reflectScrolledClipView:sv.contentView];
+                    [v displayIfNeeded];
+                    NSBitmapImageRep *r2 = [v bitmapImageRepForCachingDisplayInRect:v.bounds];
+                    [v cacheDisplayInRect:v.bounds toBitmapImageRep:r2];
+                    [[r2 representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
+                     writeToFile:[dir stringByAppendingPathComponent:[NSString stringWithFormat:@"%@-%d.png", pages[i - 1], n]] atomically:YES];
+                    if (y >= max) break;
+                }
+                [sv.contentView scrollToPoint:NSZeroPoint];
+            }
         }
         if (i >= pages.count) { [NSApp terminate:nil]; return; }
         [self show:pages[i]];
