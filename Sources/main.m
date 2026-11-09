@@ -135,11 +135,13 @@
     NSTextField *brand = OVLabel(OVAppName, 14, NSFontWeightBold, OVColor(OVRoleText));
     brand.font = OVRoundedFont(14, NSFontWeightBold);
     brand.lineBreakMode = NSLineBreakByTruncatingTail;
-    [brand setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+    [brand setContentCompressionResistancePriority:NSLayoutPriorityDefaultHigh forOrientation:NSLayoutConstraintOrientationHorizontal];
     NSString *ver = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"";
     NSView *verBadge = OVCompactBadge([@"v" stringByAppendingString:ver], OVRoleMuted);
     self.tagline = OVWrapLabel(@"", 10.5, NSColor.secondaryLabelColor);  // kept as the brand tooltip
     [verBadge setContentCompressionResistancePriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
+    verBadge.accessibilityElement = NO;
+    brand.accessibilityLabel = [NSString stringWithFormat:@"%@ %@", OVAppName, ver];
     NSStackView *head = OVHStack(@[logo, brand, verBadge], 7);
     head.alignment = NSLayoutAttributeCenterY;
 
@@ -174,7 +176,7 @@
         [foot.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:12],
         [foot.trailingAnchor constraintEqualToAnchor:root.trailingAnchor constant:-12],
         [foot.bottomAnchor constraintEqualToAnchor:root.bottomAnchor constant:-12],
-        [root.widthAnchor constraintGreaterThanOrEqualToConstant:200],
+        [root.widthAnchor constraintGreaterThanOrEqualToConstant:220],
     ]];
     self.view = root;
     self.statusCard = foot;
@@ -210,7 +212,10 @@
 
 - (void)themeChanged {
     self.statusCard.needsDisplay = YES;
-    [self.table enumerateAvailableRowViewsUsingBlock:^(NSTableRowView *rv, NSInteger row) { rv.needsDisplay = YES; }];
+    // palette-colored icons and tracked header strings bake in colors: rebuild the visible rows
+    NSInteger sel = self.table.selectedRow;
+    [self.table reloadData];
+    if (sel >= 0) [self.table selectRowIndexes:[NSIndexSet indexSetWithIndex:sel] byExtendingSelection:NO];
     [self refreshFooter];
 }
 
@@ -315,16 +320,21 @@
         [tf setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
         cell.imageView = iv;
         cell.textField = tf;
-        cell.proBadge = OVProBadgeCompact();
-        NSStackView *s = OVHStack(@[iv, tf, cell.proBadge], 9);
-        [s setCustomSpacing:6 afterView:tf];
-        [iv.widthAnchor constraintEqualToConstant:18].active = YES;
-        [cell addSubview:s];
-        s.translatesAutoresizingMaskIntoConstraints = NO;
+        // monochrome grey pill, right-aligned so all pills line up; the title truncates first
+        NSView *badge = OVCompactBadge(L(@"16 GB"), OVRoleMuted);
+        badge.toolTip = L(@"This feature is meant for Macs with 16 GB of memory or more. On a Mac with less it may run out of memory.");
+        badge.accessibilityElement = NO;   // the row label already says "needs 16 GB"
+        cell.proBadge = badge;
+        for (NSView *v in @[iv, tf, badge]) { v.translatesAutoresizingMaskIntoConstraints = NO; [cell addSubview:v]; }
         [NSLayoutConstraint activateConstraints:@[
-            [s.leadingAnchor constraintEqualToAnchor:cell.leadingAnchor constant:8],
-            [s.trailingAnchor constraintLessThanOrEqualToAnchor:cell.trailingAnchor constant:-6],
-            [s.centerYAnchor constraintEqualToAnchor:cell.centerYAnchor]]];
+            [iv.leadingAnchor constraintEqualToAnchor:cell.leadingAnchor constant:8],
+            [iv.widthAnchor constraintEqualToConstant:18],
+            [iv.centerYAnchor constraintEqualToAnchor:cell.centerYAnchor],
+            [tf.leadingAnchor constraintEqualToAnchor:iv.trailingAnchor constant:9],
+            [tf.centerYAnchor constraintEqualToAnchor:cell.centerYAnchor],
+            [badge.trailingAnchor constraintEqualToAnchor:cell.trailingAnchor constant:-8],
+            [badge.centerYAnchor constraintEqualToAnchor:cell.centerYAnchor],
+            [tf.trailingAnchor constraintLessThanOrEqualToAnchor:badge.leadingAnchor constant:-6]]];
     }
     cell.textField.stringValue = it[@"title"];
     cell.symbolName = it[@"symbol"];
@@ -632,8 +642,8 @@ static void OVRedrawTree(NSView *v) {
 
     NSSplitViewController *split = [NSSplitViewController new];
     NSSplitViewItem *side = [NSSplitViewItem sidebarWithViewController:self.sidebar];
-    side.minimumThickness = 190;
-    side.maximumThickness = 250;
+    side.minimumThickness = 220;
+    side.maximumThickness = 270;
     side.canCollapse = NO;
     side.holdingPriority = NSLayoutPriorityDefaultLow + 10; // window resizes grow the content, not the sidebar
     NSSplitViewItem *main = [NSSplitViewItem splitViewItemWithViewController:self.content];
@@ -658,7 +668,7 @@ static void OVRedrawTree(NSView *v) {
     self.window.contentMinSize = NSMakeSize(MIN(820, vis.size.width - 16), MIN(560, vis.size.height - 16));
     [self.window setFrame:frame display:NO];
     [self.window makeKeyAndOrderFront:nil];
-    [split.splitView setPosition:208 ofDividerAtIndex:0];
+    [split.splitView setPosition:236 ofDividerAtIndex:0];
 }
 
 /// The first release (REV5) kept one voice in ~/OmniVoice-UA — import it once.
