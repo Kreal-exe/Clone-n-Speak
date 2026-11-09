@@ -211,7 +211,7 @@ static const NSTimeInterval kMaxRecord = 15;
                                        OVFieldBlock(L(@"Language of the sample"), nil, self.sampleLangPopup)], 16);
     NSView *voiceCard = OVStepCardWithAccessory(1, @"person.crop.circle", L(@"Voice"), nil, voiceColumns);
 
-    self.headerView = OVPageHeader(L(@"New voice"), L(@"Clone a voice from 3–10 seconds of speech."), self.deleteButton);
+    self.headerView = OVPageHeaderWrapped(L(@"New voice"), L(@"Clone a voice from 3–10 seconds of speech."), self.deleteButton, YES);
     NSScrollView *rightScroll = OVPageScroll(@[self.headerView, voiceCard, audioCard, textCard, actions, self.status, self.adaptedRow]);
 
     OVAudioDropView *root = [OVAudioDropView stackViewWithViews:@[left, rightScroll]];
