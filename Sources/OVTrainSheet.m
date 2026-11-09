@@ -41,6 +41,8 @@ static OVTrainSheet *shown;  // the sheet keeps its controller alive
         [NSNotificationCenter.defaultCenter removeObserver:shown];
         shown = nil;
     }];
+    [s.window.contentView layoutSubtreeIfNeeded];
+    [s fitHeight:YES];
 }
 
 - (void)build {
@@ -116,17 +118,39 @@ static OVTrainSheet *shown;  // the sheet keeps its controller alive
     [self refresh];
 }
 
-/// Window height = content, but never more than the screen minus 120 pt; the scroll view takes the rest.
-- (void)fitHeight {
-    NSView *root = self.window.contentView;
+/// Window height = content, capped by the screen (minus 120 pt) and the parent window (minus 40 pt); the scroll view takes the rest.
+/// Once the sheet is attached (`initial`) it is sized exactly; afterwards it only grows, so refreshes never make it jump.
+- (void)fitHeight:(BOOL)initial {
+    NSWindow *parent = self.window.sheetParent;
+    NSScreen *screen = parent.screen ?: self.window.screen ?: NSScreen.mainScreen;
+    CGFloat cap = screen.visibleFrame.size.height - 120;
+    if (parent) cap = MIN(cap, parent.frame.size.height - 40);
     CGFloat docH = self.scroll.documentView.fittingSize.height, barH = self.bottomBar.fittingSize.height;
-    CGFloat screenH = (self.window.screen ?: NSScreen.mainScreen).visibleFrame.size.height;
-    CGFloat h = MAX(300, MIN(docH + barH, screenH - 120));
+    CGFloat h = MAX(300, MIN(docH + barH, cap));
+    CGFloat curH = [self.window contentRectForFrameRect:self.window.frame].size.height;
+    if (!initial && h <= curH + 0.5) return;
     NSRect f = [self.window frameRectForContentRect:NSMakeRect(0, 0, 640, h)];
     NSRect cur = self.window.frame;
     f.origin = NSMakePoint(cur.origin.x, cur.origin.y + cur.size.height - f.size.height);
     if (fabs(cur.size.height - f.size.height) > 0.5) [self.window setFrame:f display:YES];
-    (void)root;
+}
+
+/// A compact "nothing yet" box for the rounds card: icon + title on one line, ~50 pt tall; fits without scrolling.
+static NSView *EmptyRounds(NSString *title) {
+    NSImageView *icon = OVSymbol(@"graduationcap", 22, OVColor(OVRoleMuted));
+    [icon.widthAnchor constraintEqualToConstant:28].active = YES;
+    [icon.heightAnchor constraintEqualToConstant:24].active = YES;
+    NSTextField *t = OVLabel(title, 14, NSFontWeightSemibold, OVColor(OVRoleMuted));
+    NSStackView *st = OVHStack(@[icon, t], 8);
+    NSView *box = [OVBoxView boxWithFill:nil border:OVColor(OVRoleBorder) radius:10];
+    st.translatesAutoresizingMaskIntoConstraints = NO;
+    [box addSubview:st];
+    [NSLayoutConstraint activateConstraints:@[
+        [st.centerXAnchor constraintEqualToAnchor:box.centerXAnchor],
+        [st.topAnchor constraintEqualToAnchor:box.topAnchor constant:14],
+        [st.bottomAnchor constraintEqualToAnchor:box.bottomAnchor constant:-14],
+    ]];
+    return box;
 }
 
 - (NSString *)lang { return self.langPopup.selectedItem.representedObject; }
@@ -160,7 +184,7 @@ static OVTrainSheet *shown;  // the sheet keeps its controller alive
     self.bar.hidden = !self.running;
     [self refreshResults];
     [self.window.contentView layoutSubtreeIfNeeded];
-    [self fitHeight];
+    [self fitHeight:NO];
 }
 
 /// Own takes always; with Seed-VC the model's own voice and the user's voices in that language as narrators.
@@ -188,7 +212,7 @@ static OVTrainSheet *shown;  // the sheet keeps its controller alive
     NSArray *rows = self.running ? self.live : info[@"history"];
     NSInteger kept = info[@"trained"] ? [info[@"trained"][@"round"] integerValue] : 0;
     if (!rows.count) {
-        NSView *empty = OVEmptyState(@"graduationcap", L(@"Not trained in this language yet."), nil, @[]);
+        NSView *empty = EmptyRounds(L(@"Not trained in this language yet."));
         [self.results addArrangedSubview:empty];
         OVFillWidth(@[empty], self.results);
         return;
@@ -199,6 +223,7 @@ static OVTrainSheet *shown;  // the sheet keeps its controller alive
         NSImageView *check = OVSymbol(@"checkmark.circle.fill", 16, OVColor(OVRoleOK));
         check.hidden = self.running || r != kept;
         check.toolTip = L(@"The voice speaks this language from this sample");
+        check.accessibilityLabel = L(@"In use");
         NSTextField *name = OVLabel(r == 0 ? L(@"Original sample") : [NSString stringWithFormat:L(@"Round %ld"), (long)r], 14, NSFontWeightSemibold, OVColor(OVRoleText));
         OVRole tone = pron * 100 >= 85 ? OVRoleOK : pron * 100 >= 60 ? OVRoleWarn : OVRoleErr;
         NSView *pronBadge = OVBadge([NSString stringWithFormat:L(@"pronunciation %.0f%%"), pron * 100], tone);
@@ -208,6 +233,7 @@ static OVTrainSheet *shown;  // the sheet keeps its controller alive
         [play.heightAnchor constraintEqualToConstant:28].active = YES;
         play.tag = r;
         play.toolTip = L(@"Listen");
+        play.accessibilityLabel = L(@"Listen");
         play.hidden = ![NSFileManager.defaultManager fileExistsAtPath:[self samplePath:r]];
         NSButton *use = OVGhostButton(L(@"Use"), nil, self, @selector(useRound:));
         use.tag = r;
