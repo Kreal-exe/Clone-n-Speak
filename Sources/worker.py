@@ -1126,7 +1126,14 @@ def speaker_model():
     global _speaker
     if _speaker is None:
         from huggingface_hub import hf_hub_download
-        _speaker = _Ecapa(_torch_zip_load(hf_hub_download(SPEAKER_REPO, "embedding_model.ckpt")))
+        import cns_net
+        try:  # Offline mode: the cached checkpoint is used, never fetched
+            ckpt = hf_hub_download(SPEAKER_REPO, "embedding_model.ckpt", local_files_only=cns_net.is_offline())
+        except Exception as e:
+            if cns_net.is_offline():
+                raise cns_net.OfflineError("Offline mode is on: voice likeness isn’t measured.") from e
+            raise
+        _speaker = _Ecapa(_torch_zip_load(ckpt))
     return _speaker
 
 
@@ -1239,6 +1246,11 @@ def sample_print(voice):
         vp = voice_print(load_mono(audio))
         np.save(cache, vp)
         return vp
+    except RuntimeError as e:
+        import cns_net
+        if not isinstance(e, cns_net.OfflineError):  # offline is not an error: likeness just isn't measured
+            traceback.print_exc(file=sys.stderr)
+        return None
     except Exception:  # no network for the first download, …: likeness is a bonus
         traceback.print_exc(file=sys.stderr)
         return None

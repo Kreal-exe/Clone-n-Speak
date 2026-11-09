@@ -1,0 +1,25 @@
+/* Network gate, Offline mode and first-use consent (task 8.4). */
+"Offline mode" = "Офлайн-режим";
+"Offline mode is on" = "Включён офлайн-режим";
+"Offline mode is on. Turn it off in Settings to use %@." = "Включён офлайн-режим. Чтобы пользоваться функцией «%@», выключите его в Настройках.";
+"Turns off Edge TTS, YouTube import, Bridge and plugin network access. Model downloads you start yourself still work." = "Отключает Edge TTS, импорт с YouTube, Bridge и доступ плагинов к сети. Модели, которые вы скачиваете сами, по-прежнему загружаются.";
+"Use %@?" = "Использовать «%@»?";
+"This sends %@ to %@. Nothing is sent until you agree, and you can turn it off with Offline mode in Settings." = "Будет отправлено: %@ — на адрес: %@. Без вашего согласия ничего не уходит; отключить можно офлайн-режимом в Настройках.";
+"Not now" = "Не сейчас";
+"Edge TTS" = "Edge TTS";
+"YouTube import" = "Импорт с YouTube";
+"Bridge" = "Bridge";
+"Model downloads" = "Загрузка моделей";
+"Plugin network access" = "Доступ плагинов к сети";
+"Microsoft speech servers" = "серверы речи Microsoft";
+"the text you want to hear" = "текст, который нужно озвучить";
+"YouTube" = "YouTube";
+"the video link you paste" = "ссылка на видео, которую вы вставляете";
+"a tunnel that makes this Mac reachable from other devices" = "туннель, через который этот Mac доступен с других устройств";
+"the requests your devices send and the audio they get back" = "запросы ваших устройств и звук, который они получают";
+"Hugging Face" = "Hugging Face";
+"the names of the models you download" = "названия скачиваемых моделей";
+"the servers a plugin talks to" = "серверы, с которыми работает плагин";
+"whatever the plugin sends" = "всё, что отправляет плагин";
+"Open Settings" = "Открыть Настройки";
+"Allow" = "Разрешить";
