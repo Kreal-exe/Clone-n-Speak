@@ -1,5 +1,6 @@
 #import "OVPages.h"
 #import "OVUI.h"
+#import "OVDesign.h"
 #import "OVLocale.h"
 #import "OVStore.h"
 #import "OVModels.h"
@@ -29,20 +30,23 @@ static const NSTimeInterval kMaxRecord = 15;
 }
 @end
 
+@class OVMeterBar;
+
 @interface OVVoicesPage () <NSTableViewDataSource, NSTableViewDelegate, AVAudioRecorderDelegate, NSTextFieldDelegate, NSTextViewDelegate>
 @property NSTableView *table;
-@property NSTextField *heading, *nameField, *refInfo, *status;
+@property NSTextField *nameField, *refInfo, *status;
+@property NSView *headerView;
+@property NSStackView *sampleBadge;
 @property NSTextView *refText;
-@property NSButton *chooseButton, *recordButton, *playButton, *transcribeButton, *cloneButton, *deleteButton;
+@property NSButton *recordButton, *playButton, *transcribeButton, *cloneButton, *deleteButton;
 @property NSButton *enhanceButton, *revertButton, *previewButton;
 @property NSStackView *adaptedRow;
 @property NSTextField *adaptedLabel;
-@property NSLevelIndicator *qualityMeter;
+@property OVMeterBar *qualityMeter;
 @property NSTextField *qualityLabel;
-@property NSPopUpButton *sampleLangPopup;
+@property OVPopup *sampleLangPopup;
 @property NSMutableDictionary<NSString *, NSDictionary *> *analysis; // path|mtime → report
 @property NSProgressIndicator *spinner;
-@property NSView *emptyHint;
 
 @property (nullable) OVVoice *voice;          // nil = drafting a new voice
 @property (nullable) AVAudioRecorder *recorder;
@@ -50,118 +54,176 @@ static const NSTimeInterval kMaxRecord = 15;
 @property (nullable) NSTimer *recTimer;
 @end
 
+/// Quality bar: a 6 pt track (field color) with a fill that turns from error to warning to OK at the same thresholds the
+/// NSLevelIndicator used (45 and 70). Colors are resolved while drawing, so a palette change repaints it.
+@interface OVMeterBar : NSView
+@property (nonatomic) double doubleValue;   // 0...100
+@end
+@implementation OVMeterBar
+- (instancetype)initWithFrame:(NSRect)f {
+    if ((self = [super initWithFrame:f])) self.accessibilityRole = NSAccessibilityLevelIndicatorRole;
+    return self;
+}
+- (NSSize)intrinsicContentSize { return NSMakeSize(120, 6); }
+- (void)setDoubleValue:(double)v {
+    _doubleValue = MAX(0, MIN(100, v));
+    self.accessibilityValue = @((NSInteger)round(_doubleValue));
+    self.needsDisplay = YES;
+}
+- (void)drawRect:(NSRect)dirty {
+    NSRect b = self.bounds;
+    [OVColor(OVRoleField) setFill];
+    [[NSBezierPath bezierPathWithRoundedRect:b xRadius:3 yRadius:3] fill];
+    if (_doubleValue <= 0) return;
+    OVRole role = _doubleValue >= 70 ? OVRoleOK : _doubleValue >= 45 ? OVRoleWarn : OVRoleErr;
+    NSRect fill = b;
+    fill.size.width = MAX(6, round(NSWidth(b) * _doubleValue / 100));
+    [OVColor(role) setFill];
+    [[NSBezierPath bezierPathWithRoundedRect:fill xRadius:3 yRadius:3] fill];
+}
+@end
+
+/// A numbered step card whose header can carry an accessory (OVStepCard has none).
+static NSView *VoiceStepCard(NSInteger step, NSString *symbol, NSString *title, NSView *accessory, NSView *content) {
+    NSView *header = OVCardHeader(step, symbol, title, accessory);
+    NSStackView *s = OVVStack(@[header, content], 16);
+    OVFillWidth(@[header, content], s);
+    return OVCard(s, 20);
+}
+
+/// The heading field inside an OVPageHeader (found by its accessibility role).
+static NSTextField *HeaderTitle(NSView *v) {
+    if ([v isKindOfClass:NSTextField.class] && [[(NSTextField *)v accessibilityRole] isEqual:@"AXHeading"]) return (NSTextField *)v;
+    for (NSView *sub in v.subviews) { NSTextField *t = HeaderTitle(sub); if (t) return t; }
+    return nil;
+}
+
 @implementation OVVoicesPage
+
+/// Sets the page title again with the helper's attributes (28 bold, tracking), which a plain stringValue would lose.
+- (void)setHeadingText:(NSString *)text {
+    NSTextField *t = HeaderTitle(self.headerView);
+    if (!t) return;
+    NSString *s = text.length ? text : L(@"New voice");
+    NSMutableDictionary *attrs = [[t.attributedStringValue attributesAtIndex:0 effectiveRange:NULL] mutableCopy];
+    t.attributedStringValue = [[NSAttributedString alloc] initWithString:s attributes:attrs];
+    t.toolTip = s;
+}
 
 - (void)loadView {
     // left: list of voices
     self.table = [NSTableView new];
     [self.table addTableColumn:[[NSTableColumn alloc] initWithIdentifier:@"v"]];
     self.table.headerView = nil;
-    self.table.rowHeight = 44;
-    self.table.style = NSTableViewStyleSourceList;
+    self.table.rowHeight = 52;
+    self.table.style = NSTableViewStylePlain;
+    self.table.backgroundColor = NSColor.clearColor;
+    self.table.intercellSpacing = NSMakeSize(0, 2);
     self.table.dataSource = self;
     self.table.delegate = self;
+    self.table.accessibilityLabel = L(@"My voices");
     NSScrollView *ls = [NSScrollView new];
     ls.documentView = self.table;
     ls.hasVerticalScroller = YES;
     ls.drawsBackground = NO;
-    NSButton *add = OVButton(L(@"New voice"), self, @selector(newVoice:));
-    add.image = [NSImage imageWithSystemSymbolName:@"plus" accessibilityDescription:nil];
-    add.imagePosition = NSImageLeading;
-    NSStackView *left = OVVStack(@[OVSectionTitle(L(@"My voices")), ls, add], 10);
-    left.edgeInsets = NSEdgeInsetsMake(30, 20, 20, 12);
-    OVFillWidth(@[ls, add], left);
+    ls.borderType = NSNoBorder;
+    NSButton *add = OVGhostButton(L(@"New voice"), @"plus", self, @selector(newVoice:));
+    NSTextField *listTitle = OVLabel(L(@"My voices"), 18, NSFontWeightBold, nil);
+    NSStackView *panel = OVVStack(@[listTitle, add, ls], 12);
+    panel.alignment = NSLayoutAttributeLeading;
+    panel.edgeInsets = NSEdgeInsetsMake(16, 12, 12, 12);
+    OVFillWidth(@[listTitle, add, ls], panel);
     [ls setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationVertical];
-    [left.widthAnchor constraintEqualToConstant:190].active = YES;
+    OVBoxView *listBox = [OVBoxView boxWithFill:OVColor(OVRoleSurface) border:OVColor(OVRoleBorder) radius:12];
+    [listBox addSubview:panel];
+    OVPin(panel, listBox, NSEdgeInsetsZero);
+    NSView *left = [NSView new];
+    [left addSubview:listBox];
+    OVPin(listBox, left, NSEdgeInsetsMake(16, 16, 16, 0));
+    [left.widthAnchor constraintEqualToConstant:256].active = YES;
 
     // right: editor
-    self.heading = OVTitle(L(@"New voice"));
     self.nameField = OVField(L(@"For example, My voice"));
-    self.nameField.font = [NSFont systemFontOfSize:15];
+    self.nameField.font = [NSFont systemFontOfSize:14];
     self.nameField.delegate = self;
 
-    self.chooseButton = OVButton(L(@"Choose file…"), self, @selector(chooseFile:));
-    self.chooseButton.image = [NSImage imageWithSystemSymbolName:@"doc.badge.plus" accessibilityDescription:nil];
-    self.chooseButton.imagePosition = NSImageLeading;
-    self.recordButton = OVButton(L(@"Record"), self, @selector(record:));
-    self.recordButton.image = [NSImage imageWithSystemSymbolName:@"mic.fill" accessibilityDescription:nil];
-    self.recordButton.imagePosition = NSImageLeading;
-    self.playButton = OVButton(L(@"Listen"), self, @selector(playRef:));
-    self.playButton.image = [NSImage imageWithSystemSymbolName:@"play.fill" accessibilityDescription:nil];
-    self.playButton.imagePosition = NSImageLeading;
-    self.refInfo = OVWrapLabel(@"", 12, nil);
-    self.qualityMeter = [NSLevelIndicator new];
-    self.qualityMeter.levelIndicatorStyle = NSLevelIndicatorStyleContinuousCapacity;
-    self.qualityMeter.minValue = 0;
-    self.qualityMeter.maxValue = 100;
-    self.qualityMeter.warningValue = 70;
-    self.qualityMeter.criticalValue = 45;
-    self.qualityMeter.editable = NO;
-    [self.qualityMeter.widthAnchor constraintEqualToConstant:90].active = YES;
-    self.qualityLabel = OVWrapLabel(@"", 12, nil);
-    self.enhanceButton = OVButton(L(@"Improve sample"), self, @selector(enhance:));
-    self.enhanceButton.image = [NSImage imageWithSystemSymbolName:@"wand.and.stars" accessibilityDescription:nil];
-    self.enhanceButton.imagePosition = NSImageLeading;
-    self.enhanceButton.controlSize = NSControlSizeRegular;
+    self.playButton = OVPlayButton(self, @selector(playRef:));
+    self.recordButton = OVGhostButton(L(@"Record"), @"mic.fill", self, @selector(record:));
+    self.refInfo = OVWrapLabel(@"", 13, OVColor(OVRoleMuted));
+    self.qualityMeter = [OVMeterBar new];
+    self.qualityMeter.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.qualityMeter.widthAnchor constraintEqualToConstant:120].active = YES;
+    [self.qualityMeter.heightAnchor constraintEqualToConstant:6].active = YES;
+    self.qualityMeter.accessibilityLabel = L(@"Quality");
+    self.qualityLabel = OVWrapLabel(@"", 13, OVColor(OVRoleMuted));
+    self.enhanceButton = OVGhostButton(L(@"Improve sample"), @"sparkles", self, @selector(enhance:));
     self.enhanceButton.toolTip = L(@"Removes background noise and rumble, trims long pauses and evens out loudness. The original is kept.");
-    self.revertButton = OVButton(L(@"Restore original"), self, @selector(revertSample:));
-    self.revertButton.controlSize = NSControlSizeRegular;
-    NSStackView *qualityRow = OVHStack(@[OVLabel(L(@"Quality"), 12, NSFontWeightMedium, NSColor.secondaryLabelColor), self.qualityMeter], 8);
-    for (NSButton *b in @[self.chooseButton, self.recordButton, self.playButton]) b.controlSize = NSControlSizeRegular;
-    NSStackView *audioBox = OVVStack(@[OVHStack(@[self.chooseButton, self.recordButton, self.playButton], 6), self.refInfo, qualityRow,
-                                       self.qualityLabel, OVHStack(@[self.enhanceButton, self.revertButton], 6)], 8);
-    OVFillWidth(@[self.qualityLabel], audioBox);
-    NSView *audioCard = [self sectionCard:L(@"1 · Voice sample")
-                                     hint:L(@"3–10 seconds of clean speech from one person, without music or echo. WAV, MP3, M4A and FLAC work — choose a file, record, or drop one here.")
-                                  content:audioBox];
+    self.revertButton = OVGhostButton(L(@"Restore original"), @"arrow.uturn.backward", self, @selector(revertSample:));
+    __weak typeof(self) weakSelf = self;
+    OVDropZone *zone = [OVDropZone zoneWithTitle:L(@"Drop a recording here")
+                                            hint:L(@"WAV, MP3, M4A, FLAC · 3–10 s · or click to choose")
+                                           types:@[@"wav", @"mp3", @"m4a", @"flac", @"ogg", @"aac", @"mp4", @"mov"]
+                                         onFiles:^(NSArray<NSURL *> *urls) {
+        // same condition as a drop on the page itself
+        if (urls.firstObject) [weakSelf importDropped:urls.firstObject.path];
+    }];
+    NSStackView *playRow = OVHStack(@[self.playButton, self.refInfo, OVSpacer(), self.recordButton], 12);
+    playRow.alignment = NSLayoutAttributeCenterY;
+    NSStackView *qualityRow = OVHStack(@[OVLabel(L(@"Quality"), 13, NSFontWeightMedium, OVColor(OVRoleMuted)), self.qualityMeter, OVSpacer()], 10);
+    qualityRow.alignment = NSLayoutAttributeCenterY;
+    NSStackView *fixRow = OVHStack(@[self.enhanceButton, self.revertButton, OVSpacer()], 10);
+    NSStackView *audioBox = OVVStack(@[zone, playRow, qualityRow, self.qualityLabel, fixRow], 12);
+    OVFillWidth(@[zone, playRow, qualityRow, self.qualityLabel, fixRow], audioBox);
+    self.sampleBadge = OVHStack(@[], 0);
+    NSView *audioCard = VoiceStepCard(2, @"waveform", L(@"Voice sample"), self.sampleBadge, audioBox);
 
     NSScrollView *ts = [NSTextView scrollableTextView];
+    NSView *textArea = OVTextArea(ts, 100);
     self.refText = ts.documentView;
     self.refText.font = [NSFont systemFontOfSize:14];
     self.refText.richText = NO;
     self.refText.allowsUndo = YES;
-    self.refText.textContainerInset = NSMakeSize(6, 6);
     self.refText.delegate = self;
     self.refText.automaticQuoteSubstitutionEnabled = NO;
     self.refText.automaticDashSubstitutionEnabled = NO;
     self.refText.automaticTextReplacementEnabled = NO;
     self.refText.automaticSpellingCorrectionEnabled = NO;  // the transcript must stay word for word what was said
-    ts.borderType = NSBezelBorder;
-    [ts.heightAnchor constraintEqualToConstant:84].active = YES;
-    self.transcribeButton = OVButton(L(@"Transcribe automatically"), self, @selector(transcribe:));
-    self.transcribeButton.image = [NSImage imageWithSystemSymbolName:@"text.bubble" accessibilityDescription:nil];
-    self.transcribeButton.imagePosition = NSImageLeading;
-    NSStackView *textBox = OVVStack(@[ts, self.transcribeButton], 8);
-    OVFillWidth(@[ts], textBox);
-    NSView *textCard = [self sectionCard:L(@"2 · What the sample says")
-                                    hint:L(@"Exactly, word for word. You can leave it empty — Whisper will transcribe it.")
-                                 content:textBox];
+    self.refText.accessibilityLabel = L(@"What the sample says");
+    self.transcribeButton = OVGhostButton(L(@"Transcribe automatically"), @"text.bubble", self, @selector(transcribe:));
+    NSTextField *textHint = OVWrapLabel(L(@"Exactly, word for word. You can leave it empty — Whisper will transcribe it."), 13, OVColor(OVRoleMuted));
+    NSStackView *transcribeRow = OVHStack(@[self.transcribeButton, OVSpacer()], 10);
+    NSStackView *textBox = OVVStack(@[textArea, transcribeRow, textHint], 12);
+    [textBox setCustomSpacing:8 afterView:transcribeRow];
+    OVFillWidth(@[textArea, transcribeRow, textHint], textBox);
+    NSView *textCard = VoiceStepCard(3, @"text.quote", L(@"What the sample says"), nil, textBox);
 
     self.cloneButton = OVPrimaryButton(L(@"Clone voice"), self, @selector(clone:));
     self.cloneButton.image = [NSImage imageWithSystemSymbolName:@"person.wave.2.fill" accessibilityDescription:nil];
-    self.cloneButton.imagePosition = NSImageLeading;
     self.spinner = OVSpinner();
-    self.status = OVWrapLabel(@"", 12, nil);
-    self.deleteButton = OVButton(L(@"Delete voice"), self, @selector(deleteVoice:));
-    self.deleteButton.contentTintColor = NSColor.systemRedColor;
-    self.previewButton = OVButton(L(@"Hear the clone"), self, @selector(playPreview:));
-    self.previewButton.image = [NSImage imageWithSystemSymbolName:@"play.circle" accessibilityDescription:nil];
-    self.previewButton.imagePosition = NSImageLeading;
-    NSStackView *actions = OVHStack(@[self.cloneButton, self.previewButton, self.spinner, OVSpacer(), self.deleteButton], 10);
+    self.status = OVWrapLabel(@"", 13, OVColor(OVRoleMuted));
+    self.deleteButton = OVGhostButton(L(@"Delete voice"), @"trash", self, @selector(deleteVoice:));
+    self.deleteButton.contentTintColor = OVColor(OVRoleErr);
+    self.previewButton = OVGhostButton(L(@"Hear the clone"), @"play.fill", self, @selector(playPreview:));
+    NSStackView *actions = OVHStack(@[self.cloneButton, self.previewButton, self.spinner, OVSpacer()], 10);
+    actions.alignment = NSLayoutAttributeCenterY;
     self.analysis = [NSMutableDictionary dictionary];
 
     // languages this voice already speaks without the sample's accent (see OVVoice adaptsToLanguage:)
-    self.adaptedLabel = OVLabel(@"", 12, NSFontWeightRegular, NSColor.secondaryLabelColor);
-    NSButton *adaptedListen = OVButton(L(@"Listen"), self, @selector(playAdapted:));
+    self.adaptedLabel = OVLabel(@"", 13, NSFontWeightRegular, OVColor(OVRoleMuted));
+    NSButton *adaptedListen = OVGhostButton(L(@"Listen"), nil, self, @selector(playAdapted:));
     adaptedListen.toolTip = L(@"The phrase the voice learned this language on. Speech in that language starts from it instead of the original sample.");
-    NSButton *adaptedForget = OVButton(L(@"Forget"), self, @selector(forgetAdapted:));
+    NSButton *adaptedForget = OVGhostButton(L(@"Forget"), nil, self, @selector(forgetAdapted:));
     adaptedForget.toolTip = L(@"Learn the pronunciation again the next time this voice speaks another language.");
-    adaptedListen.controlSize = adaptedForget.controlSize = NSControlSizeSmall;
-    self.adaptedRow = OVHStack(@[OVSymbol(@"globe", 12, nil), self.adaptedLabel, adaptedListen, adaptedForget], 8);
+    for (NSButton *b in @[adaptedListen, adaptedForget]) {   // the small variant: 28 pt tall
+        b.font = [NSFont systemFontOfSize:13 weight:NSFontWeightSemibold];
+        [b.heightAnchor constraintEqualToConstant:28].active = YES;
+    }
+    self.adaptedRow = OVHStack(@[OVSymbol(@"globe", 13, OVColor(OVRoleMuted)), self.adaptedLabel, adaptedListen, adaptedForget, OVSpacer()], 8);
+    self.adaptedRow.alignment = NSLayoutAttributeCenterY;
 
     // "Auto-detect" first: the language is recognized when the sample is transcribed or cloned.
     // Picking it by hand stays possible — on short clips Whisper can mix up Ukrainian, Belarusian and Russian.
-    self.sampleLangPopup = [NSPopUpButton new];
+    self.sampleLangPopup = [OVPopup popup];
     [self.sampleLangPopup addItemWithTitle:L(@"Auto-detect")];
     self.sampleLangPopup.lastItem.representedObject = @"auto";
     [self.sampleLangPopup.menu addItem:NSMenuItem.separatorItem];
@@ -173,33 +235,25 @@ static const NSTimeInterval kMaxRecord = 15;
         if (![pinned containsObject:c]) { [self.sampleLangPopup addItemWithTitle:[OVLocale nameForLanguage:c]]; self.sampleLangPopup.lastItem.representedObject = c; }
     self.sampleLangPopup.target = self;
     self.sampleLangPopup.action = @selector(sampleLanguagePicked:);
-    NSStackView *nameRow = OVHStack(@[[self captioned:L(@"Name") view:self.nameField], [self captioned:L(@"Language of the sample") view:self.sampleLangPopup]], 14);
-    nameRow.alignment = NSLayoutAttributeTop;
-    NSStackView *right = OVVStack(@[self.heading, nameRow, audioCard, textCard, actions, self.status, self.adaptedRow], 16);
-    right.edgeInsets = NSEdgeInsetsMake(30, 24, 24, 32);
-    [right setCustomSpacing:20 afterView:self.heading];
-    [right setCustomSpacing:8 afterView:actions];
-    OVFillWidth(@[right.arrangedSubviews[1], audioCard, textCard, actions, self.status], right);
-    [self.nameField.widthAnchor constraintLessThanOrEqualToConstant:380].active = YES;
-    NSScrollView *rightScroll = OVScrollPage(right);
+    NSView *voiceColumns = OVColumns(@[OVFieldBlock(L(@"Name"), nil, self.nameField),
+                                       OVFieldBlock(L(@"Language of the sample"), nil, self.sampleLangPopup)], 16);
+    NSView *voiceCard = VoiceStepCard(1, @"person.crop.circle", L(@"Voice"), nil, voiceColumns);
 
-    NSBox *sep = [NSBox new];
-    sep.boxType = NSBoxSeparator;
-    OVAudioDropView *root = [OVAudioDropView stackViewWithViews:@[left, sep, rightScroll]];
+    self.headerView = OVPageHeader(L(@"New voice"), L(@"Clone a voice from 3–10 seconds of speech."), self.deleteButton);
+    NSScrollView *rightScroll = OVPageScroll(@[self.headerView, voiceCard, audioCard, textCard, actions, self.status, self.adaptedRow]);
+
+    OVAudioDropView *root = [OVAudioDropView stackViewWithViews:@[left, rightScroll]];
     root.orientation = NSUserInterfaceLayoutOrientationHorizontal;
     root.distribution = NSStackViewDistributionFill;
     root.spacing = 0;
     root.alignment = NSLayoutAttributeTop;
     [root registerForDraggedTypes:@[NSPasteboardTypeFileURL]];
-    __weak typeof(self) weakSelf = self;
     root.onDrop = ^(NSString *path) {  // a recording dropped on the page becomes the sample of the voice shown
-        if (![OVWorker shared].busy && !weakSelf.recorder.recording) [weakSelf importAudio:path];
+        [weakSelf importDropped:path];
     };
     left.translatesAutoresizingMaskIntoConstraints = NO;
-    sep.translatesAutoresizingMaskIntoConstraints = NO;
     rightScroll.translatesAutoresizingMaskIntoConstraints = NO;
     [left.heightAnchor constraintEqualToAnchor:root.heightAnchor].active = YES;
-    [sep.heightAnchor constraintEqualToAnchor:root.heightAnchor].active = YES;
     [rightScroll.heightAnchor constraintEqualToAnchor:root.heightAnchor].active = YES;
     self.view = root;
 
@@ -213,18 +267,6 @@ static const NSTimeInterval kMaxRecord = 15;
     [self.table reloadData];
     if ([OVVoices shared].all.count) [self showVoice:[OVVoices shared].all.firstObject];
     else [self newVoice:nil];
-}
-
-- (NSView *)captioned:(NSString *)caption view:(NSView *)v {
-    return OVVStack(@[OVLabel(caption, 12, NSFontWeightMedium, NSColor.secondaryLabelColor), v], 6);
-}
-
-- (NSView *)sectionCard:(NSString *)title hint:(NSString *)hint content:(NSView *)content {
-    NSTextField *h = OVWrapLabel(hint, 12, nil);
-    NSStackView *s = OVVStack(@[OVSectionTitle(title), h, content], 8);
-    [s setCustomSpacing:12 afterView:h];
-    OVFillWidth(@[h, content], s);
-    return OVCard(s, 16);
 }
 
 #pragma mark Table
@@ -256,21 +298,26 @@ static const NSTimeInterval kMaxRecord = 15;
         [avatar setName:v.name];
         icon = avatar;
     } else {
-        icon = OVSymbol(@"exclamationmark.circle", 18, NSColor.systemOrangeColor);
+        icon = OVSymbol(@"exclamationmark.circle", 18, OVColor(OVRoleWarn));
         [icon.widthAnchor constraintEqualToConstant:28].active = YES;
     }
-    NSTextField *name = OVLabel(v.name, 13, NSFontWeightMedium, nil);
+    NSTextField *name = OVLabel(v.name, 14, NSFontWeightSemibold, nil);
+    name.toolTip = v.name;
     NSString *lang = v.language ?: (v.refText.length ? [OVLocale detectLanguage:v.refText] : nil);
     NSString *subText = !v.ready ? L(@"not cloned") :
         lang ? [NSString stringWithFormat:@"%@ · %@", OVFormatDuration(v.seconds), [OVLocale nameForLanguage:lang]]
              : [NSString stringWithFormat:L(@"%@ sample"), OVFormatDuration(v.seconds)];
-    NSTextField *sub = OVLabel(subText,
-                               11, NSFontWeightRegular, NSColor.secondaryLabelColor);
-    NSStackView *row2 = OVHStack(@[icon, OVVStack(@[name, sub], 1)], 8);
+    NSTextField *sub = OVLabel(subText, 12, NSFontWeightRegular, OVColor(OVRoleMuted));
+    NSStackView *texts = OVVStack(@[name, sub], 2);
+    texts.alignment = NSLayoutAttributeLeading;
+    NSStackView *row2 = OVHStack(@[icon, texts], 10);
+    row2.alignment = NSLayoutAttributeCenterY;
     [cell addSubview:row2];
-    OVPin(row2, cell, NSEdgeInsetsMake(4, 4, 4, 4));
+    OVPin(row2, cell, NSEdgeInsetsMake(4, 10, 4, 10));
     return cell;
 }
+
+- (NSTableRowView *)tableView:(NSTableView *)t rowViewForRow:(NSInteger)row { return [OVTableRowView new]; }
 
 - (void)tableViewSelectionDidChange:(NSNotification *)n {
     NSInteger r = self.table.selectedRow;
@@ -280,13 +327,13 @@ static const NSTimeInterval kMaxRecord = 15;
 #pragma mark Editor state
 
 - (void)showVoice:(OVVoice *)v {
-    self.status.textColor = NSColor.secondaryLabelColor;
+    self.status.textColor = OVColor(OVRoleMuted);
     [self stopRecording];
     // every keystroke saves the voice, and saving reloads the list, which shows the voice again: leave the field
     // being typed in alone, or it loses a trailing space, the cursor jumps to the end and undo breaks
     BOOL same = [v.identifier isEqualToString:self.voice.identifier];
     self.voice = v;
-    self.heading.stringValue = v.name ?: @"";
+    [self setHeadingText:v.name];
     if (!(same && self.nameField.currentEditor)) self.nameField.stringValue = v.name ?: @"";
     [self showSampleLanguage:v.language isAuto:v.languageAuto];
     if (!(same && self.view.window.firstResponder == self.refText)) self.refText.string = v.refText ?: @"";
@@ -303,7 +350,7 @@ static const NSTimeInterval kMaxRecord = 15;
     [self stopRecording];
     self.voice = nil;
     [self.table deselectAll:nil];
-    self.heading.stringValue = L(@"New voice");
+    [self setHeadingText:nil];
     self.nameField.stringValue = [NSString stringWithFormat:L(@"Voice %lu"), (unsigned long)[OVVoices shared].all.count + 1];
     self.refText.string = @"";
     self.status.stringValue = @"";
@@ -350,7 +397,7 @@ static const NSTimeInterval kMaxRecord = 15;
     if (!self.voice.ready) self.voice.seconds = OVAudioDuration(dst);
     [self.voice save];
     [[OVVoices shared] reload];
-    self.heading.stringValue = self.voice.name ?: @"";
+    [self setHeadingText:self.voice.name];
     return YES;
 }
 
@@ -359,7 +406,7 @@ static const NSTimeInterval kMaxRecord = 15;
     NSString *name = [self.nameField.stringValue stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
     if (!name.length) return;
     self.voice.name = name;
-    self.heading.stringValue = name;
+    [self setHeadingText:name];
     [self.voice save];
     [self.table reloadData];
     NSUInteger i = [[OVVoices shared].all indexOfObject:self.voice];
@@ -380,16 +427,23 @@ static const NSTimeInterval kMaxRecord = 15;
 
     if (audio) {
         double d = OVAudioDuration(audio);
-        NSString *warn = d < 2.5 ? L(@"  ⚠︎ too short") : d > 20 ? L(@"  ⚠︎ longer than 20 s — trim it to 3–10 s") : @"";
+        NSString *warn = d < 2.5 ? L(@"  · too short") : d > 20 ? L(@"  · longer than 20 s — trim it to 3–10 s") : @"";
+        BOOL bad = d < 2.5 || d > 20;
+        for (NSView *old in [self.sampleBadge.arrangedSubviews copy]) { [self.sampleBadge removeArrangedSubview:old]; [old removeFromSuperview]; }
+        [self.sampleBadge addArrangedSubview:OVBadge(bad ? OVFormatDuration(d) : L(@"OK"), bad ? OVRoleWarn : OVRoleOK)];
         self.refInfo.stringValue = [NSString stringWithFormat:@"%@ · %@%@", [self hasPending] ? L(@"New sample (not applied yet)") : L(@"Sample saved"), OVFormatDuration(d), warn];
     } else {
+        for (NSView *old in [self.sampleBadge.arrangedSubviews copy]) { [self.sampleBadge removeArrangedSubview:old]; [old removeFromSuperview]; }
         self.refInfo.stringValue = L(@"No sample yet.");
     }
-    if (!recording) self.recordButton.title = L(@"Record");
+    if (!recording) {
+        self.recordButton.title = L(@"Record");
+        self.recordButton.image = [NSImage imageWithSystemSymbolName:@"mic.fill" accessibilityDescription:nil];
+    }
     self.recordButton.enabled = !busy;
-    self.chooseButton.enabled = !busy && !recording;
     BOOL playing = audio && [[OVPlayer shared].currentPath isEqualToString:audio] && [OVPlayer shared].playing;
-    self.playButton.title = playing ? L(@"Stop") : L(@"Listen");
+    self.playButton.accessibilityLabel = playing ? L(@"Stop") : L(@"Listen");
+    self.playButton.toolTip = self.playButton.accessibilityLabel;
     self.playButton.image = [NSImage imageWithSystemSymbolName:playing ? @"stop.fill" : @"play.fill" accessibilityDescription:nil];
     self.playButton.enabled = audio != nil && !recording;
 
@@ -422,17 +476,19 @@ static const NSTimeInterval kMaxRecord = 15;
     return [dir stringByAppendingPathComponent:name];
 }
 
-- (void)chooseFile:(id)s {
-    NSOpenPanel *p = [NSOpenPanel openPanel];
-    p.allowedContentTypes = @[UTTypeAudio];
-    p.message = L(@"Choose a voice recording (3–10 seconds)");
-    [p beginSheetModalForWindow:self.view.window completionHandler:^(NSModalResponse r) {
-        if (r != NSModalResponseOK) return;
-        [self importAudio:p.URL.path];
-    }];
+/// A file from the drop zone or a drop on the page: ignored with an explanation while a job or a recording runs.
+- (void)importDropped:(NSString *)path {
+    if ([OVWorker shared].busy || self.recorder.recording) {
+        self.status.textColor = OVColor(OVRoleWarn);
+        self.status.stringValue = self.recorder.recording ? L(@"Stop the recording first — the file was not added.")
+                                                          : L(@"The engine is busy — the file was not added. Try again in a moment.");
+        return;
+    }
+    [self importAudio:path];
 }
 
 - (void)importAudio:(NSString *)src {
+    self.status.textColor = OVColor(OVRoleMuted);
     NSString *dst = [self draftPath:[NSUUID.UUID.UUIDString stringByAppendingPathExtension:@"wav"]];
     NSError *err = nil;
     double secs = 0;
@@ -481,7 +537,7 @@ static const NSTimeInterval kMaxRecord = 15;
     self.recTimer = [NSTimer scheduledTimerWithTimeInterval:0.2 repeats:YES block:^(NSTimer *t) {
         w.recordButton.title = [NSString stringWithFormat:L(@"Stop  %@"), OVFormatDuration(w.recorder.currentTime)];
     }];
-    self.recordButton.image = [NSImage imageWithSystemSymbolName:@"stop.circle.fill" accessibilityDescription:nil];
+    self.recordButton.image = [NSImage imageWithSystemSymbolName:@"stop.fill" accessibilityDescription:nil];
     [self refreshButtons];
 }
 
@@ -611,7 +667,7 @@ static const NSTimeInterval kMaxRecord = 15;
                       OVFormatDuration([r[@"seconds"] doubleValue])];
     self.qualityLabel.stringValue = lines.count ? [NSString stringWithFormat:@"%@\n%@", head, [lines componentsJoinedByString:@"\n"]]
                                                 : [NSString stringWithFormat:@"%@ · %@", head, L(@"Great sample for cloning.")];
-    self.qualityLabel.textColor = lines.count ? NSColor.systemOrangeColor : NSColor.secondaryLabelColor;
+    self.qualityLabel.textColor = lines.count ? OVColor(OVRoleWarn) : OVColor(OVRoleMuted);
 }
 
 - (void)enhance:(id)s {
@@ -706,7 +762,7 @@ static const NSTimeInterval kMaxRecord = 15;
     NSDictionary *spec = [OVSettings modelSpec];
     NSString *audio = [self currentAudio];
     if (!spec || !audio) return;
-    self.status.textColor = NSColor.secondaryLabelColor;
+    self.status.textColor = OVColor(OVRoleMuted);
     self.status.stringValue = L(@"Transcribing…");
     NSString *vid = self.voice.identifier;
     __weak typeof(self) w = self;
@@ -742,7 +798,7 @@ static const NSTimeInterval kMaxRecord = 15;
     if (!words.count) return;
     self.status.stringValue = [NSString stringWithFormat:L(@"Check these words in the sample text — they aren’t Ukrainian dictionary words, probably misheard: %@. The text must match the recording exactly; fix them and re-clone."),
                                [words componentsJoinedByString:@", "]];
-    self.status.textColor = NSColor.systemOrangeColor;
+    self.status.textColor = OVColor(OVRoleWarn);
     NSMutableArray *ranges = [NSMutableArray array];
     for (NSString *word in words) {
         NSRange r = [self.refText.string rangeOfString:word];
@@ -781,7 +837,7 @@ static const NSTimeInterval kMaxRecord = 15;
                                   @"ref_text": text, @"out": v.promptPath,
                                   @"language": [self sampleLanguage]} mutableCopy];
     if (asr) req[@"asr_path"] = asr.localPath;
-    self.status.textColor = NSColor.secondaryLabelColor;
+    self.status.textColor = OVColor(OVRoleMuted);
     self.status.stringValue = L(@"Cloning…");
     __weak typeof(self) w = self;
     [[OVWorker shared] request:req status:^(NSString *m) { w.status.stringValue = m; } progress:nil

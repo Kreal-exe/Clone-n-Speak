@@ -93,7 +93,7 @@ static void Center(NSView *child, NSView *parent) {
 - (void)drawFocusRingMask { [[NSBezierPath bezierPathWithRoundedRect:self.bounds xRadius:10 yRadius:10] fill]; }
 - (void)drawRect:(NSRect)dirty {
     NSRect b = self.bounds;
-    NSColor *fg = self.ghost ? C(OVRoleText) : C(OVRoleCTAText);
+    NSColor *fg = self.contentTintColor ?: (self.ghost ? C(OVRoleText) : C(OVRoleCTAText));
     NSBezierPath *pill = [NSBezierPath bezierPathWithRoundedRect:NSInsetRect(b, 0.5, 0.5) xRadius:10 yRadius:10];
     [NSGraphicsContext saveGraphicsState];
     if (!self.enabled) CGContextSetAlpha(NSGraphicsContext.currentContext.CGContext, 0.4);

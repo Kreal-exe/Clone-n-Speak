@@ -1,5 +1,5 @@
 #import "OVPages.h"
-#import "OVUI.h"
+#import "OVDesign.h"
 #import "OVTrainSheet.h"
 #import "OVRuntime.h"
 #import "OVModels.h"
@@ -10,6 +10,8 @@
 #import "OVMemory.h"
 
 static NSString *const kAutoVoice = @"__auto__";
+static const CGFloat kTakeRowHeight = 56;
+static const NSUInteger kTakeRowsVisible = 8;
 
 #pragma mark - Editor
 
@@ -20,7 +22,7 @@ static NSString *const kAutoVoice = @"__auto__";
 - (void)drawRect:(NSRect)r {
     [super drawRect:r];
     if (self.string.length || !self.placeholder) return;
-    NSDictionary *a = @{NSFontAttributeName: self.font, NSForegroundColorAttributeName: NSColor.placeholderTextColor};
+    NSDictionary *a = @{NSFontAttributeName: self.font, NSForegroundColorAttributeName: OVColor(OVRoleMuted)};
     [self.placeholder drawInRect:NSInsetRect(self.bounds, self.textContainerInset.width + 5, self.textContainerInset.height) withAttributes:a];
 }
 // Ctrl+C/V/X/A/Z (Windows habits) in addition to the standard Cmd shortcuts.
@@ -39,87 +41,105 @@ static NSString *const kAutoVoice = @"__auto__";
 }
 @end
 
-#pragma mark - Style slider
+#pragma mark - Private helpers
 
-/// A compact labeled slider of the voice-style panel, bound to a user-defaults key.
-@interface OVStyleSlider : NSStackView
-@property NSSlider *slider;
-@property NSTextField *value;
-@property (copy) NSString *key;
-@property double step;
-@property (copy) NSString *(^format)(double v);
-@property (copy, nullable) void (^moved)(void);
-- (void)refresh;
+/// SF Symbol of each mood preset (the pictographs of OVSettings moods are not used on screen).
+static NSString *MoodSymbol(NSString *moodId) {
+    static NSDictionary *symbols;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        symbols = @{@"neutral": @"face.dashed", @"calm": @"leaf", @"cheerful": @"sun.max", @"energetic": @"bolt",
+                    @"serious": @"eyeglasses", @"warm": @"heart", @"sad": @"cloud.rain", @"storyteller": @"book"};
+    });
+    return symbols[moodId] ?: @"circle";
+}
+
+/// A vertical stack whose arranged views all fill its width.
+static NSStackView *FillStack(NSArray<NSView *> *views, CGFloat spacing) {
+    NSStackView *s = OVVStack(views, spacing);
+    OVFillWidth(views, s);
+    return s;
+}
+
+/// Card with a numbered header that carries an accessory (OVStepCard has none).
+static NSView *StepCardWithAccessory(NSInteger step, NSString *symbol, NSString *title, NSView *accessory, NSView *content) {
+    return OVCard(FillStack(@[OVCardHeader(step, symbol, title, accessory), content], 16), 20);
+}
+
+static NSButton *Height28(NSButton *b) {
+    [b.heightAnchor constraintEqualToConstant:28].active = YES;
+    return b;
+}
+
+/// Lets a control shrink instead of forcing its column wider (long voice names).
+static void ShrinkOnly(NSView *v) {
+    [v setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+}
+
+/// A popup is a button for OVFieldBlock/OVColumns, which would keep it at its natural width: a stack makes it fill.
+static NSView *FillPopup(NSView *p) {
+    NSStackView *s = OVHStack(@[p], 0);
+    OVFillWidth(@[p], s);
+    return s;
+}
+
+static void Squeezable(NSView *v) {
+    ShrinkOnly(v);
+    [v setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+}
+
+/// A muted status line that takes no room while it is empty.
+@interface OVStatusLabel : NSTextField
+@end
+@implementation OVStatusLabel
+- (void)setStringValue:(NSString *)v { [super setStringValue:v]; self.hidden = v.length == 0; }
 @end
 
-@implementation OVStyleSlider
-+ (instancetype)sliderWithTitle:(NSString *)title tip:(NSString *)tip key:(NSString *)key min:(double)min max:(double)max
-                           step:(double)step format:(NSString *(^)(double))format {
-    OVStyleSlider *r = [OVStyleSlider new];
-    r.orientation = NSUserInterfaceLayoutOrientationHorizontal;
-    r.alignment = NSLayoutAttributeCenterY;
-    r.spacing = 6;
-    r.key = key;
-    r.step = step;
-    r.format = format;
-    NSTextField *t = OVLabel(title, 12, NSFontWeightMedium, nil);
-    [t.widthAnchor constraintEqualToConstant:82].active = YES;
-    r.slider = [NSSlider sliderWithValue:0 minValue:min maxValue:max target:r action:@selector(moved:)];
-    r.slider.controlSize = NSControlSizeSmall;
-    [r.slider.widthAnchor constraintGreaterThanOrEqualToConstant:60].active = YES;
-    [r.slider setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
-    r.value = OVLabel(@"", 11, NSFontWeightRegular, NSColor.secondaryLabelColor);
-    r.value.font = [NSFont monospacedDigitSystemFontOfSize:11 weight:NSFontWeightRegular];
-    r.value.alignment = NSTextAlignmentRight;
-    [r.value.widthAnchor constraintEqualToConstant:48].active = YES;
-    [r setViews:@[t, r.slider, r.value] inGravity:NSStackViewGravityLeading];
-    r.toolTip = t.toolTip = r.slider.toolTip = tip;
-    [r refresh];
-    return r;
+/// Field block with a muted hint line below it (built here, so nothing depends on OVFieldBlock's internals).
+static NSView *BlockWithHint(NSString *label, NSView *control, NSTextField *hint) {
+    return FillStack(@[OVFieldBlock(label, nil, control), hint], 6);
 }
-- (void)moved:(NSSlider *)s {
-    double v = round(s.doubleValue / self.step) * self.step;
-    if (fabs(v) < self.step / 2) v = 0; // no "-0"
-    [NSUserDefaults.standardUserDefaults setDouble:v forKey:self.key];
-    self.value.stringValue = self.format(v);
-    if (self.moved) self.moved();
-}
-- (void)refresh {
-    double v = [NSUserDefaults.standardUserDefaults doubleForKey:self.key];
-    self.slider.doubleValue = v;
-    self.value.stringValue = self.format(v);
-}
-@end
 
 #pragma mark - History cell
 
 @interface OVHistoryCell : NSTableCellView
 @property NSButton *play, *improve, *reveal, *trash;
 @property NSTextField *text, *meta;
+@property NSStackView *metaRow;
+@property NSView *badge;
+- (void)setLikeness:(double)likeness;   // < 0 = not measured: no badge
 @end
 
 @implementation OVHistoryCell
 - (instancetype)initWithTarget:(id)t {
     if ((self = [super initWithFrame:NSZeroRect])) {
-        self.play = OVIconButton(@"play.circle.fill", L(@"Listen"), t, @selector(playRow:));
-        self.play.symbolConfiguration = [NSImageSymbolConfiguration configurationWithPointSize:22 weight:NSFontWeightRegular];
-        self.play.contentTintColor = OVAccent();
-        [self.play.widthAnchor constraintEqualToConstant:30].active = YES;
-        [self.play.heightAnchor constraintEqualToConstant:30].active = YES;
-        self.text = OVLabel(@"", 13, NSFontWeightRegular, nil);
+        self.play = OVPlayButton(t, @selector(playRow:));
+        self.play.toolTip = L(@"Listen");
+        self.play.accessibilityLabel = L(@"Listen");
+        self.text = OVLabel(@"", 14, NSFontWeightRegular, nil);
         self.text.maximumNumberOfLines = 1;
-        self.meta = OVLabel(@"", 11, NSFontWeightRegular, NSColor.secondaryLabelColor);
-        self.improve = OVIconButton(@"wand.and.stars", L(@"Re-speak with auto-improve"), t, @selector(improveRow:));
+        self.meta = OVLabel(@"", 12, NSFontWeightRegular, OVColor(OVRoleMuted));
+        self.meta.maximumNumberOfLines = 1;
+        self.improve = OVIconButton(@"sparkles", L(@"Re-speak with auto-improve"), t, @selector(improveRow:));
         self.reveal = OVIconButton(@"folder", L(@"Show in Finder"), t, @selector(revealRow:));
         self.trash = OVIconButton(@"trash", L(@"Delete"), t, @selector(deleteRow:));
-        NSStackView *texts = OVVStack(@[self.text, self.meta], 2);
-        [texts setHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
-        [texts setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
-        NSStackView *row = OVHStack(@[self.play, texts, self.improve, self.reveal, self.trash], 8);
+        for (NSButton *b in @[self.improve, self.reveal, self.trash]) b.accessibilityLabel = b.toolTip;
+        self.metaRow = OVHStack(@[self.meta, OVSpacer()], 8);
+        NSStackView *texts = FillStack(@[self.text, self.metaRow], 3);
+        ShrinkOnly(texts);
+        NSStackView *row = OVHStack(@[self.play, texts, self.improve, self.reveal, self.trash], 10);
         [self addSubview:row];
-        OVPin(row, self, NSEdgeInsetsMake(5, 6, 5, 8));
+        OVPin(row, self, NSEdgeInsetsMake(8, 12, 8, 12));
     }
     return self;
+}
+- (void)setLikeness:(double)l {
+    [self.badge removeFromSuperview];
+    self.badge = nil;
+    if (l < 0) return;
+    OVRole tone = l >= 0.8 ? OVRoleOK : l >= 0.6 ? OVRoleWarn : OVRoleErr;
+    self.badge = OVBadge([NSString stringWithFormat:L(@"voice %.0f%%"), l * 100], tone);
+    [self.metaRow insertArrangedSubview:self.badge atIndex:1];
 }
 @end
 
@@ -127,236 +147,291 @@ static NSString *const kAutoVoice = @"__auto__";
 
 @interface OVSynthPage () <NSTableViewDataSource, NSTableViewDelegate, NSTextViewDelegate>
 @property OVAvatar *avatar;
-@property NSPopUpButton *voicePopup, *langPopup, *loraPopup;
-@property NSButton *sampleButton, *tuneButton, *styleButton, *adaptCheck;
-@property NSSegmentedControl *quality;
-@property NSTextField *counter, *status, *banner, *voiceHint, *memoryLabel, *pronLabel, *pronDetail;
-@property NSView *pronCard;
-@property NSButton *pronButton;
-@property NSView *stylePanel, *designRow;
-@property NSSegmentedControl *moodPicker;
-@property NSTextField *moodName;
-@property NSArray<OVStyleSlider *> *styleSliders;
-@property NSSwitch *improveSwitch;
+@property OVPopup *voicePopup, *langPopup, *loraPopup;
+@property NSButton *sampleButton, *tuneButton, *adaptCheck, *pronButton;
+@property OVSegmented *quality, *moodPicker;
+@property NSTextField *counter, *status, *banner, *voiceHint, *detectedHint, *memoryLabel, *pronLabel, *pronDetail, *moodName;
+@property NSView *pronRow, *designRow;
+@property OVDisclosure *styleDisclosure;
+@property NSArray<OVSliderRow *> *styleSliders;
+@property OVSliderRow *speedRow;
+@property OVSwitch *improveSwitch;
 @property NSTextField *improveHint;
 @property OVTextEditor *editor;
 @property NSButton *synthButton, *stopButton;
 @property NSProgressIndicator *progress;
 @property NSTableView *table;
-@property NSView *bannerCard, *playerBar;
-@property NSTextField *emptyHistory, *historyTitle, *playerTitle, *playerTime;
+@property NSLayoutConstraint *tableHeight;
+@property NSView *bannerCard, *playerBar, *emptyHistory;
+@property NSTextField *historyTitle, *playerTitle, *playerTime;
 @property NSButton *playerButton;
-@property NSSlider *playerSlider;
+@property OVSlider *playerSlider;
 @property NSPopover *tunePopover;
 @property NSTimer *timer, *playerTimer;
 @property CFAbsoluteTime started;
+@property BOOL lastAdaptAccent;
 @end
 
 @implementation OVSynthPage
 
-- (NSButton *)pill:(NSPopUpButton *)p {
-    p.bezelStyle = NSBezelStyleRounded;
-    p.controlSize = NSControlSizeRegular;
-    p.font = [NSFont systemFontOfSize:12.5 weight:NSFontWeightMedium];
-    return p;
-}
-
 - (void)loadView {
-    NSStackView *page = OVVStack(@[], 12);
-    page.edgeInsets = NSEdgeInsetsMake(26, 28, 18, 28);
+    // ── header and the "something is missing" banner
+    NSView *header = OVPageHeader(L(@"Speech"), L(@"Type text and speak it in a cloned voice."), nil);
+    self.banner = OVLabel(@"", 14, NSFontWeightMedium, nil);
+    NSButton *fix = Height28(OVGhostButton(L(@"Open setup"), nil, self, @selector(openSetup:)));
+    NSStackView *bannerRow = OVHStack(@[OVSymbol(@"exclamationmark.triangle", 16, OVColor(OVRoleWarn)), self.banner, OVSpacer(), fix], 10);
+    OVBoxView *banner = [OVBoxView boxWithFill:OVColorAlpha(OVRoleWarn, 0.08) border:OVColor(OVRoleWarn) radius:10];
+    [banner addSubview:bannerRow];
+    OVPin(bannerRow, banner, NSEdgeInsetsMake(10, 14, 10, 14));
+    self.bannerCard = banner;
 
-    // ── header: voice
-    self.avatar = [OVAvatar avatarWithSize:40];
-    self.voicePopup = [NSPopUpButton new];
-    self.voicePopup.bordered = NO;
-    self.voicePopup.font = OVRoundedFont(18, NSFontWeightSemibold);
-    self.voicePopup.target = self;
-    self.voicePopup.action = @selector(voicePicked:);
-    self.voicePopup.autoenablesItems = NO;
-    [self.voicePopup setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
-    self.voiceHint = OVLabel(@"", 11.5, NSFontWeightRegular, NSColor.secondaryLabelColor);
-    NSStackView *voiceText = OVVStack(@[OVLabel(L(@"Voice"), 11, NSFontWeightMedium, NSColor.tertiaryLabelColor), self.voicePopup, self.voiceHint], 0);
-    self.sampleButton = OVButton(L(@"Voice sample"), self, @selector(playSample:));
-    self.sampleButton.controlSize = NSControlSizeRegular;
-    self.sampleButton.image = [NSImage imageWithSystemSymbolName:@"waveform" accessibilityDescription:nil];
-    self.sampleButton.imagePosition = NSImageLeading;
-    // pronunciation of the selected voice in the language of the text, and its training
-    self.pronLabel = OVLabel(@"", 12, NSFontWeightSemibold, nil);
-    self.pronDetail = OVLabel(@"", 11, NSFontWeightRegular, NSColor.secondaryLabelColor);
-    self.pronButton = OVButton(L(@"Train…"), self, @selector(showTraining:));
-    self.pronButton.controlSize = NSControlSizeRegular;
-    self.pronButton.toolTip = L(@"Teach the voice clean pronunciation in this language, round by round, with the numbers of every round");
-    NSStackView *pron = OVHStack(@[OVSymbol(@"graduationcap", 15, OVAccent()), OVVStack(@[self.pronLabel, self.pronDetail], 1), self.pronButton], 9);
-    pron.alignment = NSLayoutAttributeCenterY;
-    self.pronCard = OVCard(pron, 8);
-    NSStackView *header = OVHStack(@[self.avatar, voiceText, OVSpacer(), self.pronCard, self.sampleButton], 10);
-    header.alignment = NSLayoutAttributeCenterY;
-
-    // ── banner shown when something is missing
-    self.banner = OVLabel(@"", 13, NSFontWeightMedium, nil);
-    NSButton *fix = OVButton(L(@"Open setup"), self, @selector(openSetup:));
-    fix.controlSize = NSControlSizeRegular;
-    NSStackView *bannerRow = OVHStack(@[OVSymbol(@"exclamationmark.triangle.fill", 14, NSColor.systemOrangeColor), self.banner, OVSpacer(), fix], 10);
-    self.bannerCard = OVCard(bannerRow, 9);
-
-    // ── editor
+    // ── 1 · Text
     NSScrollView *scroll = [OVTextEditor scrollableTextView];
     self.editor = [[OVTextEditor alloc] initWithFrame:scroll.contentView.bounds];
     self.editor.autoresizingMask = NSViewWidthSizable;
     self.editor.verticallyResizable = YES;
     self.editor.textContainer.widthTracksTextView = YES;
     scroll.documentView = self.editor;
-    self.editor.font = [NSFont systemFontOfSize:17];
-    self.editor.textContainerInset = NSMakeSize(14, 14);
+    self.editor.font = [NSFont systemFontOfSize:16];
     self.editor.richText = NO;
     self.editor.allowsUndo = YES;
     self.editor.automaticQuoteSubstitutionEnabled = NO;
     self.editor.automaticDashSubstitutionEnabled = NO;
     self.editor.automaticTextReplacementEnabled = NO;
     self.editor.automaticSpellingCorrectionEnabled = NO;
-    self.editor.drawsBackground = NO;
     self.editor.delegate = self;
     self.editor.placeholder = L(@"Type or paste text to speak…");
-    self.editor.string = [NSUserDefaults.standardUserDefaults stringForKey:@"draftText"] ?: @"";
-    scroll.drawsBackground = NO;
-    scroll.borderType = NSNoBorder;
-    self.counter = OVLabel(@"", 11, NSFontWeightRegular, NSColor.tertiaryLabelColor);
-    // text tools live with the text: stress mark and sounds on the left, the counter on the right
-    NSButton *stress = OVButton(L(@"Stress ´"), self, @selector(toggleStress:));
-    stress.controlSize = NSControlSizeSmall;
-    stress.toolTip = L(@"Mark the stress on the selected vowel (or the one before the cursor): виши́вка. Press again to remove it. Shortcut ⌘'. The mark steers ✨ Auto-improve: of the takes of that phrase, the one that stresses this syllable wins. It is not sent to the model — marks make Ukrainian sound Russian.");
-    NSButton *sounds = OVButton(L(@"Sound"), self, @selector(showSounds:));
-    sounds.controlSize = NSControlSizeSmall;
-    sounds.image = [NSImage imageWithSystemSymbolName:@"face.smiling" accessibilityDescription:nil];
-    sounds.imagePosition = NSImageLeading;
+    NSView *textArea = OVTextArea(scroll, 150);
+    [textArea setContentHuggingPriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationVertical];
+    self.editor.string = [NSUserDefaults.standardUserDefaults stringForKey:@"draftText"] ?: @"";   // after the area: it sets text colors
+
+    self.counter = OVLabel(@"", 13, NSFontWeightRegular, OVColor(OVRoleMuted));
+    NSButton *stress = Height28(OVGhostButton(L(@"Stress ´"), nil, self, @selector(toggleStress:)));
+    stress.toolTip = L(@"Mark the stress on the selected vowel (or the one before the cursor): виши́вка. Press again to remove it. Shortcut ⌘'. The mark steers Auto-improve: of the takes of that phrase, the one that stresses this syllable wins. It is not sent to the model — marks make Ukrainian sound Russian.");
+    NSButton *sounds = Height28(OVGhostButton(L(@"Sound"), @"face.smiling", self, @selector(showSounds:)));
     sounds.toolTip = L(@"Insert a sound: laughter, sigh, surprise…");
     NSStackView *tools = OVHStack(@[stress, sounds, OVSpacer(), self.counter], 8);
-    NSStackView *editorStack = OVVStack(@[scroll, tools], 4);
-    editorStack.alignment = NSLayoutAttributeCenterX;
-    editorStack.edgeInsets = NSEdgeInsetsMake(0, 0, 6, 0);
-    OVFillWidth(@[scroll], editorStack);
-    tools.translatesAutoresizingMaskIntoConstraints = NO;
-    [tools.widthAnchor constraintEqualToAnchor:editorStack.widthAnchor constant:-24].active = YES;
+    NSView *card1 = OVStepCard(1, @"doc.text", L(@"Text"), nil, FillStack(@[textArea, tools], 12));
 
-    // ── composer bar: language · tune · auto-improve ········ stop · speak
-    self.langPopup = [NSPopUpButton new];
+    // ── 2 · Voice and style
+    self.avatar = [OVAvatar avatarWithSize:28];
+    [self.avatar.widthAnchor constraintEqualToConstant:28].active = YES;
+    [self.avatar.heightAnchor constraintEqualToConstant:28].active = YES;
+    self.voicePopup = [OVPopup popup];
+    self.voicePopup.target = self;
+    self.voicePopup.action = @selector(voicePicked:);
+    self.voicePopup.autoenablesItems = NO;
+    self.voicePopup.accessibilityLabel = L(@"Voice");
+    Squeezable(self.voicePopup);
+    NSStackView *voiceControl = OVHStack(@[self.avatar, self.voicePopup], 10);
+    self.voiceHint = OVWrapLabel(@"", 13, OVColor(OVRoleMuted));
+    NSView *voiceBlock = BlockWithHint(L(@"Voice"), voiceControl, self.voiceHint);
+
+    self.langPopup = [OVPopup popup];
     self.langPopup.target = self;
     self.langPopup.action = @selector(languagePicked:);
-    [self pill:self.langPopup];
     self.langPopup.toolTip = L(@"Speech language. Auto-detect recognizes it from the text.");
+    Squeezable(self.langPopup);
+    self.detectedHint = OVWrapLabel(@"", 13, OVColor(OVRoleMuted));
+    NSView *langBlock = BlockWithHint(L(@"Language"), FillPopup(self.langPopup), self.detectedHint);
     [self buildLanguageMenu];
-    self.tuneButton = OVIconButton(@"slider.horizontal.3", L(@"LoRA and accent removal"), self, @selector(showTune:));
-    self.styleButton = OVIconButton(@"theatermasks", L(@"Voice style: mood, intonation, energy, pitch, tone, speed, pauses, quality"), self, @selector(toggleStylePanel:));
-    self.improveSwitch = [NSSwitch new];
-    self.improveSwitch.controlSize = NSControlSizeSmall;
+
+    self.sampleButton = Height28(OVGhostButton(L(@"Voice sample"), @"waveform", self, @selector(playSample:)));
+    self.tuneButton = Height28(OVGhostButton(L(@"LoRA"), @"slider.horizontal.3", self, @selector(showTune:)));
+    self.tuneButton.toolTip = L(@"LoRA and accent removal");
+    NSView *cardAccessory = OVHStack(@[self.sampleButton, self.tuneButton], 8);
+
+    // pronunciation of the selected voice in the language of the text, and its training
+    self.pronLabel = OVLabel(@"", 14, NSFontWeightSemibold, nil);
+    self.pronDetail = OVLabel(@"", 13, NSFontWeightRegular, OVColor(OVRoleMuted));
+    self.pronButton = Height28(OVGhostButton(L(@"Train…"), nil, self, @selector(showTraining:)));
+    self.pronButton.toolTip = L(@"Teach the voice clean pronunciation in this language, round by round, with the numbers of every round");
+    NSStackView *pronTexts = OVVStack(@[self.pronLabel, self.pronDetail], 1);
+    ShrinkOnly(pronTexts);
+    [pronTexts setContentHuggingPriority:NSLayoutPriorityDefaultHigh forOrientation:NSLayoutConstraintOrientationHorizontal];   // beats the spacer
+    NSStackView *pron = OVHStack(@[OVSymbol(@"graduationcap", 17, OVColor(OVRoleAccent)), pronTexts, OVSpacer(), self.pronButton], 12);
+    OVBoxView *pronBox = [OVBoxView boxWithFill:OVColor(OVRoleField) border:OVColor(OVRoleBorder) radius:10];
+    [pronBox addSubview:pron];
+    OVPin(pron, pronBox, NSEdgeInsetsMake(12, 12, 12, 12));
+    self.pronRow = pronBox;
+
+    // moods: one icon per preset, the name of the chosen one next to them
+    NSArray<NSDictionary *> *moods = [OVSettings moods];
+    NSMutableArray *moodItems = [NSMutableArray array];
+    for (NSDictionary *m in moods) [moodItems addObject:@[@"", MoodSymbol(m[@"id"]), m[@"title"]]];
+    self.moodPicker = [OVSegmented segmentedWithItems:moodItems];
+    self.moodPicker.target = self;
+    self.moodPicker.action = @selector(moodPicked:);
+    self.moodName = OVLabel(@"", 13, NSFontWeightSemibold, OVColor(OVRoleAccent));
+    NSStackView *moodControl = OVHStack(@[self.moodPicker, self.moodName, OVSpacer()], 12);
+    moodControl.toolTip = L(@"A preset of the controls below. OmniVoice has no emotion switch: a cloned voice takes its feeling from the sample, so record the sample in the mood you need — the presets shape what can be shaped afterwards.");
+    NSView *moodBlock = OVFieldBlock(L(@"Mood"), nil, moodControl);
+
+    self.quality = [OVSegmented segmentedWithItems:@[@[L(@"Fast"), @""], @[L(@"Standard"), @""], @[L(@"Maximum"), @""]]];
+    self.quality.target = self;
+    self.quality.action = @selector(qualityPicked:);
+    self.quality.toolTip = L(@"Decoding steps: 16 / 32 / 64");
+    NSView *qualityBlock = OVFieldBlock(L(@"Quality"), nil, self.quality);
+
+    __weak typeof(self) w = self;
+    void (^retime)(void) = ^{ [w textDidChange:[NSNotification notificationWithName:NSTextDidChangeNotification object:nil]]; };
+    void (^custom)(void) = ^{ // a hand-moved slider leaves the preset
+        [NSUserDefaults.standardUserDefaults setObject:@"custom" forKey:@"styleMood"];
+        [w refreshMood];
+        retime();
+    };
+    NSString *(^percent)(double) = ^(double v) { return fabs(v) < 0.005 ? @"0" : [NSString stringWithFormat:@"%+.0f%%", v * 100]; };
+    OVSliderRow *(^slider)(NSString *, NSString *, NSString *, double, double, double, NSString *(^)(double), void (^)(void)) =
+        ^OVSliderRow *(NSString *title, NSString *tip, NSString *key, double min, double max, double step, NSString *(^fmt)(double), void (^moved)(void)) {
+            OVSliderRow *r = [OVSliderRow rowWithTitle:title hint:nil key:key min:min max:max format:@"%.2f" integer:NO];
+            r.compact = YES;
+            r.step = step;
+            r.valueFormatter = fmt;
+            r.onChange = moved;
+            r.toolTip = tip;
+            [r refresh];
+            return r;
+        };
+    self.speedRow = slider(L(@"Speed"), L(@"1.0 is the natural pace as judged by the model."), @"speed", 0.7, 1.4, 0.05,
+                           ^(double v) { return [NSString stringWithFormat:@"%.2f×", v]; }, retime);
+    // the slider lines up with the Quality control: it sits below the height of a field label
+    NSStackView *speedColumn = OVVStack(@[self.speedRow], 0);
+    speedColumn.edgeInsets = NSEdgeInsetsMake(31, 0, 0, 0);
+    OVFillWidth(@[self.speedRow], speedColumn);
+    NSView *qualitySpeed = OVColumns(@[qualityBlock, speedColumn], 16);
+
+    OVSliderRow *intonation = slider(L(@"Intonation"), L(@"Flat ↔ lively: narrows or widens the pitch melody of the voice."), @"styleIntonation", -1, 1, 0.05, percent, custom);
+    OVSliderRow *energy = slider(L(@"Energy"), L(@"Relaxed ↔ energetic: pace, pauses, melody, presence and dynamics together."), @"styleEnergy", -1, 1, 0.05, percent, custom);
+    OVSliderRow *pitch = slider(L(@"Pitch"), L(@"Deeper ↔ higher voice, in semitones. The timbre moves with it: lower is bigger and darker, higher is lighter."), @"stylePitch", -4, 4, 0.5,
+                                ^(double v) { return fabs(v) < 0.05 ? @"0" : [NSString stringWithFormat:L(@"%+.1f st"), v]; }, custom);
+    OVSliderRow *tone = slider(L(@"Tone"), L(@"Warm ↔ bright: more body or more clarity in the timbre."), @"styleTone", -1, 1, 0.05, percent, custom);
+    OVSliderRow *pauses = slider(L(@"Pauses"), L(@"Pauses between sentences and paragraphs."), @"stylePauses", 0.5, 2.5, 0.1,
+                                 ^(double v) { return [NSString stringWithFormat:@"%.1f×", v]; }, custom);
+    OVSliderRow *volume = slider(L(@"Volume"), L(@"Loudness of the finished recording."), @"styleVolume", -6, 6, 1,
+                                 ^(double v) { return fabs(v) < 0.5 ? @"0" : [NSString stringWithFormat:L(@"%+.0f dB"), v]; }, nil);
+    self.styleSliders = @[self.speedRow, intonation, energy, pitch, tone, pauses, volume];
+    NSView *sliderColumns = OVColumns(@[FillStack(@[intonation, energy, pitch], 14), FillStack(@[tone, pauses, volume], 14)], 24);
+
+    // voice design: only the model's own voice listens to these tags, a clone follows its sample
+    OVPopup *gender = OVDefaultsPopup(@[@[L(@"Any gender"), @""], @[L(@"Male"), @"male"], @[L(@"Female"), @"female"]], @"designGender", nil, nil);
+    OVPopup *age = OVDefaultsPopup(@[@[L(@"Any age"), @""], @[L(@"Child"), @"child"], @[L(@"Teenager"), @"teenager"], @[L(@"Young adult"), @"young adult"],
+                                     @[L(@"Middle-aged"), @"middle-aged"], @[L(@"Elderly"), @"elderly"]], @"designAge", nil, nil);
+    OVPopup *level = OVDefaultsPopup(@[@[L(@"Any pitch"), @""], @[L(@"Very low"), @"very low pitch"], @[L(@"Low"), @"low pitch"], @[L(@"Medium"), @"moderate pitch"],
+                                       @[L(@"High"), @"high pitch"], @[L(@"Very high"), @"very high pitch"]], @"designPitch", nil, nil);
+    NSMutableArray *accents = [@[@[L(@"No accent"), @""]] mutableCopy];
+    for (NSArray *a in @[@[L(@"American"), @"american"], @[L(@"British"), @"british"], @[L(@"Australian"), @"australian"],
+                         @[L(@"Canadian"), @"canadian"], @[L(@"Indian"), @"indian"], @[L(@"Chinese"), @"chinese"],
+                         @[L(@"Korean"), @"korean"], @[L(@"Japanese"), @"japanese"], @[L(@"Portuguese"), @"portuguese"],
+                         @[L(@"Russian"), @"russian"]])
+        [accents addObject:@[a[0], [a[1] stringByAppendingString:@" accent"]]];
+    OVPopup *accent = OVDefaultsPopup(accents, @"designAccent", nil, nil);
+    accent.toolTip = L(@"Accent of the model’s own voice — for English text only.");
+    for (OVPopup *p in @[gender, age, level, accent]) Squeezable(p);
+    NSButton *whisper = OVCheckbox(L(@"Whisper"), @"designWhisper");
+    NSStackView *designTitle = OVHStack(@[OVLabel(L(@"Model’s voice"), 14, NSFontWeightSemibold, nil), OVSpacer(), whisper], 8);
+    NSStackView *design = FillStack(@[designTitle, OVColumns(@[FillPopup(gender), FillPopup(age)], 12), OVColumns(@[FillPopup(level), FillPopup(accent)], 12)], 10);
+    design.toolTip = L(@"What the model’s own voice sounds like (voice design). Cloned voices follow their sample instead.");
+    self.designRow = design;
+
+    NSButton *reset = Height28(OVGhostButton(L(@"Reset"), nil, self, @selector(resetStyle:)));
+    reset.toolTip = L(@"Reset the voice style");
+    NSStackView *resetRow = OVHStack(@[OVSpacer(), reset], 8);
+    NSStackView *styleContent = FillStack(@[sliderColumns, design, resetRow], 16);
+    self.styleDisclosure = [OVDisclosure disclosureWithTitle:L(@"Voice style") subtitle:L(@"Default") symbol:@"slider.horizontal.3" content:styleContent];
+    self.styleDisclosure.expanded = [NSUserDefaults.standardUserDefaults boolForKey:@"stylePanel"];
+
+    NSView *card2 = StepCardWithAccessory(2, @"person.wave.2", L(@"Voice and style"), cardAccessory,
+        FillStack(@[OVColumns(@[voiceBlock, langBlock], 16), self.pronRow, moodBlock, qualitySpeed, self.styleDisclosure], 16));
+
+    // ── 3 · Result
+    self.improveSwitch = [OVSwitch new];
     self.improveSwitch.target = self;
     self.improveSwitch.action = @selector(improveToggled:);
-    self.improveSwitch.state = [NSUserDefaults.standardUserDefaults boolForKey:@"improve"] ? NSControlStateValueOn : NSControlStateValueOff;
-    NSTextField *improveTitle = OVLabel(L(@"✨ Auto-improve"), 12.5, NSFontWeightSemibold, nil);
-    self.improveHint = OVLabel(@"", 10.5, NSFontWeightRegular, NSColor.secondaryLabelColor);
-    NSStackView *improveBox = OVHStack(@[self.improveSwitch, OVVStack(@[improveTitle, self.improveHint], 0)], 7);
+    self.improveSwitch.on = [NSUserDefaults.standardUserDefaults boolForKey:@"improve"];
+    self.improveSwitch.accessibilityLabel = L(@"Auto-improve");
+    self.improveHint = OVLabel(@"", 13, NSFontWeightRegular, OVColor(OVRoleMuted));
+    NSTextField *improveTitle = OVLabel(L(@"Auto-improve"), 14, NSFontWeightSemibold, nil);
+    NSStackView *improveTexts = OVVStack(@[improveTitle, self.improveHint], 0);
+    ShrinkOnly(improveTexts);
+    [improveTexts setContentHuggingPriority:NSLayoutPriorityDefaultHigh forOrientation:NSLayoutConstraintOrientationHorizontal];   // beats the spacer
+    NSStackView *improveBox = OVHStack(@[self.improveSwitch, OVSymbol(@"sparkles", 16, OVColor(OVRoleAccent)), improveTexts], 10);
     improveBox.toolTip = L(@"Text is prepared for reading aloud (abbreviations, numbers, years), each phrase is spoken several times and the take that is clearest, sounds most native and most like the voice, with the dictionary stress, is kept. Slower, but the best result.");
-    [improveBox setHuggingPriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
 
     self.synthButton = OVPrimaryButton(L(@"Speak"), self, @selector(synthesize:));
     self.synthButton.image = [NSImage imageWithSystemSymbolName:@"play.fill" accessibilityDescription:nil];
-    self.synthButton.imagePosition = NSImageLeading;
     self.synthButton.keyEquivalent = @"\r";
     self.synthButton.keyEquivalentModifierMask = NSEventModifierFlagCommand;
     self.synthButton.toolTip = @"⌘↩";
     [self.synthButton.widthAnchor constraintGreaterThanOrEqualToConstant:118].active = YES;
-    self.stopButton = OVButton(L(@"Stop"), self, @selector(stop:));
+    self.stopButton = OVGhostButton(L(@"Stop"), nil, self, @selector(stop:));
     self.stopButton.hidden = YES;
-    NSStackView *controls = OVHStack(@[self.langPopup, self.styleButton, self.tuneButton, improveBox, OVSpacer(),
-                                       self.stopButton, self.synthButton], 10);
-    [self buildStylePanel];
+    NSStackView *actionRow = OVHStack(@[improveBox, OVSpacer(), self.stopButton, self.synthButton], 12);
 
     self.progress = OVProgressBar();
     self.progress.hidden = YES;
-    self.status = OVLabel(@"", 11.5, NSFontWeightRegular, NSColor.secondaryLabelColor);
+    OVStatusLabel *status = [OVStatusLabel labelWithString:@""];
+    status.font = [NSFont systemFontOfSize:13];
+    status.textColor = OVColor(OVRoleMuted);
+    status.hidden = YES;
+    ShrinkOnly(status);
+    self.status = status;
     self.status.lineBreakMode = NSLineBreakByTruncatingTail;
-    self.memoryLabel = OVLabel(@"", 11, NSFontWeightMedium, NSColor.secondaryLabelColor);
-    self.memoryLabel.font = [NSFont monospacedDigitSystemFontOfSize:11 weight:NSFontWeightMedium];
+
+    // player (visible while something is loaded)
+    self.playerButton = OVPlayButton(self, @selector(playerToggle:));
+    self.playerTitle = OVLabel(@"", 14, NSFontWeightMedium, nil);
+    self.playerSlider = [OVSlider sliderWithValue:0 minValue:0 maxValue:1 target:self action:@selector(playerSeek:)];
+    self.playerTime = OVLabel(@"", 12, NSFontWeightRegular, OVColor(OVRoleMuted));
+    self.playerTime.font = [NSFont monospacedDigitSystemFontOfSize:12 weight:NSFontWeightRegular];
+    [self.playerTime setContentCompressionResistancePriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
+    NSButton *playerClose = OVIconButton(@"xmark", L(@"Stop"), self, @selector(playerStop:));
+    playerClose.accessibilityLabel = L(@"Stop");
+    [self.playerTitle.widthAnchor constraintLessThanOrEqualToConstant:220].active = YES;
+    [self.playerSlider setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
+    [self.playerSlider.widthAnchor constraintGreaterThanOrEqualToConstant:80].active = YES;
+    self.playerBar = OVHStack(@[self.playerButton, self.playerTitle, self.playerSlider, self.playerTime, playerClose], 10);
+    self.playerBar.hidden = YES;
+
+    self.memoryLabel = OVLabel(@"", 12, NSFontWeightMedium, OVColor(OVRoleMuted));
+    self.memoryLabel.font = [NSFont monospacedDigitSystemFontOfSize:12 weight:NSFontWeightMedium];
     self.memoryLabel.toolTip = L(@"Memory used by the speech engine and memory still free on this Mac");
     [self.memoryLabel setContentCompressionResistancePriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
-    NSImageView *chip = OVSymbol(@"memorychip", 11, NSColor.secondaryLabelColor);
-    NSStackView *statusRow = OVHStack(@[self.progress, self.status, OVSpacer(), chip, self.memoryLabel], 8);
-    [self.progress.widthAnchor constraintEqualToConstant:140].active = YES;
-
-    NSBox *line = [NSBox new];
-    line.boxType = NSBoxSeparator;
-    NSStackView *composer = OVVStack(@[editorStack, line, controls, self.stylePanel, statusRow], 8);
-    composer.edgeInsets = NSEdgeInsetsMake(0, 0, 10, 0);
-    OVFillWidth(@[editorStack, line], composer);
-    for (NSView *v in @[controls, self.stylePanel, statusRow]) {
-        v.translatesAutoresizingMaskIntoConstraints = NO;
-        [v.widthAnchor constraintEqualToAnchor:composer.widthAnchor constant:-28].active = YES;
-    }
-    [editorStack setHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationVertical];
-    NSView *composerCard = OVCard(composer, 4);
-    [scroll.heightAnchor constraintGreaterThanOrEqualToConstant:90].active = YES;
+    NSStackView *memoryRow = OVHStack(@[OVSpacer(), OVSymbol(@"memorychip", 12, OVColor(OVRoleMuted)), self.memoryLabel], 6);
+    NSView *card3 = OVStepCard(3, @"waveform", L(@"Result"), nil, FillStack(@[actionRow, self.progress, self.status, self.playerBar, memoryRow], 12));
 
     // ── recent takes
-    self.historyTitle = OVLabel(L(@"Recent takes"), 13, NSFontWeightSemibold, nil);
-    NSButton *openFolder = OVButton(L(@"Open folder"), self, @selector(openOutputs:));
-    openFolder.controlSize = NSControlSizeSmall;
-    NSStackView *histHeader = OVHStack(@[self.historyTitle, OVSpacer(), openFolder], 8);
+    NSButton *openFolder = Height28(OVGhostButton(L(@"Open folder"), @"folder", self, @selector(openOutputs:)));
+    NSStackView *takesHeader = (NSStackView *)OVCardHeader(0, @"clock.arrow.circlepath", L(@"Recent takes"), openFolder);
+    for (NSView *v in takesHeader.arrangedSubviews)
+        if ([v isKindOfClass:NSTextField.class]) self.historyTitle = (NSTextField *)v;
 
     self.table = [NSTableView new];
     [self.table addTableColumn:[[NSTableColumn alloc] initWithIdentifier:@"g"]];
     self.table.headerView = nil;
-    self.table.rowHeight = 46;
-    self.table.style = NSTableViewStyleInset;
+    self.table.rowHeight = kTakeRowHeight;
+    self.table.style = NSTableViewStylePlain;
+    self.table.intercellSpacing = NSZeroSize;
     self.table.backgroundColor = NSColor.clearColor;
     self.table.dataSource = self;
     self.table.delegate = self;
     self.table.doubleAction = @selector(playRow:);
     self.table.target = self;
+    self.table.accessibilityLabel = L(@"Recent takes");
     NSScrollView *tscroll = [NSScrollView new];
     tscroll.documentView = self.table;
     tscroll.hasVerticalScroller = YES;
+    tscroll.autohidesScrollers = YES;
     tscroll.drawsBackground = NO;
-    self.emptyHistory = OVWrapLabel([NSString stringWithFormat:L(@"Finished recordings appear here. WAV files are saved to Music → %@."), OVAppName],
-                                    12, NSColor.tertiaryLabelColor);
-    self.emptyHistory.alignment = NSTextAlignmentCenter;
+    self.tableHeight = [tscroll.heightAnchor constraintEqualToConstant:kTakeRowHeight];
+    self.tableHeight.active = YES;
+    self.emptyHistory = OVEmptyState(@"waveform", L(@"No recordings yet"),
+        [NSString stringWithFormat:L(@"Finished recordings appear here. WAV files are saved to Music → %@."), OVAppName], @[]);
+    NSStackView *takesBox = OVVStack(@[tscroll, self.emptyHistory], 0);
+    takesBox.alignment = NSLayoutAttributeCenterX;
+    OVFillWidth(@[tscroll], takesBox);
+    NSStackView *takesBlock = FillStack(@[takesHeader, OVCard(takesBox, 8)], 12);
 
-    // player bar (visible while something is loaded)
-    self.playerButton = OVIconButton(@"pause.fill", L(@"Play / pause"), self, @selector(playerToggle:));
-    self.playerTitle = OVLabel(@"", 12, NSFontWeightMedium, nil);
-    self.playerSlider = [NSSlider sliderWithValue:0 minValue:0 maxValue:1 target:self action:@selector(playerSeek:)];
-    self.playerSlider.controlSize = NSControlSizeSmall;
-    self.playerTime = OVLabel(@"", 11, NSFontWeightRegular, NSColor.secondaryLabelColor);
-    self.playerTime.font = [NSFont monospacedDigitSystemFontOfSize:11 weight:NSFontWeightRegular];
-    NSButton *playerClose = OVIconButton(@"xmark", L(@"Stop"), self, @selector(playerStop:));
-    [self.playerTitle.widthAnchor constraintLessThanOrEqualToConstant:220].active = YES;
-    NSStackView *playerRow = OVHStack(@[self.playerButton, self.playerTitle, self.playerSlider, self.playerTime, playerClose], 8);
-    [self.playerSlider setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
-    self.playerBar = playerRow;
-    self.playerBar.hidden = YES;
-
-    NSStackView *histBox = OVVStack(@[tscroll, self.emptyHistory, self.playerBar], 4);
-    histBox.edgeInsets = NSEdgeInsetsMake(4, 4, 6, 4);
-    OVFillWidth(@[tscroll, self.playerBar], histBox);
-    self.emptyHistory.translatesAutoresizingMaskIntoConstraints = NO;
-    [self.emptyHistory.widthAnchor constraintEqualToAnchor:histBox.widthAnchor constant:-40].active = YES;
-    [tscroll.heightAnchor constraintGreaterThanOrEqualToConstant:56].active = YES;
-    NSView *histCard = OVCard(histBox, 2);
-
-    for (NSView *v in @[header, self.bannerCard, composerCard, histHeader, histCard]) [page addArrangedSubview:v];
-    [page setCustomSpacing:16 afterView:composerCard];
-    [page setCustomSpacing:6 afterView:histHeader];
-    OVFillWidth(@[header, self.bannerCard, composerCard, histHeader, histCard], page);
-    // the editor takes the spare height first, recent takes get the rest
-    [composerCard setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationVertical];
-    [composerCard setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationVertical];
-    NSLayoutConstraint *share = [histCard.heightAnchor constraintEqualToAnchor:composerCard.heightAnchor multiplier:0.55];
-    share.priority = NSLayoutPriorityDefaultLow + 1;
-    share.active = YES;
-
-    NSView *root = [NSView new];
-    [root addSubview:page];
-    OVPin(page, root, NSEdgeInsetsZero);
-    self.view = root;
+    self.view = OVPageScroll(@[header, self.bannerCard, card1, card2, card3, takesBlock]);
 
     NSNotificationCenter *nc = NSNotificationCenter.defaultCenter;
     [nc addObserver:self selector:@selector(reloadVoices) name:OVVoicesDidChangeNotification object:nil];
@@ -368,8 +443,11 @@ static NSString *const kAutoVoice = @"__auto__";
     [nc addObserver:self selector:@selector(refreshState) name:OVWorkerDidChangeNotification object:nil];
     [nc addObserver:self selector:@selector(refreshMemory) name:OVWorkerMemoryDidChangeNotification object:nil];
     [nc addObserver:self selector:@selector(syncControls) name:NSUserDefaultsDidChangeNotification object:nil];
+    [nc addObserver:self selector:@selector(themeChanged) name:OVThemeDidChangeNotification object:nil];
+    [nc addObserver:self selector:@selector(saveDisclosure) name:NSApplicationWillTerminateNotification object:nil];
 
     [self buildTunePopover];
+    self.lastAdaptAccent = [OVSettings adaptAccent];
     [self reloadVoices];
     [self reloadLoRAs];
     [self reloadHistory];
@@ -383,146 +461,51 @@ static NSString *const kAutoVoice = @"__auto__";
     [self.view.window makeFirstResponder:self.editor];
 }
 
+- (void)viewWillDisappear {
+    [super viewWillDisappear];
+    [self saveDisclosure];
+}
+
 - (void)dealloc {
+    [NSNotificationCenter.defaultCenter removeObserver:self];
     [self.timer invalidate];
     [self.playerTimer invalidate];
 }
 
-#pragma mark Voice style panel
+/// The Voice style block remembers whether it is open (OVDisclosure has no change callback, so it is read when the page is left).
+- (void)saveDisclosure {
+    [NSUserDefaults.standardUserDefaults setBool:self.styleDisclosure.expanded forKey:@"stylePanel"];
+}
 
-- (void)buildStylePanel {
-    NSString *(^percent)(double) = ^(double v) { return fabs(v) < 0.005 ? @"0" : [NSString stringWithFormat:@"%+.0f%%", v * 100]; };
-    __weak typeof(self) w = self;
-    void (^retime)(void) = ^{ [w textDidChange:[NSNotification notificationWithName:NSTextDidChangeNotification object:nil]]; };
-    void (^custom)(void) = ^{ // a hand-moved slider leaves the preset
-        [NSUserDefaults.standardUserDefaults setObject:@"custom" forKey:@"styleMood"];
-        [w refreshMood];
-        retime();
-    };
-    OVStyleSlider *intonation = [OVStyleSlider sliderWithTitle:L(@"Intonation") tip:L(@"Flat ↔ lively: narrows or widens the pitch melody of the voice.")
-                                                           key:@"styleIntonation" min:-1 max:1 step:0.05 format:percent];
-    OVStyleSlider *energy = [OVStyleSlider sliderWithTitle:L(@"Energy") tip:L(@"Relaxed ↔ energetic: pace, pauses, melody, presence and dynamics together.")
-                                                       key:@"styleEnergy" min:-1 max:1 step:0.05 format:percent];
-    OVStyleSlider *pitch = [OVStyleSlider sliderWithTitle:L(@"Pitch") tip:L(@"Deeper ↔ higher voice, in semitones. The timbre moves with it: lower is bigger and darker, higher is lighter.")
-                                                      key:@"stylePitch" min:-4 max:4 step:0.5
-                                                   format:^(double v) { return fabs(v) < 0.05 ? @"0" : [NSString stringWithFormat:L(@"%+.1f st"), v]; }];
-    OVStyleSlider *tone = [OVStyleSlider sliderWithTitle:L(@"Tone") tip:L(@"Warm ↔ bright: more body or more clarity in the timbre.")
-                                                     key:@"styleTone" min:-1 max:1 step:0.05 format:percent];
-    OVStyleSlider *pauses = [OVStyleSlider sliderWithTitle:L(@"Pauses") tip:L(@"Pauses between sentences and paragraphs.")
-                                                       key:@"stylePauses" min:0.5 max:2.5 step:0.1
-                                                    format:^(double v) { return [NSString stringWithFormat:@"%.1f×", v]; }];
-    for (OVStyleSlider *s in @[intonation, energy, pitch, tone, pauses]) s.moved = custom;
-    OVStyleSlider *speed = [OVStyleSlider sliderWithTitle:L(@"Speed") tip:L(@"1.0 is the natural pace as judged by the model.")
-                                                      key:@"speed" min:0.7 max:1.4 step:0.05
-                                                   format:^(double v) { return [NSString stringWithFormat:@"%.2f×", v]; }];
-    speed.moved = retime;
-    OVStyleSlider *volume = [OVStyleSlider sliderWithTitle:L(@"Volume") tip:L(@"Loudness of the finished recording.")
-                                                       key:@"styleVolume" min:-6 max:6 step:1
-                                                    format:^(double v) { return fabs(v) < 0.5 ? @"0" : [NSString stringWithFormat:L(@"%+.0f dB"), v]; }];
-    self.styleSliders = @[intonation, energy, pitch, tone, pauses, speed, volume];
-
-    // moods: one emoji per preset, the name of the chosen one next to them
-    NSArray<NSDictionary *> *moods = [OVSettings moods];
-    self.moodPicker = [NSSegmentedControl segmentedControlWithLabels:[moods valueForKey:@"emoji"] trackingMode:NSSegmentSwitchTrackingSelectOne
-                                                              target:self action:@selector(moodPicked:)];
-    self.moodPicker.segmentStyle = NSSegmentStyleRounded;
-    [moods enumerateObjectsUsingBlock:^(NSDictionary *m, NSUInteger i, BOOL *stop) {
-        [self.moodPicker setToolTip:m[@"title"] forSegment:i];
-        [self.moodPicker setWidth:34 forSegment:i];
-    }];
-    NSString *moodTip = L(@"A preset of the controls below. OmniVoice has no emotion switch: a cloned voice takes its feeling from the sample, so record the sample in the mood you need — the presets shape what can be shaped afterwards.");
-    NSTextField *moodTitle = OVLabel(L(@"Mood"), 12, NSFontWeightMedium, nil);
-    [moodTitle.widthAnchor constraintEqualToConstant:82].active = YES;
-    self.moodName = OVLabel(@"", 12, NSFontWeightSemibold, OVAccent());
-    NSButton *reset = OVButton(L(@"Reset"), self, @selector(resetStyle:));
-    reset.controlSize = NSControlSizeSmall;
-    reset.toolTip = L(@"Reset the voice style");
-    NSStackView *moodRow = OVHStack(@[moodTitle, self.moodPicker, self.moodName, OVSpacer(), reset], 8);
-    moodRow.toolTip = moodTitle.toolTip = moodTip;
-
-    self.quality = [NSSegmentedControl segmentedControlWithLabels:@[L(@"Fast"), L(@"Standard"), L(@"Maximum")]
-                                                     trackingMode:NSSegmentSwitchTrackingSelectOne target:self action:@selector(qualityPicked:)];
-    self.quality.controlSize = NSControlSizeSmall;
-    self.quality.font = [NSFont systemFontOfSize:NSFont.smallSystemFontSize];
-    self.quality.toolTip = L(@"Decoding steps: 16 / 32 / 64");
-    NSTextField *qualityTitle = OVLabel(L(@"Quality"), 12, NSFontWeightMedium, nil);
-    [qualityTitle.widthAnchor constraintEqualToConstant:82].active = YES;
-    NSStackView *qualityRow = OVHStack(@[qualityTitle, self.quality, OVSpacer()], 6);
-
-    NSStackView *left = OVVStack(@[intonation, energy, pitch, tone], 7);
-    NSStackView *right = OVVStack(@[speed, pauses, volume, qualityRow], 7);
-    OVFillWidth(left.arrangedSubviews, left);
-    OVFillWidth(right.arrangedSubviews, right);
-    for (NSView *row in [left.arrangedSubviews arrayByAddingObjectsFromArray:right.arrangedSubviews])
-        [row.heightAnchor constraintEqualToConstant:20].active = YES;  // sliders line up across the columns
-    NSStackView *columns = OVHStack(@[left, right], 22);
-    columns.alignment = NSLayoutAttributeTop;
-    [left.widthAnchor constraintEqualToAnchor:right.widthAnchor].active = YES;
-
-    // voice design: only the model's own voice listens to these tags, a clone follows its sample
-    NSPopUpButton *(^small)(NSArray *, NSString *) = ^(NSArray *items, NSString *key) {
-        NSPopUpButton *p = OVDefaultsPopup(items, key, nil, nil);
-        p.controlSize = NSControlSizeSmall;
-        p.font = [NSFont systemFontOfSize:NSFont.smallSystemFontSize];
-        return p;
-    };
-    NSPopUpButton *gender = small(@[@[L(@"Any gender"), @""], @[L(@"Male"), @"male"], @[L(@"Female"), @"female"]], @"designGender");
-    NSPopUpButton *age = small(@[@[L(@"Any age"), @""], @[L(@"Child"), @"child"], @[L(@"Teenager"), @"teenager"], @[L(@"Young adult"), @"young adult"],
-                                 @[L(@"Middle-aged"), @"middle-aged"], @[L(@"Elderly"), @"elderly"]], @"designAge");
-    NSPopUpButton *level = small(@[@[L(@"Any pitch"), @""], @[L(@"Very low"), @"very low pitch"], @[L(@"Low"), @"low pitch"], @[L(@"Medium"), @"moderate pitch"],
-                                   @[L(@"High"), @"high pitch"], @[L(@"Very high"), @"very high pitch"]], @"designPitch");
-    NSMutableArray *accents = [@[@[L(@"No accent"), @""]] mutableCopy];
-    for (NSArray *a in @[@[L(@"American"), @"american"], @[L(@"British"), @"british"], @[L(@"Australian"), @"australian"],
-                         @[L(@"Canadian"), @"canadian"], @[L(@"Indian"), @"indian"], @[L(@"Chinese"), @"chinese"],
-                         @[L(@"Korean"), @"korean"], @[L(@"Japanese"), @"japanese"], @[L(@"Portuguese"), @"portuguese"],
-                         @[L(@"Russian"), @"russian"]])
-        [accents addObject:@[a[0], [a[1] stringByAppendingString:@" accent"]]];
-    NSPopUpButton *accent = small(accents, @"designAccent");
-    accent.toolTip = L(@"Accent of the model’s own voice — for English text only.");
-    NSButton *whisper = OVCheckbox(L(@"Whisper"), @"designWhisper");
-    whisper.controlSize = NSControlSizeSmall;
-    whisper.font = [NSFont systemFontOfSize:NSFont.smallSystemFontSize];
-    NSTextField *designTitle = OVLabel(L(@"Model’s voice"), 12, NSFontWeightMedium, nil);
-    [designTitle.widthAnchor constraintGreaterThanOrEqualToConstant:82].active = YES;
-    [designTitle setContentCompressionResistancePriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
-    NSStackView *design = OVHStack(@[designTitle, gender, age, level, accent, whisper, OVSpacer()], 6);
-    design.toolTip = designTitle.toolTip = L(@"What the model’s own voice sounds like (voice design). Cloned voices follow their sample instead.");
-    self.designRow = design;
-
-    NSBox *line = [NSBox new];
-    line.boxType = NSBoxSeparator;
-    NSStackView *panel = OVVStack(@[line, moodRow, columns, design], 9);
-    OVFillWidth(@[line, moodRow, columns, design], panel);
-    self.stylePanel = panel;
-    self.stylePanel.hidden = ![NSUserDefaults.standardUserDefaults boolForKey:@"stylePanel"];
+- (void)themeChanged {
     [self refreshMood];
+    [self refreshState];
+    [self refreshVoiceHint];
 }
 
-- (void)toggleStylePanel:(id)s {
-    BOOL open = self.stylePanel.hidden;
-    self.stylePanel.hidden = !open;
-    [NSUserDefaults.standardUserDefaults setBool:open forKey:@"stylePanel"];
-}
+#pragma mark Voice style
 
 /// The mood picker follows the "styleMood" setting; a slider moved by hand leaves no preset selected ("Custom").
 - (void)refreshMood {
     NSString *mood = [NSUserDefaults.standardUserDefaults stringForKey:@"styleMood"] ?: @"neutral";
     NSArray<NSDictionary *> *moods = [OVSettings moods];
     NSUInteger idx = [[moods valueForKey:@"id"] indexOfObject:mood];
-    if (idx == NSNotFound) {
-        self.moodPicker.selectedSegment = -1;
-        self.moodName.stringValue = L(@"Custom");
-    } else {
-        self.moodPicker.selectedSegment = idx;
-        self.moodName.stringValue = moods[idx][@"title"];
-    }
     BOOL plain = [OVSettings styleIsNeutral] && fabs([NSUserDefaults.standardUserDefaults doubleForKey:@"speed"] - 1) < 0.005;
-    self.styleButton.contentTintColor = plain ? NSColor.secondaryLabelColor : OVAccent();
+    if (idx == NSNotFound) {
+        self.moodPicker.selectedIndex = -1;
+        self.moodName.stringValue = L(@"Custom");
+        self.styleDisclosure.subtitle = L(@"Custom");
+    } else {
+        self.moodPicker.selectedIndex = idx;
+        self.moodName.stringValue = moods[idx][@"title"];
+        self.styleDisclosure.subtitle = plain && [mood isEqualToString:@"neutral"] ? L(@"Default") : moods[idx][@"title"];
+    }
+    self.moodName.textColor = OVColor(OVRoleAccent);
 }
 
-- (void)moodPicked:(NSSegmentedControl *)c {
-    if (c.selectedSegment < 0) return;
-    [OVSettings applyMood:[OVSettings moods][c.selectedSegment][@"id"]];
+- (void)moodPicked:(OVSegmented *)c {
+    if (c.selectedIndex < 0) return;
+    [OVSettings applyMood:[OVSettings moods][c.selectedIndex][@"id"]];
     [self syncControls];
     [self textDidChange:[NSNotification notificationWithName:NSTextDidChangeNotification object:nil]];
 }
@@ -568,18 +551,18 @@ static NSString *const kAutoVoice = @"__auto__";
 #pragma mark Tune popover (LoRA, accent removal)
 
 - (void)buildTunePopover {
-    self.adaptCheck = [NSButton checkboxWithTitle:L(@"Remove the sample’s accent in other languages") target:self action:@selector(adaptToggled:)];
+    self.adaptCheck = OVCheckbox(L(@"Remove the sample’s accent in other languages"), @"adaptAccent");
     self.adaptCheck.toolTip = L(@"When the text is in another language than the voice sample, the voice first says two short phrases in that language, three times each. The takes are scored by how much they sound like you and how cleanly they are pronounced; the two best become the voice’s sample for that language. Takes about two minutes, once per voice and language.");
-    self.loraPopup = [NSPopUpButton new];
+    self.loraPopup = [OVPopup popup];
     self.loraPopup.target = self;
     self.loraPopup.action = @selector(loraPicked:);
     self.loraPopup.autoenablesItems = NO;
     self.loraPopup.toolTip = L(@"LoRA adapter on top of the model. The chosen adapter is downloaded automatically.");
-    NSButton *more = OVButton(L(@"All settings…"), self, @selector(openSettings:));
-    more.controlSize = NSControlSizeSmall;
+    [self.loraPopup.widthAnchor constraintGreaterThanOrEqualToConstant:220].active = YES;
+    NSButton *more = Height28(OVGhostButton(L(@"All settings…"), nil, self, @selector(openSettings:)));
     NSGridView *g = [NSGridView gridViewWithViews:@[
-        @[OVLabel(@"LoRA", 12, NSFontWeightMedium, nil), self.loraPopup],
-        @[OVLabel(L(@"Accent"), 12, NSFontWeightMedium, nil), self.adaptCheck],
+        @[OVLabel(L(@"LoRA"), 13, NSFontWeightSemibold, nil), self.loraPopup],
+        @[OVLabel(L(@"Accent"), 13, NSFontWeightSemibold, nil), self.adaptCheck],
         @[[NSGridCell emptyContentView], more],
     ]];
     g.rowSpacing = 12;
@@ -602,22 +585,19 @@ static NSString *const kAutoVoice = @"__auto__";
 
 - (void)openSettings:(id)s { [self.tunePopover close]; OVNavigate(@"settings"); }
 
-
-- (void)adaptToggled:(NSButton *)b {
-    [NSUserDefaults.standardUserDefaults setBool:b.state == NSControlStateValueOn forKey:@"adaptAccent"];
-    [self refreshVoiceHint];
-}
-
 #pragma mark State
-
 
 - (void)syncControls {
     NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
     NSInteger steps = [d integerForKey:@"numStep"];
-    self.quality.selectedSegment = steps <= 20 ? 0 : steps <= 40 ? 1 : 2;
+    self.quality.selectedIndex = steps <= 20 ? 0 : steps <= 40 ? 1 : 2;
     self.adaptCheck.state = [OVSettings adaptAccent] ? NSControlStateValueOn : NSControlStateValueOff;
-    for (OVStyleSlider *s in self.styleSliders) [s refresh];
+    for (OVSliderRow *s in self.styleSliders) [s refresh];
     [self refreshMood];
+    if ([OVSettings adaptAccent] != self.lastAdaptAccent) {   // the accent checkbox (or Settings) changed it: the voice hint depends on it
+        self.lastAdaptAccent = [OVSettings adaptAccent];
+        [self refreshVoiceHint];
+    }
 }
 
 - (void)refreshState {
@@ -634,16 +614,19 @@ static NSString *const kAutoVoice = @"__auto__";
                                    : (lora.error ? [NSString stringWithFormat:L(@"LoRA “%@” isn’t downloaded: %@"), lora.title, lora.error] : [NSString stringWithFormat:L(@"LoRA “%@” isn’t downloaded"), lora.title]);
     self.bannerCard.hidden = problem == nil;
     self.banner.stringValue = problem ?: @"";
+    self.banner.toolTip = problem;
     BOOL busy = [OVWorker shared].busy;
     self.synthButton.enabled = !busy && problem == nil;
     self.stopButton.hidden = !busy;
     self.progress.hidden = !busy && self.progress.doubleValue <= 0;
-    self.tuneButton.contentTintColor = lora ? OVAccent() : NSColor.secondaryLabelColor;
+    // a ghost pill cannot be tinted, so an active adapter is shown by name
+    self.tuneButton.title = lora ? [NSString stringWithFormat:L(@"LoRA · %@"), lora.title.length > 16 ? [[lora.title substringToIndex:15] stringByAppendingString:@"…"] : lora.title] : L(@"LoRA");
+    self.tuneButton.toolTip = lora ? [NSString stringWithFormat:L(@"LoRA “%@” is on. LoRA and accent removal"), lora.title] : L(@"LoRA and accent removal");
     [self refreshMemory];
 
     OVModel *asrDl = nil;
     for (OVModel *m in [mm modelsOfKind:OVModelASR]) if (m.downloading) asrDl = m;
-    BOOL on = self.improveSwitch.state == NSControlStateValueOn;
+    BOOL on = self.improveSwitch.on;
     self.improveHint.stringValue = !on ? L(@"checks every phrase") :
         asrDl ? [NSString stringWithFormat:L(@"downloading Whisper — %.0f%%"), asrDl.progress * 100] :
         mm.asrModel ? [NSString stringWithFormat:L(@"%ld takes per phrase, best kept"), (long)[NSUserDefaults.standardUserDefaults integerForKey:@"improveAttempts"]] :
@@ -662,11 +645,11 @@ static NSString *const kAutoVoice = @"__auto__";
     } else {
         self.memoryLabel.stringValue = [NSString stringWithFormat:L(@"engine idle · %@"), free];
     }
-    self.memoryLabel.textColor = avail < 1024ULL * 1024 * 1024 ? NSColor.systemOrangeColor : NSColor.secondaryLabelColor;
+    self.memoryLabel.textColor = OVColor(avail < 1024ULL * 1024 * 1024 ? OVRoleWarn : OVRoleMuted);
 }
 
-- (void)improveToggled:(NSSwitch *)s {
-    BOOL on = s.state == NSControlStateValueOn;
+- (void)improveToggled:(OVSwitch *)s {
+    BOOL on = s.on;
     [NSUserDefaults.standardUserDefaults setBool:on forKey:@"improve"];
     if (on) [[OVModels shared] whenASRReady:^(OVModel *asr, NSString *err) { [self refreshState]; }]; // fetch Whisper right away
     [self refreshState];
@@ -753,7 +736,7 @@ static NSString *const kAutoVoice = @"__auto__";
     else if (mismatch)
         hint = [NSString stringWithFormat:L(@"%@ sample — its accent carries over into %@"), from, to];
     self.voiceHint.stringValue = hint;
-    self.voiceHint.textColor = mismatch && !adapts ? NSColor.systemOrangeColor : NSColor.secondaryLabelColor;
+    self.voiceHint.textColor = OVColor(mismatch && !adapts ? OVRoleWarn : OVRoleMuted);
     self.voiceHint.toolTip = cleans ? L(@"The sample has a noticeable accent (Whisper finds its own transcript unlikely). The voice first says two short phrases in this language several times; the takes that sound most like you and most native become its sample, so the accent fades. Switch it off under the sliders button to keep the accent.")
                            : adapts ? L(@"The voice first says a short phrase in the new language; the cleanest take becomes its sample for that language, so the accent of the original sample doesn’t carry over. Switch it off under the sliders button to keep the accent.")
                            : mismatch ? L(@"Train the voice’s pronunciation in this language (Train… next to the voice), or turn on “Remove the sample’s accent” under the sliders button.") : nil;
@@ -765,8 +748,8 @@ static NSString *const kAutoVoice = @"__auto__";
 - (void)refreshPronunciation {
     OVVoice *v = [self selectedVoice];
     NSString *lang = [self textLanguage] ?: v.language;
-    self.pronCard.hidden = !v.ready || !lang.length;
-    if (self.pronCard.hidden) return;
+    self.pronRow.hidden = !v.ready || !lang.length;
+    if (self.pronRow.hidden) return;
     NSDictionary *info = [v trainingInfo:lang];
     NSDictionary *now = info[@"trained"] ?: info[@"original"];
     self.pronLabel.stringValue = [NSString stringWithFormat:L(@"Pronunciation · %@"), [OVLocale nameForLanguage:lang]];
@@ -805,8 +788,9 @@ static NSString *const kAutoVoice = @"__auto__";
     if (v) [[OVPlayer shared] toggle:v.referencePath];
 }
 
-- (void)qualityPicked:(NSSegmentedControl *)s {
-    NSInteger steps = ((NSNumber *)@[@16, @32, @64][s.selectedSegment]).integerValue;
+- (void)qualityPicked:(OVSegmented *)s {
+    if (s.selectedIndex < 0) return;
+    NSInteger steps = ((NSNumber *)@[@16, @32, @64][s.selectedIndex]).integerValue;
     [NSUserDefaults.standardUserDefaults setInteger:steps forKey:@"numStep"];
 }
 
@@ -836,6 +820,9 @@ static NSString *const kAutoVoice = @"__auto__";
     NSMenuItem *autoItem = [self.langPopup itemAtIndex:0];
     NSString *code = [OVLocale detectLanguage:self.editor.string ?: @""];
     autoItem.title = code ? [NSString stringWithFormat:L(@"Auto · %@"), [OVLocale nameForLanguage:code]] : L(@"Auto-detect");
+    BOOL isAuto = [[OVLocale speechLanguageSetting] isEqualToString:@"auto"];
+    self.detectedHint.stringValue = !isAuto ? L(@"Language chosen by hand")
+        : code ? [NSString stringWithFormat:L(@"Detected in the text: %@"), [OVLocale nameForLanguage:code]] : L(@"Recognized from the text as you type");
     if (self.langPopup.indexOfSelectedItem == 0) [self.langPopup synchronizeTitleAndSelectedItem];
     [self refreshVoiceHint];
 }
@@ -879,9 +866,9 @@ static BOOL IsVowel(unichar c) {
     tv.selectedRange = NSMakeRange(after + replacement.length, 0);
     [self.view.window makeFirstResponder:tv];
     if (!has) {
-        self.status.stringValue = self.improveSwitch.state == NSControlStateValueOn
+        self.status.stringValue = self.improveSwitch.on
             ? L(@"Stress marked: of this phrase’s takes, the one that stresses it will be kept")
-            : L(@"Stress marked. It counts only with ✨ Auto-improve on, which picks the take that stresses it — the model itself ignores marks");
+            : L(@"Stress marked. It counts only with Auto-improve on, which picks the take that stresses it — the model itself ignores marks");
     }
 }
 
@@ -899,7 +886,7 @@ static BOOL IsVowel(unichar c) {
         self.status.stringValue = L(@"Clone a voice on the Voices page first");
         return;
     }
-    [self synthesizeText:text voice:voice improve:self.improveSwitch.state == NSControlStateValueOn];
+    [self synthesizeText:text voice:voice improve:self.improveSwitch.on];
 }
 
 - (void)synthesizeText:(NSString *)text voice:(OVVoice *)voice improve:(BOOL)improve {
@@ -992,6 +979,7 @@ static BOOL IsVowel(unichar c) {
     BOOL loaded = p.currentPath != nil;
     self.playerBar.hidden = !loaded;
     self.playerButton.image = [NSImage imageWithSystemSymbolName:p.playing ? @"pause.fill" : @"play.fill" accessibilityDescription:nil];
+    self.playerButton.accessibilityLabel = p.playing ? L(@"Pause") : L(@"Play");
     self.sampleButton.title = [p.currentPath isEqualToString:[self selectedVoice].referencePath] && p.playing ? L(@"Stop") : L(@"Voice sample");
     if (loaded) {
         OVGeneration *g = nil;
@@ -1028,10 +1016,13 @@ static BOOL IsVowel(unichar c) {
     NSUInteger n = [OVHistory shared].all.count;
     self.emptyHistory.hidden = n > 0;
     self.table.enclosingScrollView.hidden = n == 0;
+    self.tableHeight.constant = MAX(1, MIN(n, kTakeRowsVisible)) * kTakeRowHeight;   // more rows scroll inside the list
     self.historyTitle.stringValue = n ? [NSString stringWithFormat:L(@"Recent takes · %lu"), (unsigned long)n] : L(@"Recent takes");
 }
 
 - (NSInteger)numberOfRowsInTableView:(NSTableView *)t { return [OVHistory shared].all.count; }
+
+- (NSTableRowView *)tableView:(NSTableView *)t rowViewForRow:(NSInteger)row { return [OVTableRowView new]; }
 
 - (NSView *)tableView:(NSTableView *)t viewForTableColumn:(NSTableColumn *)c row:(NSInteger)row {
     OVHistoryCell *cell = [t makeViewWithIdentifier:@"hist" owner:self];
@@ -1040,14 +1031,15 @@ static BOOL IsVowel(unichar c) {
     cell.text.stringValue = [[g.text componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet] componentsJoinedByString:@" "];
     cell.text.toolTip = g.text;
     NSString *when = [NSDateFormatter localizedStringFromDate:g.date dateStyle:NSDateFormatterShortStyle timeStyle:NSDateFormatterShortStyle];
-    NSString *quality = g.clarity >= 0 ? [NSString stringWithFormat:@" · ✨ %.0f%%", g.clarity * 100] : @"";
-    if (g.likeness >= 0) quality = [quality stringByAppendingFormat:L(@" · voice %.0f%%"), g.likeness * 100];
-    cell.meta.stringValue = [NSString stringWithFormat:@"%@ · %@ · %@%@", g.voiceName.length ? g.voiceName : @"—", OVFormatDuration(g.seconds), when, quality];
+    NSString *clarity = g.clarity >= 0 ? [NSString stringWithFormat:L(@" · clarity %.0f%%"), g.clarity * 100] : @"";
+    cell.meta.stringValue = [NSString stringWithFormat:@"%@ · %@ · %@%@", g.voiceName.length ? g.voiceName : @"—", OVFormatDuration(g.seconds), when, clarity];
     cell.meta.toolTip = g.problems.count ? [NSString stringWithFormat:L(@"Unclear: %@"), [[g.problems valueForKey:@"text"] componentsJoinedByString:@" / "]] : nil;
+    [cell setLikeness:g.likeness];
     cell.improve.enabled = self.synthButton.enabled;
     OVPlayer *p = [OVPlayer shared];
     BOOL playing = [p.currentPath isEqualToString:g.path] && p.playing;
-    cell.play.image = [NSImage imageWithSystemSymbolName:playing ? @"pause.circle.fill" : @"play.circle.fill" accessibilityDescription:nil];
+    cell.play.image = [NSImage imageWithSystemSymbolName:playing ? @"pause.fill" : @"play.fill" accessibilityDescription:nil];
+    cell.play.accessibilityLabel = playing ? L(@"Pause") : L(@"Listen");
     return cell;
 }
 
