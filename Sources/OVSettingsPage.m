@@ -2,6 +2,7 @@
 #import "OVDesign.h"
 #import "OVRuntime.h"
 #import "OVWorker.h"
+#import "OVNetwork.h"
 #import "OVStore.h"
 #import "OVPaths.h"
 #import "OVLocale.h"
@@ -219,7 +220,29 @@ static NSStackView *Rows(NSArray<NSView *> *rows, CGFloat gap) {
     NSView *improve = OVStepCard(0, @"sparkles", L(@"Auto-improve"),
         L(@"Switch it on next to the Speak button. Each phrase is spoken several times and the best take is kept — slower, but the stress, the accent and the likeness come out best."),
         Rows(@[attempts, threshold, prepare], 16));
-    return CardColumn(@[interface, playback, improve]);
+    OVSwitch *offline = [OVSwitch new];
+    offline.on = OVNetwork.offline;
+    offline.target = self;
+    offline.action = @selector(offlineToggled:);
+    offline.accessibilityLabel = L(@"Offline mode");
+    NSTextField *offlineTitle = OVWrapLabel(L(@"Offline mode"), 14, nil);
+    offlineTitle.font = [NSFont systemFontOfSize:14 weight:NSFontWeightSemibold];
+    NSTextField *offlineHint = OVWrapLabel(L(@"Turns off Edge TTS, YouTube import, Bridge and plugin network access. Model downloads you start yourself still work."), 13, OVColor(OVRoleMuted));
+    NSStackView *offlineTexts = OVVStack(@[offlineTitle, offlineHint], 2);
+    OVFillWidth(@[offlineTitle, offlineHint], offlineTexts);
+    NSButton *resetNet = OVGhostButton(L(@"Reset network permissions"), @"arrow.counterclockwise", self, @selector(resetNetworkPermissions:));
+    resetNet.toolTip = L(@"Forget what you agreed to share. Each network feature asks again the next time you use it.");
+    NSView *offlineCard = OVStepCard(0, @"wifi.slash", L(@"Offline mode"), nil,
+        Rows(@[OVHStack(@[offline, offlineTexts], 12), OVHStack(@[resetNet, OVSpacer()], 0)], 12));
+    return CardColumn(@[interface, playback, improve, offlineCard]);
+}
+
+- (void)resetNetworkPermissions:(id)s {
+    for (OVNetFeature f = OVNetEdgeTTS; f <= OVNetPluginNetwork; f++) [OVNetwork revokeConsentFor:f];
+}
+
+- (void)offlineToggled:(OVSwitch *)s {
+    [OVNetwork setOffline:s.on];
 }
 
 - (NSView *)appearanceTab {
