@@ -42,14 +42,79 @@ static void testLUTEndsContrast(void) {
         for (int dark = 0; dark < 2; dark++) {
             double cr = Contrast(LUT(0, dark), LUT(255, dark));
             CHECK(cr >= 3.0, "%s %s contrast %.2f", [p[@"id"] UTF8String], dark ? "dark" : "light", cr);
-            if (dark) {
-                double prev = -1;
-                for (int v = 0; v < 256; v++) {
-                    double l = Lum(LUT((uint8_t)v, YES));
-                    CHECK(l >= prev - 1e-9, "%s dark luminance drops at %d (%.4f < %.4f)", [p[@"id"] UTF8String], v, l, prev);
-                    prev = l;
-                }
+            // dark: bright = loud (luminance rises); light: ink = loud (luminance falls)
+            double prev = dark ? -1 : 2;
+            for (int v = 0; v < 256; v++) {
+                double l = Lum(LUT((uint8_t)v, dark));
+                CHECK(dark ? l >= prev - 1e-9 : l <= prev + 1e-9, "%s %s luminance goes the wrong way at %d (%.4f vs %.4f)",
+                      [p[@"id"] UTF8String], dark ? "dark" : "light", v, l, prev);
+                prev = l;
             }
+            // The quiet end must melt into the plot fill (OVRoleField) instead of showing as a box.
+            __block NSColor *field;
+            [Ap(dark) performAsCurrentDrawingAppearance:^{ field = [OVColor(OVRoleField) colorUsingColorSpace:NSColorSpace.sRGBColorSpace]; }];
+            double fc = Contrast(LUT(0, dark), field);
+            CHECK(fc <= 1.6, "%s %s LUT(0) vs plot fill %.2f", [p[@"id"] UTF8String], dark ? "dark" : "light", fc);
+        }
+    }
+    [OVTheme setPaletteId:saved];
+}
+
+static void testCurvesReadableOnHalo(void) {
+    NSString *saved = OVTheme.paletteId;
+    for (NSDictionary *p in OVTheme.palettes) {
+        [OVTheme setPaletteId:p[@"id"]];
+        for (int dark = 0; dark < 2; dark++) {
+            __block NSColor *bg, *ok, *warn;
+            [Ap(dark) performAsCurrentDrawingAppearance:^{
+                bg = [OVColor(OVRoleBackground) colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+                ok = [OVColor(OVRoleOK) colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+                warn = [OVColor(OVRoleWarn) colorUsingColorSpace:NSColorSpace.sRGBColorSpace]; }];
+            CHECK(Contrast(ok, bg) >= 3.0, "%s %s pitch vs halo %.2f", [p[@"id"] UTF8String], dark ? "dark" : "light", Contrast(ok, bg));
+            CHECK(Contrast(warn, bg) >= 3.0, "%s %s centroid vs halo %.2f", [p[@"id"] UTF8String], dark ? "dark" : "light", Contrast(warn, bg));
+        }
+    }
+    [OVTheme setPaletteId:saved];
+}
+
+static NSString *TempDir(void);
+static NSDictionary *MakeResult(NSString *dir, NSInteger cols, NSInteger rows, NSInteger fileBytes, NSArray *f0);
+
+static void PixelAt(NSBitmapImageRep *rep, NSPoint pt, NSInteger height, double o[3]) {
+    double k = (double)rep.pixelsHigh / height;   // backing scale
+    NSColor *c = [[rep colorAtX:(NSInteger)(pt.x * k) y:(NSInteger)((height - pt.y) * k)] colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+    o[0] = c.redComponent; o[1] = c.greenComponent; o[2] = c.blueComponent;
+}
+
+static void testCurvePixelDiffersFromSpectrogram(void) {
+    NSString *saved = OVTheme.paletteId;
+    NSString *dir = TempDir();
+    NSDictionary *res = MakeResult(dir, 40, 32, 40 * 32, @[@300, @300, @300, @300, @300, @300, @300, @300]);
+    for (NSDictionary *p in OVTheme.palettes) {
+        [OVTheme setPaletteId:p[@"id"]];
+        for (int dark = 0; dark < 2; dark++) {
+            NSWindow *w = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 400, 200) styleMask:NSWindowStyleMaskTitled
+                                                        backing:NSBackingStoreBuffered defer:NO];
+            w.appearance = Ap(dark);
+            OVAnalyzerView *v = [[OVAnalyzerView alloc] initWithFrame:NSMakeRect(0, 0, 400, 200)];
+            [w.contentView addSubview:v];
+            [v loadResult:res error:nil];
+            CGPathRef path = [v copyPitchPath];
+            CHECK(path != NULL, "no pitch path");
+            if (!path) continue;
+            CGPoint pt = CGPathGetCurrentPoint(path);   // the last point of the run, on the line
+            pt.x -= 6;
+            CGPathRelease(path);
+            double with[3], without[3];
+            NSBitmapImageRep *rep = [v bitmapImageRepForCachingDisplayInRect:v.bounds];
+            [v cacheDisplayInRect:v.bounds toBitmapImageRep:rep];
+            PixelAt(rep, pt, 200, with);
+            v.showsPitch = NO;
+            rep = [v bitmapImageRepForCachingDisplayInRect:v.bounds];
+            [v cacheDisplayInRect:v.bounds toBitmapImageRep:rep];
+            PixelAt(rep, pt, 200, without);
+            double d = fabs(with[0] - without[0]) + fabs(with[1] - without[1]) + fabs(with[2] - without[2]);
+            CHECK(d > 0.3, "%s %s curve pixel too close to the spectrogram (%.3f)", [p[@"id"] UTF8String], dark ? "dark" : "light", d);
         }
     }
     [OVTheme setPaletteId:saved];
@@ -172,6 +237,8 @@ int main(void) {
         [NSApplication sharedApplication];
         [NSUserDefaults.standardUserDefaults removePersistentDomainForName:NSProcessInfo.processInfo.processName];
         testLUTEndsContrast();
+        testCurvesReadableOnHalo();
+        testCurvePixelDiffersFromSpectrogram();
         testImageSizeAndPixels();
         testLoadRejectsBadSize();
         testPitchGapsAtZero();

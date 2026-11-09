@@ -140,9 +140,36 @@ static const CGFloat kLeft = 48, kBottom = 22, kTop = 6, kRight = 8;
 - (void)setShowsPitch:(BOOL)v { _showsPitch = v; self.needsDisplay = YES; }
 - (void)setShowsCentroid:(BOOL)v { _showsCentroid = v; self.needsDisplay = YES; }
 - (void)setPosition:(NSTimeInterval)p {
+    NSInteger oldCol = _u8 ? [self columnForTime:_position] : -1;
+    NSRect r = [self plotRect];
+    CGFloat oldX = [self xForTime:_position inRect:r];
     _position = p;
-    self.needsDisplay = YES;
+    if (_u8 && [self columnForTime:p] == oldCol) return;   // the playhead stays in the same column: nothing to redraw or announce
+    CGFloat newX = [self xForTime:p inRect:r];
+    [self setNeedsDisplayInRect:NSMakeRect(oldX - 2, NSMinY(r), 4, r.size.height)];
+    [self setNeedsDisplayInRect:NSMakeRect(newX - 2, NSMinY(r), 4, r.size.height)];
     NSAccessibilityPostNotification(self, NSAccessibilityValueChangedNotification);
+}
+
+#pragma mark Keyboard and VoiceOver seek
+
+- (BOOL)acceptsFirstResponder { return _u8 != nil; }
+- (BOOL)needsPanelToBecomeKey { return NO; }
+- (NSRect)focusRingMaskBounds { return [self plotRect]; }
+- (void)drawFocusRingMask { NSRectFill([self plotRect]); }
+- (void)nudge:(double)dt {
+    if (!_u8 || !self.onSeek) return;
+    self.onSeek(MIN(MAX(_position + dt, 0), [self duration]));
+}
+- (BOOL)accessibilityPerformIncrement { [self nudge:1]; return _u8 != nil; }
+- (BOOL)accessibilityPerformDecrement { [self nudge:-1]; return _u8 != nil; }
+- (void)keyDown:(NSEvent *)e {
+    NSString *k = e.charactersIgnoringModifiers;
+    if (!k.length) { [super keyDown:e]; return; }
+    unichar c = [k characterAtIndex:0];
+    if (c == NSRightArrowFunctionKey) [self nudge:1];
+    else if (c == NSLeftArrowFunctionKey) [self nudge:-1];
+    else [super keyDown:e];
 }
 
 #pragma mark Loading
@@ -270,9 +297,15 @@ static NSError *Err(NSString *why) {
     CGPathRef path = [self copyCurve:v hop:hop];
     if (!path) return;
     CGContextSaveGState(ctx);
+    CGContextSetLineJoin(ctx, kCGLineJoinRound);
+    CGContextSetLineCap(ctx, kCGLineCapRound);
+    // A solid background-colored halo keeps the curve readable where its color equals the spectrogram's bright stop.
+    [OVColor(OVRoleBackground) setStroke];
+    CGContextSetLineWidth(ctx, 4);
+    CGContextAddPath(ctx, path);
+    CGContextStrokePath(ctx);
     [c setStroke];
     CGContextSetLineWidth(ctx, 1.5);
-    CGContextSetLineJoin(ctx, kCGLineJoinRound);
     if (dashed) { CGFloat d[2] = {4, 3}; CGContextSetLineDash(ctx, 0, d, 2); }
     CGContextAddPath(ctx, path);
     CGContextStrokePath(ctx);
