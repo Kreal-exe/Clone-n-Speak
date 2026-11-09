@@ -39,6 +39,7 @@ BOOL OVEverythingReady(void);
 @interface OVConvertPage : NSViewController @end
 @interface OVRealtimePage : NSViewController @end
 @interface OVTrainingPage : NSViewController @end
+@interface OVJobsPage : NSViewController @end
 @interface OVBlenderPage : NSViewController @end
 /// Developer-only page with every OVDesign component (not in the sidebar; OVNavigate(@"gallery") or -OVStartPage gallery).
 @interface OVGalleryPage : NSViewController @end
