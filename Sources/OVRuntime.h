@@ -19,6 +19,9 @@ NSTask *_Nullable OVRunTask(NSString *path, NSArray<NSString *> *args, NSDiction
                             void (^_Nullable onLine)(NSString *line),
                             void (^_Nullable done)(int status));
 
+/// YES only for a pinned "name==version" package spec (what installOptionalPackages accepts).
+BOOL OVIsValidPackageSpec(NSString *_Nullable spec);
+
 /// Finds a Python environment with OmniVoice (own or VoiceStudio's) or installs one.
 @interface OVRuntime : NSObject
 + (instancetype)shared;
@@ -42,6 +45,11 @@ NSTask *_Nullable OVRunTask(NSString *path, NSArray<NSString *> *args, NSDiction
 /// uv (downloaded into the app folder or found on the system) and the environment it runs with.
 - (nullable NSString *)findUV;
 - (NSDictionary *)uvEnv;
+/// Installs extra Python packages (e.g. @"onnxruntime==1.31.1") into the app's own environment with uv, on demand.
+/// progress(fraction, line): fraction is -1 (indeterminate) while uv prints; done(nil) on success, else a message.
+- (void)installOptionalPackages:(NSArray<NSString *> *)pkgs title:(NSString *)t
+                       progress:(void (^_Nullable)(double, NSString *))p
+                           done:(void (^)(NSString *_Nullable error))done;
 @end
 
 NS_ASSUME_NONNULL_END

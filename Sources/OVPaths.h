@@ -11,6 +11,7 @@ NS_ASSUME_NONNULL_BEGIN
 + (NSString *)binDir;         // …/runtime/bin (downloaded uv lives here)
 + (NSString *)accent;       // …/accent (optional: Seed-VC for native-accent speech)
 + (NSString *)models;         // …/models (legacy: moved into the HF cache on first run)
++ (NSString *)separationModels; // …/models/separation (music-removal ONNX model, downloaded on demand)
 + (NSString *)voices;         // …/voices
 + (NSString *)logs;           // …/logs
 + (NSString *)workerScript;   // …/runtime/worker.py

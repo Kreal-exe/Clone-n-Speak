@@ -27,6 +27,7 @@ EXPECTED = {
     "OVNetwork.m": (2, "the gate"),
     "cns_net.py": (3, "the gate for Python processes"),
     "worker.py": (4, "ECAPA fetch (cached only offline), Seed-VC download (explicit_download)"),
+    "cns_separate.py": (8, "music-removal model download, started by the user (pinned HTTPS URL + sha256, https-only redirects)"),
     "cns_dfn.py": (4, "DeepFilterNet binary download, started by the user (pinned URL + sha256)"),
 }
 
