@@ -46,3 +46,4 @@
 "Light cleanup: trims silence, shortens pauses, reduces noise. The original is kept." = "Лёгкая очистка: обрезает тишину, сокращает паузы, снижает шум. Оригинал сохраняется.";
 "The engine is busy — try again in a moment." = "Движок занят — повторите через минуту.";
 "The music-removal engine isn’t installed — press Download, then try again." = "Движок удаления музыки не установлен — нажмите «Скачать» и повторите.";
+"Press Download, then try again." = "Нажмите «Скачать» и повторите.";

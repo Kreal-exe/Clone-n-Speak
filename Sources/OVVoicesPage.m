@@ -19,8 +19,10 @@ static const NSTimeInterval kMaxRecord = 15;
 /// Page background that takes an audio file dropped anywhere on it.
 @interface OVAudioDropView : NSStackView
 @property (copy) void (^onDrop)(NSString *path);
+@property (copy) void (^onWindowChange)(BOOL inWindow);
 @end
 @implementation OVAudioDropView
+- (void)viewDidMoveToWindow { [super viewDidMoveToWindow]; if (self.onWindowChange) self.onWindowChange(self.window != nil); }
 - (NSURL *)audioFrom:(id<NSDraggingInfo>)info {
     NSDictionary *opts = @{NSPasteboardURLReadingFileURLsOnlyKey: @YES, NSPasteboardURLReadingContentsConformToTypesKey: @[UTTypeAudio.identifier, UTTypeMovie.identifier]};
     return [[info.draggingPasteboard readObjectsForClasses:@[NSURL.class] options:opts] firstObject];
@@ -282,6 +284,7 @@ static const NSTimeInterval kMaxRecord = 15;
     root.distribution = NSStackViewDistributionFill;
     root.spacing = 0;
     root.alignment = NSLayoutAttributeTop;
+    root.onWindowChange = ^(BOOL inWindow) { if (inWindow) [weakSelf askEngineStatus:nil]; };   // pages are swapped with addSubview, not viewDidAppear
     [root registerForDraggedTypes:@[NSPasteboardTypeFileURL]];
     root.onDrop = ^(NSString *path) {  // a recording dropped on the page becomes the sample of the voice shown
         [weakSelf importDropped:path];
@@ -885,10 +888,6 @@ static const NSTimeInterval kMaxRecord = 15;
 
 #pragma mark Improve sample
 
-- (void)viewDidAppear {
-    [super viewDidAppear];
-    [self askEngineStatus:nil];
-}
 
 - (NSString *)improveMode { return @[@"light", @"dfn", @"music"][MAX(0, MIN(2, self.modeSeg.selectedIndex))]; }
 
@@ -917,7 +916,6 @@ static const NSTimeInterval kMaxRecord = 15;
     self.askingEngine = YES;
     __weak typeof(self) w = self;
     BOOL dfn = [mode isEqualToString:@"dfn"];
-    // TODO: once OVWorker.lastErrorCode exists, map engine_missing / unsupported to the Download action here.
     [[OVWorker shared] request:@{@"cmd": dfn ? @"dfn_status" : @"sep_status"} status:nil progress:nil done:^(NSDictionary *d, NSString *e) {
         w.askingEngine = NO;
         if (!e && d) {
@@ -927,6 +925,15 @@ static const NSTimeInterval kMaxRecord = 15;
         [w refreshButtons];
         if (then) then();
     }];
+}
+
+/// engine_missing / unsupported from DeepFilterNet or music removal: the engine must be (re)downloaded — offer the Download action.
+- (BOOL)noteEngineError:(nullable NSString *)code mode:(NSString *)mode {
+    if (![code isEqualToString:@"engine_missing"] && ![code isEqualToString:@"unsupported"]) return NO;
+    if ([mode isEqualToString:@"dfn"]) self.dfnInstalled = @NO;
+    else if ([mode isEqualToString:@"music"]) self.musicInstalled = @NO;
+    else return NO;
+    return YES;
 }
 
 - (BOOL)modeEngineReady {
@@ -996,7 +1003,8 @@ static const NSTimeInterval kMaxRecord = 15;
     NSString *action = nil;
     NSDictionary *req = OVEnhanceRequest([self improveMode], self.strengthSlider.doubleValue, audio, tmp, [self modeEngineReady], &action);
     if (!req) { if ([action isEqualToString:@"download"]) [self downloadEngine:nil]; return; }
-    if (![fm fileExistsAtPath:[self originalPath]]) [fm copyItemAtPath:audio toPath:[self originalPath] error:nil];
+    BOOL madeOriginal = ![fm fileExistsAtPath:[self originalPath]];
+    if (madeOriginal) [fm copyItemAtPath:audio toPath:[self originalPath] error:nil];
     NSString *vid = self.voice.identifier;
     BOOL music = [req[@"mode"] isEqualToString:@"music"];
     self.status.stringValue = music ? L(@"Removing the music…") : L(@"Cleaning the sample…");
@@ -1005,10 +1013,13 @@ static const NSTimeInterval kMaxRecord = 15;
         // Another voice was opened meanwhile: the cleaned sample belongs to the old one, drop it.
         if (![w.voice.identifier isEqualToString:vid]) { [NSFileManager.defaultManager removeItemAtPath:tmp error:nil]; return; }
         if (error) {   // the message names the action (e.g. download the engine)
+            BOOL engineGone = [w noteEngineError:[OVWorker shared].lastErrorCode mode:req[@"mode"]];   // code is valid only here
             [NSFileManager.defaultManager removeItemAtPath:tmp error:nil];
+            if (madeOriginal) [NSFileManager.defaultManager removeItemAtPath:[w originalPath] error:nil];   // nothing was changed
             w.status.stringValue = error;
             w.status.textColor = OVColor(OVRoleWarn);
-            if (![req[@"mode"] isEqualToString:@"light"]) { w.dfnInstalled = w.musicInstalled = nil; [w askEngineStatus:nil]; }
+            if (engineGone) w.status.stringValue = [error stringByAppendingFormat:@" %@", L(@"Press Download, then try again.")];
+            else if (![req[@"mode"] isEqualToString:@"light"]) { w.dfnInstalled = w.musicInstalled = nil; [w askEngineStatus:nil]; }
             [w refreshButtons];
             return;
         }
