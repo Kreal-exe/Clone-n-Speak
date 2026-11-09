@@ -1,0 +1,10 @@
+/* Voices page (task 5.2). */
+"Clone a voice from 3–10 seconds of speech." = "Клонируйте голос по 3–10 секундам речи.";
+"Drop a recording here" = "Перетащите запись сюда";
+"OK" = "OK";
+"WAV, MP3, M4A, FLAC · 3–10 s · or click to choose" = "WAV, MP3, M4A, FLAC · 3–10 с · или нажмите, чтобы выбрать";
+"What the sample says" = "Что говорится в образце";
+"  · too short" = "  · слишком коротко";
+"  · longer than 20 s — trim it to 3–10 s" = "  · длиннее 20 с — лучше обрезать до 3–10 с";
+"Stop the recording first — the file was not added." = "Сначала остановите запись — файл не добавлен.";
+"The engine is busy — the file was not added. Try again in a moment." = "Движок занят — файл не добавлен. Повторите чуть позже.";
