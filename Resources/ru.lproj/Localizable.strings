@@ -16,12 +16,15 @@
 "%+.1f st" = "%+.1f пт";
 "%.0f%% · likeness %.0f%%%@" = "%.0f%% · похожесть %.0f%%%@";
 "%.1f GB" = "%.1f ГБ";
+"%1$@ · %2$.1f kHz · %3$@ dB" = "%1$@ · %2$.1f кГц · %3$@ дБ";
 "%@\nError: %@" = "%@\nОшибка: %@";
 "%@ (access or an HF token is required)" = "%@ (нужен доступ / HF-токен)";
 "%@ (download)" = "%@ (скачать)";
 "%@ (not ready)" = "%@ (не готов)";
 "%@ is already in the cache." = "%@ уже в кеше.";
+"%@ kHz" = "%@ кГц";
 "%@ loaded" = "%@ загружена";
+"%@ of %@" = "%@ из %@";
 "%@ sample" = "%@ образца";
 "%@ sample with an accent → clean %@" = "Образец %@ с акцентом → чистый %@";
 "%@ sample with an accent → clean %@ after the first run (about two minutes)" = "Образец %@ с акцентом → чистый %@ после первого запуска (около двух минут)";
@@ -97,6 +100,7 @@
 "Applies to the whole app at once." = "Применяется ко всему приложению сразу.";
 "Audio" = "Звук";
 "Audio Tools" = "Аудио-инструменты";
+"Audio waveform" = "Волна звука";
 "Australian" = "Австралийский";
 "author/model, huggingface.co/… link, or folder" = "автор/модель, ссылка huggingface.co/… или папка";
 "Auto · %@" = "Авто · %@";
@@ -114,6 +118,8 @@
 "Calm" = "Спокойное";
 "Canadian" = "Канадский";
 "Cancel" = "Отмена";
+"Cannot create the folder (%@). Choose another place." = "Не удалось создать папку (%@). Выберите другое место.";
+"Cannot save the file (%@). Choose another place." = "Не удалось сохранить файл (%@). Выберите другое место.";
 "Can’t reach Hugging Face: %@" = "Нет связи с Hugging Face: %@";
 "Cards and headers" = "Карточки и шапки";
 "Catalog" = "Каталог";
@@ -152,6 +158,7 @@
 "Convert" = "Конвертация";
 "Copy" = "Копировать";
 "Copy all" = "Скопировать всё";
+"Could not save the converted audio. Check the free disk space and try again." = "Не удалось сохранить преобразованный звук. Проверьте свободное место на диске и повторите.";
 "Couldn’t create the Python environment (see the log for details)" = "Не удалось создать Python-окружение (подробности в журнале)";
 "Couldn’t download uv: %@" = "Не удалось скачать uv: %@";
 "Couldn’t get model information" = "Не удалось получить сведения о модели";
@@ -167,6 +174,7 @@
 "CPU only" = "только CPU";
 "Custom" = "Своё";
 "Cut" = "Вырезать";
+"Cut it first: this file is longer than the allowed length." = "Сначала обрежьте: файл длиннее допустимого.";
 "Dark" = "Тёмная";
 "Dark Theme" = "Тёмная тема";
 "Data & Privacy" = "Данные и приватность";
@@ -233,6 +241,7 @@
 "Exactly, word for word. You can leave it empty — Whisper will transcribe it." = "Точно, слово в слово. Можно оставить пустым — тогда текст распознает Whisper.";
 "Excited" = "Азарт";
 "Expanded" = "Развёрнуто";
+"Export failed: %@" = "Экспорт не удался: %@";
 "Failed" = "Ошибка";
 "Fast" = "Быстро";
 "Female" = "Женский";
@@ -358,6 +367,7 @@
 "Male" = "Мужской";
 "Mark the stress on the selected vowel (or the one before the cursor): виши́вка. Press again to remove it. Shortcut ⌘'. The mark steers Auto-improve: of the takes of that phrase, the one that stresses this syllable wins. It is not sent to the model — marks make Ukrainian sound Russian." = "Отметить ударение на выделенной гласной (или на гласной перед курсором): виши́вка. Повторное нажатие убирает его. Сочетание клавиш ⌘'. Ударение управляет автоулучшением: из дублей этой фразы остаётся тот, где ударение падает на этот слог. Модели оно не передаётся — ударения в тексте делают украинскую речь русской по звучанию.";
 "Maximum" = "Максимум";
+"Median pitch %d Hz" = "Медианная высота %d Гц";
 "Medium" = "Средний";
 "Memory & speed" = "Память и скорость";
 "Memory of this Mac: the speech engine (blue), other apps (gray), free" = "Память этого Mac: движок озвучки (синий), другие программы (серый), свободно";
@@ -383,6 +393,7 @@
 "Name" = "Название";
 "needs 16 GB" = "нужно 16 ГБ";
 "Needs attention" = "Нужно внимание";
+"Needs ffmpeg. Install it with “brew install ffmpeg”." = "Нужен ffmpeg. Установите его командой «brew install ffmpeg».";
 "Neutral" = "Нейтральное";
 "never" = "никогда";
 "New sample (not applied yet)" = "Новый образец (ещё не применён)";
@@ -397,6 +408,7 @@
 "No recordings yet" = "Озвучек пока нет";
 "No round beat the original sample, so the voice keeps it. Listen to the rounds — you can still pick one by ear." = "Ни один раунд не обошёл исходный образец, голос остаётся с ним. Послушайте раунды — любой можно выбрать на слух.";
 "No sample yet." = "Образец ещё не выбран.";
+"No sound was found in this file." = "В этом файле не найден звук.";
 "No step number" = "Без номера шага";
 "No symbol" = "Без значка";
 "Normal" = "Обычный";
@@ -424,6 +436,7 @@
 "Optional" = "По желанию";
 "or click to choose a file" = "или нажмите, чтобы выбрать файл";
 "Order in which tokens are revealed. Default is 5." = "Порядок раскрытия токенов. По умолчанию 5.";
+"Original" = "Оригинал";
 "Original k2-fsa weights, converted for Apple Silicon on first use. No download if VoiceStudio already has it." = "Оригинальные веса k2-fsa, при первом запуске конвертируются под Apple Silicon. Не нужно качать, если они уже есть у VoiceStudio.";
 "Original sample" = "Исходный образец";
 "Original sample restored." = "Исходный образец восстановлен.";
@@ -442,6 +455,7 @@
 "Play" = "Прослушать";
 "Play the result as soon as it’s ready" = "Проигрывать результат сразу после озвучки";
 "Playback" = "Воспроизведение";
+"Playback position" = "Позиция воспроизведения";
 "Plugins" = "Плагины";
 "Popup, switch, checkbox, radio" = "Список, переключатель, флажок, радио";
 "Portuguese" = "Португальский";
@@ -550,6 +564,7 @@
 "Speak naturally in a quiet room. Recording stops automatically after 15 s." = "Говорите естественно, в тишине. Запись остановится сама через 15 с.";
 "Speaking a test phrase with the new voice…" = "Озвучиваю пробную фразу новым голосом…";
 "Speaks without the sample’s accent: %@" = "Говорит без акцента образца: %@";
+"Spectrogram" = "Спектрограмма";
 "Speech" = "Озвучка";
 "Speech language. Auto-detect recognizes it from the text." = "Язык озвучки. Автоопределение распознаёт его по тексту.";
 "Speech rate" = "Темп речи";
@@ -605,7 +620,9 @@
 "Text is prepared for reading aloud (abbreviations, numbers, years), each phrase is spoken several times and the take that is clearest, sounds most native and most like the voice, with the dictionary stress, is kept. Slower, but the best result." = "Текст готовится к чтению (сокращения, числа, годы), каждая фраза озвучивается несколько раз, и остаётся дубль, который разборчивее, звучит роднее и больше похож на голос, с ударениями по словарю. Дольше, зато лучший результат.";
 "Text only" = "Только текст";
 "Text transcribed — check it and correct it if needed." = "Текст распознан — проверьте его и поправьте, если нужно.";
+"The analysis result is incomplete." = "Результат анализа неполный.";
 "The app downloads Python, Apple MLX and OmniVoice (about 360 MB) to %@ on its own — no system Python or Homebrew needed." = "Приложение само скачает Python, Apple MLX и OmniVoice (около 360 МБ) в %@ — системный Python и Homebrew не нужны.";
+"The audio is empty, so there is nothing to export." = "Аудио пустое, экспортировать нечего.";
 "The base model as is." = "Базовая модель как есть.";
 "The border turns to the focus color while you type." = "Рамка меняет цвет на цвет фокуса, пока вы печатаете.";
 "The cache is shared: if VoiceStudio or another app needs this model, it will have to download it again. The files will be moved to the Trash." = "Кеш общий: если модель нужна VoiceStudio или другому приложению, ему придётся скачать её снова. Файлы уйдут в Корзину.";
@@ -623,6 +640,9 @@
 "The repository has no adapter_model.safetensors — it isn’t a LoRA adapter" = "В репозитории нет adapter_model.safetensors — это не LoRA-адаптер";
 "The repository has no model files" = "В репозитории нет файлов модели";
 "The sample has a noticeable accent (Whisper finds its own transcript unlikely). The voice first says two short phrases in this language several times; the takes that sound most like you and most native become its sample, so the accent fades. Switch it off under the sliders button to keep the accent." = "У образца заметный акцент (Whisper считает его собственную расшифровку маловероятной). Голос сначала несколько раз произносит две короткие фразы на этом языке; дубли, которые больше всего похожи на вас и звучат роднее всего, становятся его образцом, и акцент уходит. Отключается под кнопкой с ползунками, если акцент нужно сохранить.";
+"The source audio file cannot be read (%@). Choose a WAV file." = "Исходный аудиофайл не читается (%@). Выберите файл WAV.";
+"The source audio file was not found. Generate or choose the audio again." = "Исходный аудиофайл не найден. Озвучьте текст или выберите аудио заново.";
+"The spectrogram file is missing or has the wrong size." = "Файл спектрограммы не найден или имеет неверный размер.";
 "The stress dictionary could not be installed — Ukrainian speech will do without it" = "Словарь ударений не установился — украинская озвучка обойдётся без него";
 "The text doesn’t match the recording" = "Текст не совпадает с записью";
 "The uv package manager wasn’t found — reinstall the engine on the Setup page." = "Менеджер пакетов uv не найден — переустановите движок на странице «Подготовка».";
@@ -639,10 +659,12 @@
 "Third option" = "Третий вариант";
 "This feature is meant for Macs with 16 GB of memory or more. On a Mac with less it may run out of memory." = "Функция рассчитана на Mac с 16 ГБ памяти и больше. На Mac с меньшим объёмом памяти её может не хватить.";
 "This feature is meant for Macs with 16 GB of memory or more. This Mac has %.0f GB, so it may run out of memory or slow down a lot." = "Функция рассчитана на Mac с 16 ГБ памяти и больше. На этом Mac %.0f ГБ, поэтому памяти может не хватить или всё заметно замедлится.";
+"This file can't be read as audio or video." = "Этот файл не читается как аудио или видео.";
 "This Mac has %.0f GB of unified memory, %@ free now. Automatic precision: voice model %ld-bit, Whisper %ld-bit. Speech recognition and synthesis take turns in memory, so only one model is loaded at a time." = "У этого Mac %.0f ГБ объединённой памяти, сейчас свободно %@. Автоматическая точность: модель голоса — %ld бит, Whisper — %ld бит. Распознавание и синтез загружаются по очереди, поэтому в памяти всегда только одна модель.";
 "This may run out of memory" = "Может не хватить памяти";
 "This page is not built yet." = "Эта страница ещё не готова.";
 "This recording’s voice was deleted or isn’t ready" = "Голос этой озвучки удалён или не готов";
+"This video has no audio track." = "В этом видео нет звуковой дорожки.";
 "Title only" = "Только название";
 "To fill in the sample text automatically, download Whisper Large v3 Turbo (1.6 GB) on the Models page." = "Чтобы текст образца заполнялся автоматически, скачайте Whisper Large v3 Turbo (1,6 ГБ) во вкладке «Модели».";
 "Token" = "Токен";
@@ -663,6 +685,7 @@
 "Unchecked" = "Выключен";
 "Unclear: %@" = "Неразборчиво: %@";
 "Undo" = "Отменить";
+"unknown error" = "неизвестная ошибка";
 "Unsupported audio format" = "Неподдерживаемый формат аудио";
 "Untitled" = "Без названия";
 "Updates" = "Обновления";
