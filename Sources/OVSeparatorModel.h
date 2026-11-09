@@ -1,4 +1,4 @@
-/* State of the music-removal engine and the requests the Separation page sends (task 6.17). Foundation only. */
+/* State of the music-removal engine and the request dictionaries the Separation page sends (task 6.17). Foundation only. */
 #import <Foundation/Foundation.h>
 
 NS_ASSUME_NONNULL_BEGIN
