@@ -14,6 +14,8 @@ typedef void (^OVWorkerResult)(NSDictionary *_Nullable data, NSString *_Nullable
 @interface OVWorker : NSObject
 + (instancetype)shared;
 @property (readonly) BOOL running, busy;
+/// Whether the running process was started in Offline mode (its environment is fixed at launch).
+@property (readonly) BOOL startedOffline;
 @property (readonly, nullable) NSString *loadedModelPath;
 @property (readonly, copy) NSString *lastStatus;
 /// Memory reported by the engine (GB): what it holds now and its peak during the last task.
