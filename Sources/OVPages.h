@@ -35,6 +35,12 @@ BOOL OVEverythingReady(void);
 @interface OVPlaceholderPage : NSViewController
 @property (nonatomic, copy, nullable) NSString *pageId;
 @end
+/// Separation page: music removal now; the pro sub-plan adds the stem card.
+extern NSNotificationName const OVSeparatorUseInToolsNotification;   // userInfo @"path": "Use in Audio Tools" hand-off
+@interface OVSeparatorPage : NSViewController
+/// The file "Use in Audio Tools" handed over (nil if none); Audio Tools may read it when it appears.
++ (nullable NSString *)pendingToolsInputPath;
+@end
 /// Pro-engine pages (16 GB tier); stubs until their own tasks land.
 @interface OVConvertPage : NSViewController @end
 @interface OVRealtimePage : NSViewController @end
