@@ -24,9 +24,20 @@ static NSDictionary<NSString *, NSString *> *CatalogEntry(OVNetFeature f) {
 + (void)setOffline:(BOOL)offline {
     if (offline == self.offline) return;
     [NSUserDefaults.standardUserDefaults setBool:offline forKey:kOffline];
-    // The engine's environment (OV_OFFLINE, HF_HUB_OFFLINE) is fixed at launch: an idle engine restarts on next use.
-    if (!OVWorker.shared.busy) [OVWorker.shared shutdown];
+    [self reconcileWorker];
     [NSNotificationCenter.defaultCenter postNotificationName:OVNetworkModeDidChangeNotification object:nil];
+}
+
+/// The engine's environment (OV_OFFLINE, HF_HUB_OFFLINE) is fixed at launch. When the mode differs from the one it
+/// started with, it is shut down as soon as it is idle (right now, or when the running job ends); the next request starts it afresh.
++ (void)reconcileWorker {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        [NSNotificationCenter.defaultCenter addObserverForName:OVWorkerDidChangeNotification object:nil queue:NSOperationQueue.mainQueue
+                                                    usingBlock:^(NSNotification *n) { [OVNetwork reconcileWorker]; }];
+    });
+    OVWorker *w = OVWorker.shared;
+    if (w.running && !w.busy && w.startedOffline != self.offline) [w shutdown];
 }
 
 + (NSString *)identifierFor:(OVNetFeature)f {

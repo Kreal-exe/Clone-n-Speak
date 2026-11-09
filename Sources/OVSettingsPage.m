@@ -230,8 +230,15 @@ static NSStackView *Rows(NSArray<NSView *> *rows, CGFloat gap) {
     NSTextField *offlineHint = OVWrapLabel(L(@"Turns off Edge TTS, YouTube import, Bridge and plugin network access. Model downloads you start yourself still work."), 13, OVColor(OVRoleMuted));
     NSStackView *offlineTexts = OVVStack(@[offlineTitle, offlineHint], 2);
     OVFillWidth(@[offlineTitle, offlineHint], offlineTexts);
-    NSView *offlineCard = OVStepCard(0, @"wifi.slash", L(@"Offline mode"), nil, OVHStack(@[offline, offlineTexts], 12));
+    NSButton *resetNet = OVGhostButton(L(@"Reset network permissions"), @"arrow.counterclockwise", self, @selector(resetNetworkPermissions:));
+    resetNet.toolTip = L(@"Forget what you agreed to share. Each network feature asks again the next time you use it.");
+    NSView *offlineCard = OVStepCard(0, @"wifi.slash", L(@"Offline mode"), nil,
+        Rows(@[OVHStack(@[offline, offlineTexts], 12), OVHStack(@[resetNet, OVSpacer()], 0)], 12));
     return CardColumn(@[interface, playback, improve, offlineCard]);
+}
+
+- (void)resetNetworkPermissions:(id)s {
+    for (OVNetFeature f = OVNetEdgeTTS; f <= OVNetPluginNetwork; f++) [OVNetwork revokeConsentFor:f];
 }
 
 - (void)offlineToggled:(OVSwitch *)s {

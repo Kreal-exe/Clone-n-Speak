@@ -20,6 +20,7 @@ NSNotificationName const OVWorkerEventNotification = @"OVWorkerEvent";
 @property (nullable, copy) OVWorkerProgress progressBlock;
 @property (nullable, copy) OVWorkerResult doneBlock;
 @property (readwrite) BOOL busy;
+@property (readwrite) BOOL startedOffline;
 @property (readwrite, nullable) NSString *loadedModelPath;
 @property (readwrite, copy) NSString *lastStatus;
 @property (nullable) NSTimer *idleTimer;
@@ -109,6 +110,7 @@ NSNotificationName const OVWorkerEventNotification = @"OVWorkerEvent";
     NSString *ep = [NSUserDefaults.standardUserDefaults stringForKey:@"hfEndpoint"];
     if (ep.length) env[@"HF_ENDPOINT"] = ep;
     // Offline mode: the engine never fetches anything (explicit model downloads run in OVDownloader, not here).
+    self.startedOffline = OVNetwork.offline;
     if (OVNetwork.offline) { env[@"OV_OFFLINE"] = @"1"; env[@"HF_HUB_OFFLINE"] = @"1"; }
     else { [env removeObjectForKey:@"OV_OFFLINE"]; [env removeObjectForKey:@"HF_HUB_OFFLINE"]; }
     t.environment = env;

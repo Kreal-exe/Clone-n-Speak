@@ -23,3 +23,5 @@
 "whatever the plugin sends" = "всё, что отправляет плагин";
 "Open Settings" = "Открыть Настройки";
 "Allow" = "Разрешить";
+"Reset network permissions" = "Сбросить сетевые разрешения";
+"Forget what you agreed to share. Each network feature asks again the next time you use it." = "Забыть данные согласия: каждая сетевая функция снова спросит при следующем использовании.";

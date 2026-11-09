@@ -978,6 +978,7 @@ def transcribe_auto(stt, wav, prefer="uk"):
 # The weights are a PyTorch checkpoint; they are read straight from its zip (no PyTorch needed).
 SPEAKER_REPO = "speechbrain/spkrec-ecapa-voxceleb"
 _speaker = None
+_speaker_offline_failed = False  # the checkpoint isn't cached and Offline mode is on: don't retry every take
 
 
 def _torch_zip_load(path):
@@ -1123,14 +1124,17 @@ class _Ecapa:
 
 def speaker_model():
     """Loaded on first use; the checkpoint (83 MB) comes into the Hugging Face cache like every other model."""
-    global _speaker
+    global _speaker, _speaker_offline_failed
     if _speaker is None:
         from huggingface_hub import hf_hub_download
         import cns_net
+        if _speaker_offline_failed and cns_net.is_offline():
+            raise cns_net.OfflineError("Offline mode is on: voice likeness isn’t measured.")
         try:  # Offline mode: the cached checkpoint is used, never fetched
             ckpt = hf_hub_download(SPEAKER_REPO, "embedding_model.ckpt", local_files_only=cns_net.is_offline())
         except Exception as e:
             if cns_net.is_offline():
+                _speaker_offline_failed = True
                 raise cns_net.OfflineError("Offline mode is on: voice likeness isn’t measured.") from e
             raise
         _speaker = _Ecapa(_torch_zip_load(ckpt))
@@ -1978,7 +1982,33 @@ def cmd_unload(req):
     return {}
 
 
+class explicit_download:
+    """A download the user started by pressing a button works in Offline mode too: while the block runs, the
+    engine's OV_OFFLINE / HF_HUB_OFFLINE are cleared (child processes inherit that), then put back."""
+    NAMES = ("OV_OFFLINE", "HF_HUB_OFFLINE")
+
+    def __init__(self, req):
+        self.active = bool(req.get("explicit_download"))
+        self.saved = {}
+
+    def __enter__(self):
+        if self.active:
+            for k in self.NAMES:
+                if k in os.environ:
+                    self.saved[k] = os.environ.pop(k)
+        return self
+
+    def __exit__(self, *exc):
+        os.environ.update(self.saved)
+        return False
+
+
 def cmd_install_accent(req):
+    with explicit_download(req):
+        return _install_accent(req)
+
+
+def _install_accent(req):
     """Sets up native-accent speech: a PyTorch environment, the Seed-VC code and, by converting a second of noise
     once, its models. req: dir (where it goes), uv, env (uv's environment)."""
     import subprocess
