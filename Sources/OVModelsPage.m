@@ -1,5 +1,6 @@
 #import "OVPages.h"
 #import "OVUI.h"
+#import "OVDesign.h"
 #import "OVModels.h"
 #import "OVWorker.h"
 #import "OVPaths.h"
@@ -25,65 +26,141 @@ static NSString *DetailsText(NSString *details) {
     return [parts componentsJoinedByString:@" · "];
 }
 
-static NSTextField *Badge(NSString *text, NSColor *color) {
-    NSTextField *b = OVLabel([NSString stringWithFormat:@" %@ ", text], 10, NSFontWeightSemibold, color);
-    b.wantsLayer = YES;
-    b.layer.cornerRadius = 4;
-    b.layer.borderWidth = 1;
-    b.layer.borderColor = [color colorWithAlphaComponent:0.5].CGColor;
-    [b setContentCompressionResistancePriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
+/// Secure text field in the same look as OVField (field fill, 1px border, radius 10, OVRoleFocus border while editing).
+@interface OVSecureFieldCell : NSSecureTextFieldCell
+@end
+@implementation OVSecureFieldCell
+- (NSRect)drawingRectForBounds:(NSRect)r {
+    NSRect d = [super drawingRectForBounds:r];
+    d.origin.x += 12;
+    d.size.width -= 24;
+    CGFloat h = ceil(self.font.ascender - self.font.descender) + 2;
+    if (NSHeight(r) > h) { d.origin.y = NSMinY(r) + floor((NSHeight(r) - h) / 2); d.size.height = h; }
+    return d;
+}
+- (void)selectWithFrame:(NSRect)r inView:(NSView *)v editor:(NSText *)t delegate:(id)d start:(NSInteger)s length:(NSInteger)l {
+    [super selectWithFrame:[self drawingRectForBounds:r] inView:v editor:t delegate:d start:s length:l];
+}
+- (void)editWithFrame:(NSRect)r inView:(NSView *)v editor:(NSText *)t delegate:(id)d event:(NSEvent *)e {
+    [super editWithFrame:[self drawingRectForBounds:r] inView:v editor:t delegate:d event:e];
+}
+- (void)drawWithFrame:(NSRect)frame inView:(NSView *)v {
+    BOOL focus = [(NSControl *)v currentEditor] != nil && v.window.firstResponder == [(NSControl *)v currentEditor];
+    NSBezierPath *p = [NSBezierPath bezierPathWithRoundedRect:NSInsetRect(frame, 0.5, 0.5) xRadius:10 yRadius:10];
+    [OVColor(OVRoleField) setFill];
+    [p fill];
+    [(focus ? OVColor(OVRoleFocus) : OVColor(OVRoleBorder)) setStroke];
+    p.lineWidth = focus ? 2 : 1;
+    [p stroke];
+    [self drawInteriorWithFrame:frame inView:v];
+}
+@end
+
+@interface OVSecureField : NSSecureTextField
+@end
+@implementation OVSecureField
++ (Class)cellClass { return OVSecureFieldCell.class; }
+- (NSSize)intrinsicContentSize { NSSize s = [super intrinsicContentSize]; s.height = 34; return s; }
+- (BOOL)becomeFirstResponder {
+    BOOL r = [super becomeFirstResponder];
+    self.needsDisplay = YES;
+    dispatch_async(dispatch_get_main_queue(), ^{ self.needsDisplay = YES; });
+    return r;
+}
+- (void)textDidEndEditing:(NSNotification *)n { [super textDidEndEditing:n]; self.needsDisplay = YES; }
+@end
+
+static OVSecureField *MakeSecureField(NSString *placeholder) {
+    OVSecureField *f = [[OVSecureField alloc] initWithFrame:NSZeroRect];
+    f.placeholderString = placeholder;
+    f.font = [NSFont systemFontOfSize:13];
+    f.textColor = OVColor(OVRoleText);
+    f.bezeled = NO;
+    f.bordered = NO;
+    f.drawsBackground = NO;
+    f.focusRingType = NSFocusRingTypeNone;
+    f.editable = YES;
+    f.selectable = YES;
+    [f setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+    return f;
+}
+
+/// A badge's label must keep its text width when the title row is short of space (the title truncates instead).
+static NSView *Rigid(NSView *badge) {
+    for (NSView *v in badge.subviews)
+        [v setContentCompressionResistancePriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
+    return badge;
+}
+
+/// Small flat pill for the row buttons (OVPillButton is 36 high; rows want 30).
+static NSButton *SmallPill(NSButton *b) {
+    b.font = [NSFont systemFontOfSize:13 weight:NSFontWeightSemibold];
+    [b.heightAnchor constraintEqualToConstant:30].active = YES;
     return b;
 }
 
 /// Card row for one model; rebuilt in place on every models change.
-@interface OVModelRow : NSStackView
+@interface OVModelRow : OVBoxView
 @property (weak) id target;
 @property NSString *repo;
 @property NSButton *radio;
 @property NSTextField *title, *details, *meta;
 @property NSProgressIndicator *bar;
-@property NSStackView *buttons;
+@property NSStackView *buttons, *titleRow;
+@property (nonatomic) NSView *statusBadge;
 @end
 
 @implementation OVModelRow
 + (instancetype)rowFor:(OVModel *)m target:(id)t {
-    OVModelRow *r = [OVModelRow new];
+    OVModelRow *r = [OVModelRow boxWithFill:OVColor(OVRoleField) border:OVColor(OVRoleBorder) radius:10];
     r.target = t;
     r.repo = m ? m.repo : kNoLoRA;
-    r.orientation = NSUserInterfaceLayoutOrientationHorizontal;
-    r.alignment = NSLayoutAttributeTop;
-    r.distribution = NSStackViewDistributionFill;
-    r.spacing = 12;
-    r.radio = [NSButton radioButtonWithTitle:@"" target:t action:@selector(useModel:)];
+    r.radio = OVRadioButton(@"", t, @selector(useModel:));
     r.radio.identifier = r.repo;
     r.radio.toolTip = L(@"Use");
+    r.radio.accessibilityLabel = m ? m.title : L(@"No LoRA");
     r.title = OVLabel(m ? m.title : L(@"No LoRA"), 14, NSFontWeightSemibold, nil);
-    r.details = OVWrapLabel(m ? DetailsText(m.details) : L(@"The base model as is."), 12, nil);
-    r.meta = OVLabel(@"", 11, NSFontWeightRegular, NSColor.tertiaryLabelColor);
+    r.title.lineBreakMode = NSLineBreakByTruncatingMiddle;   // a 100-character repository name is cut in the middle
+    r.details = OVWrapLabel(m ? DetailsText(m.details) : L(@"The base model as is."), 13, nil);
+    r.meta = OVLabel(@"", 12, NSFontWeightRegular, OVColor(OVRoleMuted));
     r.meta.lineBreakMode = NSLineBreakByTruncatingMiddle;
     r.bar = OVProgressBar();
     r.buttons = OVHStack(@[], 6);
-    NSStackView *titleRow = OVHStack(@[r.title], 8);
-    if (m.recommended) [titleRow addArrangedSubview:Badge(L(@"recommended"), OVAccent())];
-    if (m.ukrainian && !m.recommended) [titleRow addArrangedSubview:Badge(@"UA", NSColor.systemYellowColor)];
+    r.titleRow = OVHStack(@[r.title], 8);
+    [r.title setContentHuggingPriority:NSLayoutPriorityDefaultHigh forOrientation:NSLayoutConstraintOrientationHorizontal];
+    if (m.recommended) [r.titleRow addArrangedSubview:Rigid(OVBadge(L(@"recommended"), OVRoleAccent))];
+    if (m.ukrainian && !m.recommended) [r.titleRow addArrangedSubview:Rigid(OVBadge(@"UA", OVRoleWarn))];
     if (m.catalog && m.downloads)
-        [titleRow addArrangedSubview:OVLabel([NSString stringWithFormat:@"↓ %ld", (long)m.downloads], 11, NSFontWeightRegular, NSColor.tertiaryLabelColor)];
-    NSStackView *body = OVVStack(@[titleRow, r.details, r.meta, r.bar], 4);
-    OVFillWidth(@[r.details, r.meta, r.bar], body);
-    if (!m.catalog) [r addArrangedSubview:r.radio];
-    [r addArrangedSubview:body];
-    [r addArrangedSubview:r.buttons];
+        [r.titleRow addArrangedSubview:OVLabel([NSString stringWithFormat:@"↓ %ld", (long)m.downloads], 12, NSFontWeightRegular, OVColor(OVRoleMuted))];
+    [r.titleRow addArrangedSubview:OVSpacer()];   // badges sit next to the title, not at the far edge
+    NSStackView *body = OVVStack(@[r.titleRow, r.details, r.meta, r.bar], 4);
+    OVFillWidth(@[r.titleRow, r.details, r.meta, r.bar], body);
+    NSStackView *inner = OVHStack(@[], 12);
+    inner.alignment = NSLayoutAttributeTop;
+    if (!m.catalog) [inner addArrangedSubview:r.radio];
+    [inner addArrangedSubview:body];
+    [inner addArrangedSubview:r.buttons];
     [body setHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
     [r.radio setContentHuggingPriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
+    [r.radio setContentCompressionResistancePriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
+    [r.radio.widthAnchor constraintEqualToConstant:20].active = YES;
+    [r.radio.heightAnchor constraintEqualToConstant:20].active = YES;
+    for (NSView *v in r.titleRow.arrangedSubviews)
+        if (v != r.title) [v setContentCompressionResistancePriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
+    [r.title setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
     [r.buttons setHuggingPriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
-    [body.widthAnchor constraintGreaterThanOrEqualToAnchor:r.widthAnchor multiplier:0.6].active = YES;
+    [r addSubview:inner];
+    OVPin(inner, r, NSEdgeInsetsMake(14, 14, 14, 14));
+    [body.widthAnchor constraintGreaterThanOrEqualToAnchor:r.widthAnchor multiplier:0.5].active = YES;
     [r update:m];
     return r;
 }
 
-- (NSButton *)btn:(NSString *)title sel:(SEL)sel {
-    NSButton *b = OVButton(title, self.target, sel);
-    b.controlSize = NSControlSizeRegular;
+- (void)setSelected:(BOOL)on {
+    self.borderColor = OVColor(on ? OVRoleGhostBorder : OVRoleBorder);
+}
+
+- (NSButton *)btn:(NSButton *)b {
     b.identifier = self.repo;
     return b;
 }
@@ -91,47 +168,62 @@ static NSTextField *Badge(NSString *text, NSColor *color) {
 - (NSButton *)icon:(NSString *)symbol tip:(NSString *)tip sel:(SEL)sel {
     NSButton *b = OVIconButton(symbol, tip, self.target, sel);
     b.identifier = self.repo;
+    b.accessibilityLabel = tip;
     return b;
+}
+
+- (void)setStatusBadge:(NSView *)badge {
+    [_statusBadge removeFromSuperview];
+    _statusBadge = badge;
+    if (!badge) return;
+    [badge setContentCompressionResistancePriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
+    [self.titleRow insertArrangedSubview:badge atIndex:1];
 }
 
 - (void)update:(OVModel *)m {
     OVModels *mm = [OVModels shared];
     for (NSView *v in self.buttons.arrangedSubviews.copy) [v removeFromSuperview];
     if (!m) { // "no LoRA" row
-        self.radio.state = mm.loraSelection ? NSControlStateValueOff : NSControlStateValueOn;
+        BOOL on = !mm.loraSelection;
+        self.radio.state = on ? NSControlStateValueOn : NSControlStateValueOff;
         self.meta.hidden = YES;
         self.bar.hidden = YES;
+        [self setSelected:on];
         return;
     }
     OVModel *selected = m.kind == OVModelTTS ? mm.ttsModel : m.kind == OVModelASR ? mm.asrModel : mm.loraSelection;
     self.radio.state = selected == m ? NSControlStateValueOn : NSControlStateValueOff;
     self.radio.enabled = m.installed || m.kind == OVModelLoRA; // a LoRA can be picked before it's downloaded
+    [self setSelected:!m.catalog && selected == m];
     long long size = m.total > 0 ? m.total : m.approxBytes;
     NSString *sizeText = size > 0 ? OVFormatBytes(size) : @"";
     NSString *where = [m.repo hasPrefix:@"/"] ? [m.repo stringByAbbreviatingWithTildeInPath] : m.repo;
     if (m.downloading) {
         self.meta.stringValue = [NSString stringWithFormat:L(@"%@ · %@ of %@ · %@"), where, OVFormatBytes(m.received), sizeText, m.downloadStatus ?: @""];
-        self.meta.textColor = NSColor.secondaryLabelColor;
+        self.meta.textColor = OVColor(OVRoleMuted);
+        self.statusBadge = nil;
     } else if (m.installed) {
-        self.meta.stringValue = [NSString stringWithFormat:L(@"✓ Installed · %@%@"), where, sizeText.length ? [@" · " stringByAppendingString:sizeText] : @""];
-        self.meta.textColor = OVGreen();
+        self.meta.stringValue = [NSString stringWithFormat:@"%@%@", where, sizeText.length ? [@" · " stringByAppendingString:sizeText] : @""];
+        self.meta.textColor = OVColor(OVRoleMuted);
+        self.statusBadge = Rigid(OVBadge(L(@"Installed"), OVRoleOK));
     } else if (m.error) {
         self.meta.stringValue = [NSString stringWithFormat:L(@"%@ · Error: %@"), where, m.error];
-        self.meta.textColor = NSColor.systemOrangeColor;
+        self.meta.textColor = OVColor(OVRoleErr);
+        self.statusBadge = Rigid(OVBadge(L(@"Error"), OVRoleErr));
     } else {
         self.meta.stringValue = sizeText.length ? [NSString stringWithFormat:@"%@ · %@", where, sizeText] : where;
-        self.meta.textColor = NSColor.tertiaryLabelColor;
+        self.meta.textColor = OVColor(OVRoleMuted);
+        self.statusBadge = nil;
     }
     self.bar.hidden = !m.downloading;
     self.bar.doubleValue = m.progress;
 
     NSMutableArray *bs = [NSMutableArray array];
-    if (m.downloading) [bs addObject:[self btn:L(@"Pause") sel:@selector(cancelModel:)]];
-    else if (m.catalog && m.kind == OVModelLoRA) [bs addObject:[self btn:L(@"Use") sel:@selector(useCatalogLoRA:)]];
+    if (m.downloading) [bs addObject:[self btn:SmallPill(OVGhostButton(L(@"Pause"), nil, self.target, @selector(cancelModel:)))]];
+    else if (m.catalog && m.kind == OVModelLoRA) [bs addObject:[self btn:SmallPill(OVGhostButton(L(@"Use"), nil, self.target, @selector(useCatalogLoRA:)))]];
     else if (!m.installed && ![m.repo hasPrefix:@"/"]) {
-        NSButton *b = [self btn:m.error ? L(@"Continue") : L(@"Download") sel:@selector(downloadModel:)];
-        b.bezelColor = OVAccent();
-        [bs addObject:b];
+        if (m.error) [bs addObject:[self btn:SmallPill(OVGhostButton(L(@"Continue"), nil, self.target, @selector(downloadModel:)))]];
+        else [bs addObject:[self btn:SmallPill(OVPrimaryButton(L(@"Download"), self.target, @selector(downloadModel:)))]];
     } else if (m.installed) {
         [bs addObject:[self icon:@"folder" tip:L(@"Show in Finder") sel:@selector(revealModel:)]];
         if (![m.repo hasPrefix:@"/"]) [bs addObject:[self icon:@"trash" tip:L(@"Delete from Hugging Face cache") sel:@selector(deleteModel:)]];
@@ -148,13 +240,14 @@ static NSTextField *Badge(NSString *text, NSColor *color) {
 @interface OVModelsPage ()
 @property NSStackView *ttsList, *loraList, *asrList, *catalogList;
 @property NSMutableDictionary<NSString *, OVModelRow *> *rows;
-@property NSSegmentedControl *catalogKind;
+@property OVSegmented *catalogKind, *tabs;
 @property NSTextField *catalogStatus, *repoField, *addStatus, *endpointField, *cacheLabel;
-@property NSPopUpButton *kindPopup;
+@property OVPopup *kindPopup;
 @property NSSecureTextField *tokenField;
 @property NSTextField *accentMeta;
 @property NSProgressIndicator *accentBar;
 @property NSStackView *accentButtons;
+@property NSArray<NSView *> *tabViews;   // Library, Catalog, Add model
 @property (copy) NSString *layoutSignature;
 @end
 
@@ -162,45 +255,81 @@ static NSTextField *Badge(NSString *text, NSColor *color) {
 
 - (void)loadView {
     self.rows = [NSMutableDictionary dictionary];
-    NSStackView *page = OVVStack(@[], 14);
-    page.edgeInsets = NSEdgeInsetsMake(30, 32, 30, 32);
-
-    NSTextField *title = OVTitle(L(@"Models"));
     self.cacheLabel = OVWrapLabel(@"", 13, nil);
-    self.ttsList = OVVStack(@[], 14);
-    self.loraList = OVVStack(@[], 14);
-    self.asrList = OVVStack(@[], 14);
-    NSView *ttsCard = OVCard(self.ttsList, 18), *loraCard = OVCard(self.loraList, 18), *asrCard = OVCard(self.asrList, 18);
-    NSTextField *loraHint = OVWrapLabel(L(@"Applied on top of the speech synthesis model. The selected adapter is downloaded automatically."), 12, nil);
+    self.ttsList = OVVStack(@[], 8);
+    self.loraList = OVVStack(@[], 8);
+    self.asrList = OVVStack(@[], 8);
+    self.tabs = [OVSegmented segmentedWithItems:@[@[L(@"Library"), @"shippingbox"], @[L(@"Catalog"), @"square.grid.2x2"],
+                                                  @[L(@"Add model"), @"plus.circle"]]];
+    self.tabs.selectedIndex = 0;
+    self.tabs.target = self;
+    self.tabs.action = @selector(tabChanged:);
+    NSView *header = OVPageHeader(L(@"Models"), nil, self.tabs);
+    NSStackView *head = OVVStack(@[header, self.cacheLabel], 4);
+    OVFillWidth(@[header, self.cacheLabel], head);
 
-    // catalog
-    self.catalogKind = [NSSegmentedControl segmentedControlWithLabels:@[L(@"LoRA adapters"), L(@"Fine-tuned models")]
-                                                         trackingMode:NSSegmentSwitchTrackingSelectOne target:self action:@selector(catalogKindChanged:)];
-    self.catalogKind.selectedSegment = 0;
-    NSButton *refresh = OVIconButton(@"arrow.clockwise", L(@"Refresh catalog"), self, @selector(refreshCatalog:));
-    self.catalogStatus = OVLabel(@"", 12, NSFontWeightRegular, NSColor.secondaryLabelColor);
-    self.catalogList = OVVStack(@[], 14);
-    NSStackView *catBox = OVVStack(@[OVHStack(@[self.catalogKind, refresh, self.catalogStatus], 10), self.catalogList], 16);
-    OVFillWidth(@[self.catalogList], catBox);
-    NSView *catCard = OVCard(catBox, 18);
+    // Library
+    NSTextField *loraHint = OVWrapLabel(L(@"Applied on top of the speech synthesis model. The selected adapter is downloaded automatically."), 13, nil);
+    NSView *ttsCard = OVStepCard(0, @"cpu", L(@"Speech synthesis model"), nil, self.ttsList);
+    NSView *loraCard = OVStepCard(0, @"puzzlepiece", L(@"LoRA adapter"), loraHint.stringValue, self.loraList);
+    NSView *asrCard = OVStepCard(0, @"waveform.badge.mic", L(@"Speech recognition"), nil, self.asrList);
 
-    // add custom
+    // native accent (optional download)
+    NSTextField *accentTitle = OVLabel(L(@"Seed-VC · native narrator"), 14, NSFontWeightSemibold, nil);
+    NSTextField *accentDetails = OVWrapLabel(L(@"For pronunciation training without an accent: a native speaker (the model’s own voice or "
+                                               @"another voice of yours) reads the learning phrases and Seed-VC gives the reading your voice, "
+                                               @"so the trained voice speaks without your accent. About 2.7 GB (PyTorch, Seed-VC and its "
+                                               @"models) in the app’s folder. Seed-VC (GPL-3.0) is downloaded from its authors and runs as "
+                                               @"a separate program."), 13, nil);
+    self.accentMeta = OVWrapLabel(@"", 12, nil);
+    self.accentBar = OVProgressBar();
+    self.accentButtons = OVHStack(@[], 6);
+    NSStackView *accentBody = OVVStack(@[accentDetails, self.accentMeta, self.accentBar], 4);
+    OVFillWidth(@[accentDetails, self.accentMeta, self.accentBar], accentBody);
+    NSStackView *accentRow = OVHStack(@[accentBody, self.accentButtons], 12);
+    accentRow.alignment = NSLayoutAttributeTop;
+    [accentBody setHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
+    [self.accentButtons setHuggingPriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
+    NSView *accentCard = OVStepCard(0, @"person.wave.2", L(@"Accent removal"), accentTitle.stringValue, accentRow);
+
+    NSButton *rescan = OVGhostButton(L(@"Rescan cache"), @"arrow.clockwise", self, @selector(rescan:));
+    NSButton *openCache = OVGhostButton(L(@"Open cache in Finder"), @"folder", self, @selector(openCache:));
+    NSStackView *cacheRow = OVHStack(@[rescan, openCache], 10);
+    NSStackView *library = OVVStack(@[ttsCard, loraCard, asrCard, accentCard, cacheRow], 16);
+    OVFillWidth(@[ttsCard, loraCard, asrCard, accentCard], library);
+
+    // Catalog
+    self.catalogKind = [OVSegmented segmentedWithItems:@[@[L(@"LoRA adapters"), @""], @[L(@"Fine-tuned models"), @""]]];
+    self.catalogKind.selectedIndex = 0;
+    self.catalogKind.target = self;
+    self.catalogKind.action = @selector(catalogKindChanged:);
+    NSButton *refresh = OVGhostButton(@"", @"arrow.clockwise", self, @selector(refreshCatalog:));
+    refresh.toolTip = refresh.accessibilityLabel = L(@"Refresh catalog");
+    [refresh.widthAnchor constraintEqualToConstant:40].active = YES;
+    self.catalogStatus = OVWrapLabel(@"", 13, nil);
+    self.catalogList = OVVStack(@[], 8);
+    NSStackView *catBox = OVVStack(@[OVHStack(@[self.catalogKind, refresh, OVSpacer()], 10), self.catalogStatus, self.catalogList], 12);
+    OVFillWidth(@[self.catalogStatus, self.catalogList], catBox);
+    NSView *catalog = OVCard(catBox, 20);
+
+    // Add model
     self.repoField = OVField(L(@"author/model, huggingface.co/… link, or folder"));
-    self.kindPopup = [NSPopUpButton new];
+    self.repoField.accessibilityLabel = L(@"Add your own model or LoRA");
+    self.kindPopup = [OVPopup popup];
     [self.kindPopup addItemsWithTitles:@[L(@"LoRA adapter"), L(@"Speech synthesis model"), L(@"Speech recognition (Whisper)")]];
-    NSButton *add = OVButton(L(@"Add"), self, @selector(addCustom:));
-    NSButton *folder = OVButton(L(@"Folder…"), self, @selector(chooseFolder:));
-    add.controlSize = folder.controlSize = NSControlSizeRegular;
+    NSButton *add = OVPrimaryButton(L(@"Add"), self, @selector(addCustom:));
+    NSButton *folder = OVGhostButton(L(@"Folder…"), @"folder", self, @selector(chooseFolder:));
     self.addStatus = OVWrapLabel(L(@"Your own LoRA (for example, one trained on a rented GPU) can be loaded straight from a folder "
-                                 @"with adapter_config.json and adapter_model.safetensors."), 11.5, nil);
+                                 @"with adapter_config.json and adapter_model.safetensors."), 13, nil);
+    [self.repoField setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
+    [self.repoField.widthAnchor constraintGreaterThanOrEqualToConstant:180].active = YES;
     NSStackView *addRow = OVHStack(@[self.repoField, self.kindPopup, folder, add], 8);
-    NSStackView *addBox = OVVStack(@[OVSectionTitle(L(@"Add your own model or LoRA")), addRow, self.addStatus], 8);
+    NSStackView *addBox = OVVStack(@[addRow, self.addStatus], 8);
     OVFillWidth(@[addRow, self.addStatus], addBox);
-    NSView *addCard = OVCard(addBox, 18);
+    NSView *addCard = OVStepCard(0, @"plus.circle", L(@"Add your own model or LoRA"), nil, addBox);
 
     // HF access
-    self.tokenField = [NSSecureTextField new];
-    self.tokenField.placeholderString = L(@"hf_… (only needed for gated models)");
+    self.tokenField = MakeSecureField(L(@"hf_… (only needed for gated models)"));
     self.tokenField.stringValue = [NSUserDefaults.standardUserDefaults stringForKey:@"hfToken"] ?: @"";
     self.tokenField.target = self;
     self.tokenField.action = @selector(saveAccess:);
@@ -210,65 +339,32 @@ static NSTextField *Badge(NSString *text, NSColor *color) {
     self.endpointField.target = self;
     self.endpointField.action = @selector(saveAccess:);
     self.endpointField.cell.sendsActionOnEndEditing = YES;
-    NSButton *cacheBtn = OVButton(L(@"Choose folder…"), self, @selector(chooseCache:));
-    NSButton *cacheReset = OVButton(L(@"Default"), self, @selector(resetCache:));
-    cacheBtn.controlSize = cacheReset.controlSize = NSControlSizeRegular;
-    NSGridView *grid = [NSGridView gridViewWithViews:@[
-        @[OVLabel(L(@"Token"), 13, NSFontWeightMedium, nil), self.tokenField],
-        @[OVLabel(L(@"Mirror"), 13, NSFontWeightMedium, nil), self.endpointField],
-        @[OVLabel(L(@"Cache"), 13, NSFontWeightMedium, nil), OVHStack(@[cacheBtn, cacheReset], 8)],
-    ]];
-    grid.rowSpacing = 8;
-    grid.columnSpacing = 12;
-    [grid columnAtIndex:0].xPlacement = NSGridCellPlacementTrailing;
-    NSStackView *accessBox = OVVStack(@[OVSectionTitle(@"Hugging Face"), grid,
-                                        OVWrapLabel(L(@"Press Return to save the token and mirror."), 11.5, nil)], 10);
-    OVFillWidth(@[grid], accessBox);
-    NSView *accessCard = OVCard(accessBox, 18);
+    NSButton *cacheBtn = OVGhostButton(L(@"Choose folder…"), @"folder", self, @selector(chooseCache:));
+    NSButton *cacheReset = OVGhostButton(L(@"Default"), nil, self, @selector(resetCache:));
+    NSStackView *cacheBtns = OVHStack(@[cacheBtn, cacheReset, OVSpacer()], 8);
+    NSStackView *accessBox = OVVStack(@[OVFieldBlock(L(@"Token"), nil, self.tokenField),
+                                        OVFieldBlock(L(@"Mirror"), nil, self.endpointField),
+                                        OVFieldBlock(L(@"Cache"), nil, cacheBtns)], 14);
+    OVFillWidth(accessBox.arrangedSubviews, accessBox);
+    NSView *accessCard = OVStepCard(0, @"key", @"Hugging Face", L(@"Press Return to save the token and mirror."), accessBox);
+    NSStackView *addTab = OVVStack(@[addCard, accessCard], 16);
+    OVFillWidth(@[addCard, accessCard], addTab);
 
-    NSButton *rescan = OVButton(L(@"Rescan cache"), self, @selector(rescan:));
-    NSButton *openCache = OVButton(L(@"Open cache in Finder"), self, @selector(openCache:));
-    rescan.controlSize = openCache.controlSize = NSControlSizeRegular;
-
-    // native accent (optional download)
-    NSTextField *accentTitle = OVLabel(L(@"Seed-VC · native narrator"), 14, NSFontWeightSemibold, nil);
-    NSTextField *accentDetails = OVWrapLabel(L(@"For pronunciation training without an accent: a native speaker (the model’s own voice or "
-                                               @"another voice of yours) reads the learning phrases and Seed-VC gives the reading your voice, "
-                                               @"so the trained voice speaks without your accent. About 2.7 GB (PyTorch, Seed-VC and its "
-                                               @"models) in the app’s folder. Seed-VC (GPL-3.0) is downloaded from its authors and runs as "
-                                               @"a separate program."), 12, nil);
-    self.accentMeta = OVLabel(@"", 11, NSFontWeightRegular, NSColor.tertiaryLabelColor);
-    self.accentBar = OVProgressBar();
-    self.accentButtons = OVHStack(@[], 6);
-    NSStackView *accentBody = OVVStack(@[accentTitle, accentDetails, self.accentMeta, self.accentBar], 4);
-    OVFillWidth(@[accentDetails, self.accentMeta, self.accentBar], accentBody);
-    NSStackView *accentRow = OVHStack(@[accentBody, self.accentButtons], 12);
-    accentRow.alignment = NSLayoutAttributeTop;
-    [accentBody setHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
-    [self.accentButtons setHuggingPriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
-    NSView *accentCard = OVCard(accentRow, 18);
-
-    NSTextField *loraTitle = OVSectionTitle(L(@"LoRA adapter"));
-    NSArray *views = @[title, self.cacheLabel,
-                       OVSectionTitle(L(@"Speech synthesis model")), ttsCard,
-                       loraTitle, loraHint, loraCard,
-                       OVSectionTitle(L(@"Speech recognition")), asrCard,
-                       OVSectionTitle(L(@"Accent removal")), accentCard,
-                       OVSectionTitle(L(@"Hugging Face catalog")), catCard,
-                       addCard, accessCard, OVHStack(@[rescan, openCache], 8)];
-    for (NSView *v in views) [page addArrangedSubview:v];
-    [page setCustomSpacing:6 afterView:title];
-    [page setCustomSpacing:4 afterView:loraTitle];
-    for (NSView *c in @[self.cacheLabel, ttsCard, loraCard, asrCard, accentCard, catCard]) [page setCustomSpacing:24 afterView:c];
-    OVFillWidth(@[self.cacheLabel, ttsCard, loraHint, loraCard, asrCard, accentCard, catCard, addCard, accessCard], page);
-    self.view = OVScrollPage(page);
+    self.tabViews = @[library, catalog, addTab];
+    self.view = OVPageScroll(@[head, library, catalog, addTab]);
+    [self tabChanged:nil];
 
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(refresh) name:OVModelsDidChangeNotification object:nil];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(refresh) name:OVThemeDidChangeNotification object:nil];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(refreshAccent) name:OVNativeAccentDidChangeNotification object:nil];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(refreshAccent) name:OVWorkerDidChangeNotification object:nil];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(refreshAccent) name:OVRuntimeDidChangeNotification object:nil];
     [self refresh];
     [self refreshAccent];
+}
+
+- (void)tabChanged:(id)s {
+    for (NSInteger i = 0; i < (NSInteger)self.tabViews.count; i++) self.tabViews[i].hidden = i != self.tabs.selectedIndex;
 }
 
 - (void)refreshAccent {
@@ -285,8 +381,7 @@ static NSTextField *Badge(NSString *text, NSColor *color) {
         [self.accentButtons addArrangedSubview:rm];
     } else {
         self.accentMeta.stringValue = a.error ? [NSString stringWithFormat:L(@"Error: %@"), a.error] : L(@"Not installed · ~2.7 GB");
-        NSButton *dl = OVButton(L(@"Download"), self, @selector(installAccent:));
-        dl.controlSize = NSControlSizeRegular;
+        NSButton *dl = SmallPill(OVPrimaryButton(L(@"Download"), self, @selector(installAccent:)));
         dl.enabled = [OVRuntime shared].state == OVRuntimeReady && ![OVWorker shared].busy;
         [self.accentButtons addArrangedSubview:dl];
     }
@@ -317,19 +412,13 @@ static NSTextField *Badge(NSString *text, NSColor *color) {
 }
 
 - (void)place:(OVModelRow *)row in:(NSStackView *)list {
-    if (list.arrangedSubviews.count) {
-        NSBox *sep = [NSBox new];
-        sep.boxType = NSBoxSeparator;
-        [list addArrangedSubview:sep];
-        OVFillWidth(@[sep], list);
-    }
     [list addArrangedSubview:row];
     OVFillWidth(@[row], list);
 }
 
 - (NSArray<OVModel *> *)visibleCatalog {
     OVModels *mm = [OVModels shared];
-    return [[mm catalogOfKind:self.catalogKind.selectedSegment == 0 ? OVModelLoRA : OVModelTTS]
+    return [[mm catalogOfKind:self.catalogKind.selectedIndex == 0 ? OVModelLoRA : OVModelTTS]
             sortedArrayUsingComparator:^NSComparisonResult(OVModel *a, OVModel *b) {
         if (a.ukrainian != b.ukrainian) return a.ukrainian ? NSOrderedAscending : NSOrderedDescending;
         return [@(b.downloads) compare:@(a.downloads)];
@@ -367,6 +456,15 @@ static NSTextField *Badge(NSString *text, NSColor *color) {
             OVModelRow *row = [OVModelRow rowFor:m target:self];
             self.rows[m.repo] = row;
             [self place:row in:self.catalogList];
+        }
+        if (!catalog.count) {
+            NSStackView *empty = OVVStack(@[OVEmptyState(@"shippingbox", L(@"The catalog is empty"),
+                                                        L(@"Press Refresh to load it from Hugging Face."),
+                                                        @[OVGhostButton(L(@"Refresh"), @"arrow.clockwise", self, @selector(refreshCatalog:))])], 0);
+            empty.alignment = NSLayoutAttributeCenterX;
+            empty.edgeInsets = NSEdgeInsetsMake(28, 0, 28, 0);
+            [self.catalogList addArrangedSubview:empty];
+            OVFillWidth(@[empty], self.catalogList);
         }
     } else {
         [self.rows[kNoLoRA] update:nil];
