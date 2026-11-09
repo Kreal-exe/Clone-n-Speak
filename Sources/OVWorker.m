@@ -192,6 +192,7 @@ NSNotificationName const OVWorkerEventNotification = @"OVWorkerEvent";
         if (ev[@"id"] && [ev[@"id"] integerValue] != self.currentId) return;
         OVWorkerResult done = self.doneBlock;
         [self clearRequest];
+        _lastErrorCode = [kind isEqualToString:@"error"] && [ev[@"code"] isKindOfClass:NSString.class] ? [ev[@"code"] copy] : nil;
         if ([kind isEqualToString:@"error"]) [[OVRuntime shared] log:[NSString stringWithFormat:L(@"Error: %@"), ev[@"msg"] ?: @"?"]];
         if (done) done(ev[@"data"], [kind isEqualToString:@"error"] ? (ev[@"msg"] ?: L(@"Error")) : nil);
     } else if (kind) {
@@ -247,6 +248,7 @@ NSNotificationName const OVWorkerEventNotification = @"OVWorkerEvent";
 
 - (void)request:(NSDictionary *)req status:(OVWorkerStatus)status progress:(OVWorkerProgress)progress done:(OVWorkerResult)done {
     if (self.busy) { done(nil, L(@"Another operation is already in progress")); return; }
+    _lastErrorCode = nil;
     if (!self.running) {
         NSString *err = nil;
         if (![self start:&err]) { done(nil, err); return; }
