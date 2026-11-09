@@ -683,7 +683,9 @@ static const NSTimeInterval kMaxRecord = 15;
 - (void)analyze:(NSString *)audio force:(BOOL)force {
     if (!audio) {
         self.qualityMeter.doubleValue = 0; self.qualityLabel.stringValue = @"";
+        self.shownKey = nil;
         [self clearCheckDetails];
+        [self clearComparison];
         return;
     }
     NSString *key = [self analysisKey:audio];
