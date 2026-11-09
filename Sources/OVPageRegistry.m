@@ -24,7 +24,7 @@ static NSDictionary *P(NSString *pid, NSString *title, NSString *symbol, Class c
             P(@"tools", L(@"Audio Tools"), @"slider.horizontal.3", ph, NO),
             P(@"separator", L(@"Separation"), @"waveform.path.ecg", ph, NO)]},
         @{@"title": L(@"SYSTEM"), @"pages": @[
-            P(@"jobs", L(@"Jobs"), @"clock.arrow.circlepath", ph, NO),
+            P(@"jobs", L(@"Jobs"), @"clock.arrow.circlepath", OVJobsPage.class, NO),
             P(@"api", L(@"API & Bridge"), @"chevron.left.forwardslash.chevron.right", ph, NO),
             P(@"plugins", L(@"Plugins"), @"puzzlepiece.extension", ph, YES),
             P(@"privacy", L(@"Data & Privacy"), @"hand.raised", ph, NO),
