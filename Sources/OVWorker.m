@@ -66,12 +66,25 @@ NSNotificationName const OVWorkerEventNotification = @"OVWorkerEvent";
 
 /// Copy worker.py from the bundle so the interpreter can run it from a stable path.
 - (NSString *)installScript {
-    NSString *src = [NSBundle.mainBundle pathForResource:@"worker" ofType:@"py"];
+    NSFileManager *fm = NSFileManager.defaultManager;
+    NSString *bundled = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"py"];
     NSString *dst = [OVPaths workerScript];
+    NSString *runtime = dst.stringByDeletingLastPathComponent;
     [OVPaths ensure];
-    if (src) {
-        [NSFileManager.defaultManager removeItemAtPath:dst error:nil];
-        [NSFileManager.defaultManager copyItemAtPath:src toPath:dst error:nil];
+    NSArray<NSString *> *files = [[fm contentsOfDirectoryAtPath:bundled error:nil]
+        filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"self ENDSWITH '.py'"]];
+    for (NSString *name in files) {
+        NSString *from = [bundled stringByAppendingPathComponent:name], *to = [runtime stringByAppendingPathComponent:name];
+        NSData *a = [NSData dataWithContentsOfFile:from], *b = [NSData dataWithContentsOfFile:to];
+        if (a && b && [a isEqualToData:b]) continue; // the same content: leave it (and its date) alone
+        [fm removeItemAtPath:to error:nil];
+        [fm copyItemAtPath:from toPath:to error:nil];
+    }
+    if (files.count) { // scripts an older version left behind would be auto-loaded by the worker again
+        for (NSString *name in [fm contentsOfDirectoryAtPath:runtime error:nil]) {
+            if ([name hasSuffix:@".py"] && ![files containsObject:name])
+                [fm removeItemAtPath:[runtime stringByAppendingPathComponent:name] error:nil];
+        }
     }
     return dst;
 }
