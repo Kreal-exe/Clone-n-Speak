@@ -27,6 +27,7 @@ EXPECTED = {
     "OVNetwork.m": (2, "the gate"),
     "cns_net.py": (3, "the gate for Python processes"),
     "worker.py": (4, "ECAPA fetch (cached only offline), Seed-VC download (explicit_download)"),
+    "cns_dfn.py": (4, "DeepFilterNet binary download, started by the user (pinned URL + sha256)"),
 }
 
 # Files other tasks add (6.8 deep-filter download, 6.10 onnxruntime/model download, Bridge 8.7, Edge TTS, YouTube,
