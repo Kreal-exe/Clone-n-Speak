@@ -1,0 +1,5 @@
+/* OVAudioIO (task 6.5). */
+"Cut it first: this file is longer than the allowed length." = "Сначала обрежьте: файл длиннее допустимого.";
+"No sound was found in this file." = "В этом файле не найден звук.";
+"This file can't be read as audio or video." = "Этот файл не читается как аудио или видео.";
+"This video has no audio track." = "В этом видео нет звуковой дорожки.";
