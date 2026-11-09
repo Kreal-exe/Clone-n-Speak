@@ -1,0 +1,9 @@
+/* Audio export (task 6.4). */
+"Needs ffmpeg. Install it with “brew install ffmpeg”." = "Нужен ffmpeg. Установите его командой «brew install ffmpeg».";
+"The source audio file was not found. Generate or choose the audio again." = "Исходный аудиофайл не найден. Озвучьте текст или выберите аудио заново.";
+"The source audio file cannot be read (%@). Choose a WAV file." = "Исходный аудиофайл не читается (%@). Выберите файл WAV.";
+"The audio is empty, so there is nothing to export." = "Аудио пустое, экспортировать нечего.";
+"Cannot create the folder (%@). Choose another place." = "Не удалось создать папку (%@). Выберите другое место.";
+"Export failed: %@" = "Экспорт не удался: %@";
+"unknown error" = "неизвестная ошибка";
+"Cannot save the file (%@). Choose another place." = "Не удалось сохранить файл (%@). Выберите другое место.";
