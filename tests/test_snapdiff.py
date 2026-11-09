@@ -3,7 +3,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from PIL import Image
+try:
+    from PIL import Image
+except ImportError:   # CI and the app runtime have no Pillow
+    Image = None
 
 ROOT = Path(__file__).resolve().parent.parent
 PY = Path.home() / ".claude" / "skills-deps" / "py" / "bin" / "python"
@@ -14,6 +17,7 @@ def run(a, b, *extra):
     return subprocess.run([str(PY), str(SCRIPT), str(a), str(b), *extra], capture_output=True, text=True)
 
 
+@unittest.skipUnless(Image is not None and PY.exists(), "needs Pillow and the skills-deps Python")
 class SnapDiffTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

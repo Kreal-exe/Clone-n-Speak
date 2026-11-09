@@ -8,12 +8,12 @@ Run with ~/.claude/skills-deps/py/bin/python (Pillow).
 import argparse
 import sys
 
-from PIL import Image, ImageChops
 
 CHANNEL_THRESHOLD = 6
 
 
 def diff_pct(a_path, b_path, ignore=()):
+    from PIL import Image, ImageChops   # lazy: importing this module needs no Pillow
     a = Image.open(a_path).convert("RGB")
     b = Image.open(b_path).convert("RGB")
     if a.size != b.size:

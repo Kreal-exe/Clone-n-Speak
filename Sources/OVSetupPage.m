@@ -69,49 +69,6 @@ BOOL OVEverythingReady(void) {
 }
 @end
 
-#pragma mark - Button row
-
-/// Buttons in a row that wraps onto further lines when the step is too narrow (long "Download <model> (size)" titles, 820 pt window).
-@interface OVFlowRow : NSView
-@property (nonatomic, readonly) NSArray<NSView *> *items;
-- (void)setItems:(NSArray<NSView *> *)items;
-@end
-
-@implementation OVFlowRow {
-    NSArray<NSView *> *_items;
-    CGFloat _laidOutHeight;
-}
-- (BOOL)isFlipped { return YES; }
-- (NSArray<NSView *> *)items { return _items ?: @[]; }
-- (void)setItems:(NSArray<NSView *> *)items {
-    for (NSView *v in self.subviews.copy) [v removeFromSuperview];
-    _items = [items copy];
-    for (NSView *v in _items) { v.translatesAutoresizingMaskIntoConstraints = YES; [self addSubview:v]; }
-    [self invalidateIntrinsicContentSize];
-    self.needsLayout = YES;
-}
-- (CGFloat)placeForWidth:(CGFloat)w apply:(BOOL)apply {
-    CGFloat x = 0, y = 0, rowH = 0;
-    for (NSView *v in _items) {
-        NSSize sz = v.fittingSize;
-        if (x > 0 && x + sz.width > w) { x = 0; y += rowH + 8; rowH = 0; }
-        if (apply) v.frame = NSMakeRect(x, y, sz.width, sz.height);
-        x += sz.width + 8;
-        rowH = MAX(rowH, sz.height);
-    }
-    return y + rowH;
-}
-- (NSSize)intrinsicContentSize {
-    CGFloat w = NSWidth(self.bounds) > 1 ? NSWidth(self.bounds) : 100000;
-    return NSMakeSize(NSViewNoIntrinsicMetric, [self placeForWidth:w apply:NO]);
-}
-- (void)layout {
-    [super layout];
-    CGFloat h = [self placeForWidth:NSWidth(self.bounds) apply:YES];
-    if (fabs(h - _laidOutHeight) > 0.5) { _laidOutHeight = h; [self invalidateIntrinsicContentSize]; }
-}
-@end
-
 #pragma mark - Step row
 
 /// One row of the setup checklist: numbered circle (check / spinner / warning by state), title, status badge, detail, progress, actions.
@@ -250,15 +207,7 @@ BOOL OVEverythingReady(void) {
 
 - (void)loadView {
     NSString *subtitle = [NSString stringWithFormat:L(@"%@ speaks over 600 languages, with first-class support for Ukrainian. Models come from the Hugging Face cache (~/.cache/huggingface), shared with VoiceStudio, so anything already downloaded isn’t downloaded again. The app downloads whatever is missing on its own."), OVAppName];
-    NSStackView *header = (NSStackView *)OVPageHeader(L(@"Getting started"), subtitle, nil);
-    // the long subtitle wraps inside the column
-    NSStackView *left = (NSStackView *)header.arrangedSubviews.firstObject;
-    NSTextField *sub = (NSTextField *)left.arrangedSubviews.lastObject;
-    sub.lineBreakMode = NSLineBreakByWordWrapping;
-    sub.usesSingleLineMode = NO;
-    sub.maximumNumberOfLines = 0;
-    sub.translatesAutoresizingMaskIntoConstraints = NO;
-    [left setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
+    NSView *header = OVPageHeaderWrapped(L(@"Getting started"), subtitle, nil, YES);
 
     self.engineStep = [OVStepView stepWithNumber:1 title:L(@"OmniVoice engine (Python + Apple MLX)")];
     self.modelStep = [OVStepView stepWithNumber:2 title:L(@"Speech synthesis model")];
@@ -378,25 +327,29 @@ BOOL OVEverythingReady(void) {
     [self refreshOverall];
 }
 
-/// Header of the progress card: dot, title, "n / 3 steps", one bar over all three steps, the keep-open note.
+/// Header of the progress card: dot, title, "n / N steps", one bar over the required steps, the keep-open note.
+/// Only the required steps count (engine and synthesis model); a failed step turns the dot and the title to the error tone.
 - (void)refreshOverall {
-    NSArray<OVStepView *> *steps = @[self.engineStep, self.modelStep, self.asrStep];
+    NSArray<OVStepView *> *required = @[self.engineStep, self.modelStep];
     int done = 0;
     double extra = 0;
-    BOOL working = NO;
-    for (OVStepView *s in steps) {
-        if ([s.state isEqualToString:@"done"]) done++;
-        if (!s.bar.hidden && !s.bar.indeterminate) extra = MAX(extra, s.bar.doubleValue);
+    BOOL working = NO, failed = NO;
+    for (OVStepView *s in @[self.engineStep, self.modelStep, self.asrStep]) {
+        BOOL req = [required containsObject:s];
+        if (req && [s.state isEqualToString:@"done"]) done++;
+        if (req && !s.bar.hidden && !s.bar.indeterminate) extra = MAX(extra, s.bar.doubleValue);
         if (!s.bar.hidden) working = YES;
+        if ([s.state isEqualToString:@"error"]) failed = YES;
     }
     BOOL ready = OVEverythingReady();
-    self.overallTitle.stringValue = ready ? L(@"Everything is ready") : L(@"Setup in progress");
-    self.dot.fillColor = OVColor(ready ? OVRoleOK : OVRoleText);
+    self.overallTitle.stringValue = failed ? L(@"Setup failed") : ready ? L(@"Everything is ready") : L(@"Setup in progress");
+    self.overallTitle.textColor = OVColor(failed ? OVRoleErr : OVRoleText);
+    self.dot.fillColor = OVColor(failed ? OVRoleErr : ready ? OVRoleOK : OVRoleText);
     self.dot.needsDisplay = YES;
-    self.overallCount.stringValue = [NSString stringWithFormat:L(@"%d / %d steps"), done, (int)steps.count];
+    self.overallCount.stringValue = [NSString stringWithFormat:L(@"%d / %d steps"), done, (int)required.count];
     BOOL indeterminate = !self.engineStep.bar.hidden && self.engineStep.bar.indeterminate;
     self.overallBar.indeterminate = indeterminate;
-    self.overallBar.doubleValue = MIN(1, (done + MIN(1, extra)) / (double)steps.count);
+    self.overallBar.doubleValue = MIN(1, (done + MIN(1, extra)) / (double)required.count);
     if (indeterminate) [self.overallBar startAnimation:nil]; else [self.overallBar stopAnimation:nil];
     self.keepOpen.hidden = !working;
 }

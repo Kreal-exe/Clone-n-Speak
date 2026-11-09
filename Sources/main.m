@@ -635,12 +635,14 @@ static void OVWriteSnapshot(NSView *v, NSString *file) {
         NSView *v = self.window.contentView;
         OVWriteSnapshot(v, [dir stringByAppendingPathComponent:[NSString stringWithFormat:@"%@.png", page]]);
         // A page taller than the window also gets <page>-2.png, <page>-3.png … (scrolled one screen at a time).
+        // Only inside the page (not the sidebar's scroll view): the widest taller-than-visible scroll view wins.
         NSScrollView *sv = nil;
-        NSMutableArray<NSView *> *todo = [NSMutableArray arrayWithObject:v];
-        while (todo.count && !sv) {
+        NSMutableArray<NSView *> *todo = [NSMutableArray arrayWithObject:self.content.current.view ?: v];
+        while (todo.count) {
             NSView *c = todo.firstObject;
             [todo removeObjectAtIndex:0];
-            if ([c isKindOfClass:NSScrollView.class] && NSHeight(((NSScrollView *)c).documentView.frame) > NSHeight(c.bounds) + 4) sv = (NSScrollView *)c;
+            if ([c isKindOfClass:NSScrollView.class] && NSHeight(((NSScrollView *)c).documentView.frame) > NSHeight(c.bounds) + 4
+                && (!sv || NSWidth(c.bounds) * NSHeight(c.bounds) > NSWidth(sv.bounds) * NSHeight(sv.bounds))) sv = (NSScrollView *)c;
             [todo addObjectsFromArray:c.subviews];
         }
         if (sv) {

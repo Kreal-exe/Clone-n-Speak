@@ -8,5 +8,6 @@
 "Optional" = "По желанию";
 "Queued" = "В очереди";
 "Setup in progress" = "Идёт установка";
+"Setup failed" = "Установка не удалась";
 "Step %ld, %@, %@" = "Шаг %ld, %@, %@";
 "Technical details & log" = "Технические подробности и журнал";

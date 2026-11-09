@@ -26,72 +26,6 @@ static NSString *DetailsText(NSString *details) {
     return [parts componentsJoinedByString:@" · "];
 }
 
-/// Secure text field in the same look as OVField (field fill, 1px border, radius 10, OVRoleFocus border while editing).
-@interface OVSecureFieldCell : NSSecureTextFieldCell
-@end
-@implementation OVSecureFieldCell
-- (NSRect)drawingRectForBounds:(NSRect)r {
-    NSRect d = [super drawingRectForBounds:r];
-    d.origin.x += 12;
-    d.size.width -= 24;
-    CGFloat h = ceil(self.font.ascender - self.font.descender) + 2;
-    if (NSHeight(r) > h) { d.origin.y = NSMinY(r) + floor((NSHeight(r) - h) / 2); d.size.height = h; }
-    return d;
-}
-- (void)selectWithFrame:(NSRect)r inView:(NSView *)v editor:(NSText *)t delegate:(id)d start:(NSInteger)s length:(NSInteger)l {
-    [super selectWithFrame:[self drawingRectForBounds:r] inView:v editor:t delegate:d start:s length:l];
-}
-- (void)editWithFrame:(NSRect)r inView:(NSView *)v editor:(NSText *)t delegate:(id)d event:(NSEvent *)e {
-    [super editWithFrame:[self drawingRectForBounds:r] inView:v editor:t delegate:d event:e];
-}
-- (void)drawWithFrame:(NSRect)frame inView:(NSView *)v {
-    BOOL focus = [(NSControl *)v currentEditor] != nil && v.window.firstResponder == [(NSControl *)v currentEditor];
-    NSBezierPath *p = [NSBezierPath bezierPathWithRoundedRect:NSInsetRect(frame, 0.5, 0.5) xRadius:10 yRadius:10];
-    [OVColor(OVRoleField) setFill];
-    [p fill];
-    [(focus ? OVColor(OVRoleFocus) : OVColor(OVRoleBorder)) setStroke];
-    p.lineWidth = focus ? 2 : 1;
-    [p stroke];
-    [self drawInteriorWithFrame:frame inView:v];
-}
-@end
-
-@interface OVSecureField : NSSecureTextField
-@end
-@implementation OVSecureField
-+ (Class)cellClass { return OVSecureFieldCell.class; }
-- (NSSize)intrinsicContentSize { NSSize s = [super intrinsicContentSize]; s.height = 34; return s; }
-- (BOOL)becomeFirstResponder {
-    BOOL r = [super becomeFirstResponder];
-    self.needsDisplay = YES;
-    dispatch_async(dispatch_get_main_queue(), ^{ self.needsDisplay = YES; });
-    return r;
-}
-- (void)textDidEndEditing:(NSNotification *)n { [super textDidEndEditing:n]; self.needsDisplay = YES; }
-@end
-
-static OVSecureField *MakeSecureField(NSString *placeholder) {
-    OVSecureField *f = [[OVSecureField alloc] initWithFrame:NSZeroRect];
-    f.placeholderString = placeholder;
-    f.font = [NSFont systemFontOfSize:13];
-    f.textColor = OVColor(OVRoleText);
-    f.bezeled = NO;
-    f.bordered = NO;
-    f.drawsBackground = NO;
-    f.focusRingType = NSFocusRingTypeNone;
-    f.editable = YES;
-    f.selectable = YES;
-    [f setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
-    return f;
-}
-
-/// Small flat pill for the row buttons (OVPillButton is 36 high; rows want 30).
-static NSButton *SmallPill(NSButton *b) {
-    b.font = [NSFont systemFontOfSize:13 weight:NSFontWeightSemibold];
-    [b.heightAnchor constraintEqualToConstant:30].active = YES;
-    return b;
-}
-
 /// Card row for one model; rebuilt in place on every models change.
 @interface OVModelRow : OVBoxView
 @property (weak) id target;
@@ -207,11 +141,11 @@ static NSButton *SmallPill(NSButton *b) {
     self.bar.doubleValue = m.progress;
 
     NSMutableArray *bs = [NSMutableArray array];
-    if (m.downloading) [bs addObject:[self btn:SmallPill(OVGhostButton(L(@"Pause"), nil, self.target, @selector(cancelModel:)))]];
-    else if (m.catalog && m.kind == OVModelLoRA) [bs addObject:[self btn:SmallPill(OVGhostButton(L(@"Use"), nil, self.target, @selector(useCatalogLoRA:)))]];
+    if (m.downloading) [bs addObject:[self btn:OVSmallPill(OVGhostButton(L(@"Pause"), nil, self.target, @selector(cancelModel:)))]];
+    else if (m.catalog && m.kind == OVModelLoRA) [bs addObject:[self btn:OVSmallPill(OVGhostButton(L(@"Use"), nil, self.target, @selector(useCatalogLoRA:)))]];
     else if (!m.installed && ![m.repo hasPrefix:@"/"]) {
-        if (m.error) [bs addObject:[self btn:SmallPill(OVGhostButton(L(@"Continue"), nil, self.target, @selector(downloadModel:)))]];
-        else [bs addObject:[self btn:SmallPill(OVPrimaryButton(L(@"Download"), self.target, @selector(downloadModel:)))]];
+        if (m.error) [bs addObject:[self btn:OVSmallPill(OVGhostButton(L(@"Continue"), nil, self.target, @selector(downloadModel:)))]];
+        else [bs addObject:[self btn:OVSmallPill(OVPrimaryButton(L(@"Download"), self.target, @selector(downloadModel:)))]];
     } else if (m.installed) {
         [bs addObject:[self icon:@"folder" tip:L(@"Show in Finder") sel:@selector(revealModel:)]];
         if (![m.repo hasPrefix:@"/"]) [bs addObject:[self icon:@"trash" tip:L(@"Delete from Hugging Face cache") sel:@selector(deleteModel:)]];
@@ -317,7 +251,7 @@ static NSButton *SmallPill(NSButton *b) {
     NSView *addCard = OVStepCard(0, @"plus.circle", L(@"Add your own model or LoRA"), nil, addBox);
 
     // HF access
-    self.tokenField = MakeSecureField(L(@"hf_… (only needed for gated models)"));
+    self.tokenField = OVSecureField(L(@"hf_… (only needed for gated models)"));
     self.tokenField.stringValue = [NSUserDefaults.standardUserDefaults stringForKey:@"hfToken"] ?: @"";
     self.tokenField.target = self;
     self.tokenField.action = @selector(saveAccess:);
@@ -371,7 +305,7 @@ static NSButton *SmallPill(NSButton *b) {
         [self.accentButtons addArrangedSubview:rm];
     } else {
         self.accentMeta.stringValue = a.error ? [NSString stringWithFormat:L(@"Error: %@"), a.error] : L(@"Not installed · ~2.7 GB");
-        NSButton *dl = SmallPill(OVPrimaryButton(L(@"Download"), self, @selector(installAccent:)));
+        NSButton *dl = OVSmallPill(OVPrimaryButton(L(@"Download"), self, @selector(installAccent:)));
         dl.enabled = [OVRuntime shared].state == OVRuntimeReady && ![OVWorker shared].busy;
         [self.accentButtons addArrangedSubview:dl];
     }

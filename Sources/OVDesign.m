@@ -72,11 +72,28 @@ static void Center(NSView *child, NSView *parent) {
 
 @interface OVPillButton : NSButton
 @property BOOL ghost, hovered;
+@property (nonatomic) CGFloat pillHeight;
+@property NSLayoutConstraint *heightConstraint;
 @end
 @implementation OVPillButton
+- (instancetype)initWithFrame:(NSRect)f {
+    if ((self = [super initWithFrame:f])) _pillHeight = 36;
+    return self;
+}
 - (NSSize)intrinsicContentSize {
     CGFloat w = ceil([self.title sizeWithAttributes:@{NSFontAttributeName: self.font}].width) + 36 + (self.image ? 21 : 0);
-    return NSMakeSize(w, 36);
+    return NSMakeSize(w, _pillHeight);
+}
+/// A fixed height constraint: an NSButton that carries an image otherwise lays out taller than its intrinsic height.
+- (void)setPillHeight:(CGFloat)h {
+    _pillHeight = h;
+    if (!self.heightConstraint) {
+        self.heightConstraint = [self.heightAnchor constraintEqualToConstant:h];
+        self.heightConstraint.active = YES;
+    }
+    self.heightConstraint.constant = h;
+    [self invalidateIntrinsicContentSize];
+    self.needsDisplay = YES;
 }
 - (void)setTitle:(NSString *)t { [super setTitle:t]; [self invalidateIntrinsicContentSize]; self.needsDisplay = YES; }
 - (void)setImage:(NSImage *)i { [super setImage:i]; [self invalidateIntrinsicContentSize]; self.needsDisplay = YES; }
@@ -126,6 +143,7 @@ NSButton *OVPillButtonMake(NSString *title, NSString *symbol, id target, SEL act
     b.ghost = ghost;
     b.font = [NSFont systemFontOfSize:14 weight:NSFontWeightSemibold];
     if (symbol.length) b.image = [NSImage imageWithSystemSymbolName:symbol accessibilityDescription:nil];
+    b.pillHeight = 36;
     [b setContentHuggingPriority:NSLayoutPriorityDefaultHigh forOrientation:NSLayoutConstraintOrientationHorizontal];
     [b setContentCompressionResistancePriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
     return b;
@@ -133,6 +151,17 @@ NSButton *OVPillButtonMake(NSString *title, NSString *symbol, id target, SEL act
 
 NSButton *OVGhostButton(NSString *title, NSString *symbol, id target, SEL action) {
     return OVPillButtonMake(title, symbol, target, action, YES);
+}
+
+NSButton *OVButtonHeight(NSButton *b, CGFloat height) {
+    if ([b isKindOfClass:OVPillButton.class]) ((OVPillButton *)b).pillHeight = height;
+    else [b.heightAnchor constraintEqualToConstant:height].active = YES;
+    return b;
+}
+
+NSButton *OVSmallPill(NSButton *b) {
+    b.font = [NSFont systemFontOfSize:13 weight:NSFontWeightSemibold];
+    return OVButtonHeight(b, 30);
 }
 
 #pragma mark - Card header, step card
@@ -163,6 +192,25 @@ NSView *OVStepCard(NSInteger step, NSString *symbol, NSString *title, NSString *
     NSStackView *s = OVVStack(rows, 12);
     OVFillWidth(rows, s);
     return OVCard(s, 20);
+}
+
+NSView *OVStepCardWithAccessory(NSInteger step, NSString *symbol, NSString *title, NSView *accessory, NSView *content) {
+    NSView *header = OVCardHeader(step, symbol, title, accessory);
+    NSStackView *s = OVVStack(@[header, content], 16);
+    OVFillWidth(@[header, content], s);
+    return OVCard(s, 20);
+}
+
+NSStackView *OVFillStack(NSArray<NSView *> *views, CGFloat spacing) {
+    NSStackView *s = OVVStack(views, spacing);
+    OVFillWidth(views, s);
+    return s;
+}
+
+NSView *OVFillPopup(NSView *p) {
+    NSStackView *s = OVHStack(@[p], 0);
+    OVFillWidth(@[p], s);
+    return s;
 }
 
 #pragma mark - Disclosure
@@ -260,7 +308,10 @@ NSView *OVStepCard(NSInteger step, NSString *symbol, NSString *title, NSString *
     self.subtitleLabel.hidden = !s.length;
     self.header.accessibilityHelp = s;
 }
-- (void)toggle:(id)sender { [self setExpanded:!_expanded animated:YES]; }
+- (void)toggle:(id)sender {
+    [self setExpanded:!_expanded animated:YES];
+    if (self.onToggle) self.onToggle(_expanded);
+}
 - (BOOL)expanded { return _expanded; }
 - (void)setExpanded:(BOOL)e { [self setExpanded:e animated:YES]; }
 - (void)setExpanded:(BOOL)expanded animated:(BOOL)animated {
@@ -555,15 +606,30 @@ BOOL OVConfirmProRun(NSWindow *w) {
     NSImageView *g = OVSymbol(@"arrow.up.doc", 18, C(OVRoleAccent));
     [icon addSubview:g];
     Center(g, icon);
-    NSMutableArray *rows = [NSMutableArray arrayWithObjects:icon, OVLabel(t, 14, NSFontWeightSemibold, C(OVRoleText)), nil];
-    if (h.length) [rows addObject:OVLabel(h, 12, NSFontWeightRegular, C(OVRoleMuted))];
+    // title and hint wrap when the zone is narrow; the format chips wrap onto further lines (never squeezed into empty circles)
+    NSTextField *title = OVWrapLabel(t, 14, C(OVRoleText));
+    title.font = [NSFont systemFontOfSize:14 weight:NSFontWeightSemibold];
+    title.alignment = NSTextAlignmentCenter;
+    NSMutableArray *rows = [NSMutableArray arrayWithObjects:icon, title, nil];
+    NSMutableArray *fills = [NSMutableArray arrayWithObject:title];
+    if (h.length) {
+        NSTextField *hint = OVWrapLabel(h, 12, C(OVRoleMuted));
+        hint.alignment = NSTextAlignmentCenter;
+        [rows addObject:hint];
+        [fills addObject:hint];
+    }
     if (exts.count) {
         NSMutableArray *chips = [NSMutableArray array];
         for (NSString *e in exts) [chips addObject:OVBadge(e.uppercaseString, OVRoleMuted)];
-        [rows addObject:OVHStack(chips, 6)];
+        OVFlowRow *flow = [OVFlowRow new];
+        flow.centered = YES;
+        [flow setItems:chips];
+        [rows addObject:flow];
+        [fills addObject:flow];
     }
     NSStackView *s = OVVStack(rows, 8);
     s.alignment = NSLayoutAttributeCenterX;
+    OVFillWidth(fills, s);
     for (NSView *v in rows) v.accessibilityElement = NO;
     [z addSubview:s];
     OVPin(s, z, NSEdgeInsetsMake(22, 20, 22, 20));
@@ -623,6 +689,143 @@ BOOL OVConfirmProRun(NSWindow *w) {
     if ([c isEqualToString:@" "] || [c isEqualToString:@"\r"]) [self choose]; else [super keyDown:e];
 }
 @end
+
+#pragma mark - Flow row, meter bar, secure field
+
+@implementation OVFlowRow {
+    NSArray<NSView *> *_items;
+    CGFloat _laidOutHeight;
+}
+- (BOOL)isFlipped { return YES; }
+- (NSArray<NSView *> *)items { return _items ?: @[]; }
+- (void)setItems:(NSArray<NSView *> *)items {
+    for (NSView *v in self.subviews.copy) [v removeFromSuperview];
+    _items = [items copy];
+    for (NSView *v in _items) { v.translatesAutoresizingMaskIntoConstraints = YES; [self addSubview:v]; }
+    [self invalidateIntrinsicContentSize];
+    self.needsLayout = YES;
+}
+- (void)setCentered:(BOOL)c { _centered = c; self.needsLayout = YES; }
+/// Lays the items out line by line for the width `w`; `apply` moves the views, otherwise only the height is measured.
+- (CGFloat)placeForWidth:(CGFloat)w apply:(BOOL)apply {
+    CGFloat y = 0;
+    NSUInteger i = 0, n = _items.count;
+    while (i < n) {
+        NSUInteger j = i;
+        CGFloat x = 0, rowH = 0;
+        for (; j < n; j++) {
+            NSSize sz = _items[j].fittingSize;
+            if (j > i && x + sz.width > w) break;
+            x += sz.width + 8;
+            rowH = MAX(rowH, sz.height);
+        }
+        CGFloat used = x - 8, x0 = _centered ? MAX(0, floor((w - used) / 2)) : 0;
+        if (apply) {
+            CGFloat cx = x0;
+            for (NSUInteger k = i; k < j; k++) {
+                NSSize sz = _items[k].fittingSize;
+                _items[k].frame = NSMakeRect(cx, y + floor((rowH - sz.height) / 2), sz.width, sz.height);
+                cx += sz.width + 8;
+            }
+        }
+        y += rowH + 8;
+        i = j;
+    }
+    return n ? y - 8 : 0;
+}
+- (NSSize)intrinsicContentSize {
+    CGFloat w = NSWidth(self.bounds) > 1 ? NSWidth(self.bounds) : 100000;
+    return NSMakeSize(NSViewNoIntrinsicMetric, [self placeForWidth:w apply:NO]);
+}
+- (void)layout {
+    [super layout];
+    CGFloat h = [self placeForWidth:NSWidth(self.bounds) apply:YES];
+    if (fabs(h - _laidOutHeight) > 0.5) { _laidOutHeight = h; [self invalidateIntrinsicContentSize]; }
+}
+@end
+
+@implementation OVMeterBar
+- (instancetype)initWithFrame:(NSRect)f {
+    if ((self = [super initWithFrame:f])) self.accessibilityRole = NSAccessibilityLevelIndicatorRole;
+    return self;
+}
+- (NSSize)intrinsicContentSize { return NSMakeSize(120, 6); }
+- (void)setDoubleValue:(double)v {
+    _doubleValue = MAX(0, MIN(100, v));
+    self.accessibilityValue = @((NSInteger)round(_doubleValue));
+    self.needsDisplay = YES;
+}
+- (void)drawRect:(NSRect)dirty {
+    NSRect b = self.bounds;
+    [OVColor(OVRoleField) setFill];
+    [[NSBezierPath bezierPathWithRoundedRect:b xRadius:3 yRadius:3] fill];
+    if (_doubleValue <= 0) return;
+    OVRole role = _doubleValue >= 70 ? OVRoleOK : _doubleValue >= 45 ? OVRoleWarn : OVRoleErr;
+    NSRect fill = b;
+    fill.size.width = MAX(6, round(NSWidth(b) * _doubleValue / 100));
+    [OVColor(role) setFill];
+    [[NSBezierPath bezierPathWithRoundedRect:fill xRadius:3 yRadius:3] fill];
+}
+@end
+
+/// Secure text field in the same look as OVField (field fill, 1px border, radius 10, OVRoleFocus border while editing).
+@interface OVSecureTextFieldCell : NSSecureTextFieldCell
+@end
+@implementation OVSecureTextFieldCell
+- (NSRect)drawingRectForBounds:(NSRect)r {
+    NSRect d = [super drawingRectForBounds:r];
+    d.origin.x += 12;
+    d.size.width -= 24;
+    CGFloat h = ceil(self.font.ascender - self.font.descender) + 2;
+    if (NSHeight(r) > h) { d.origin.y = NSMinY(r) + floor((NSHeight(r) - h) / 2); d.size.height = h; }
+    return d;
+}
+- (void)selectWithFrame:(NSRect)r inView:(NSView *)v editor:(NSText *)t delegate:(id)d start:(NSInteger)s length:(NSInteger)l {
+    [super selectWithFrame:[self drawingRectForBounds:r] inView:v editor:t delegate:d start:s length:l];
+}
+- (void)editWithFrame:(NSRect)r inView:(NSView *)v editor:(NSText *)t delegate:(id)d event:(NSEvent *)e {
+    [super editWithFrame:[self drawingRectForBounds:r] inView:v editor:t delegate:d event:e];
+}
+- (void)drawWithFrame:(NSRect)frame inView:(NSView *)v {
+    BOOL focus = [(NSControl *)v currentEditor] != nil && v.window.firstResponder == [(NSControl *)v currentEditor];
+    NSBezierPath *p = [NSBezierPath bezierPathWithRoundedRect:NSInsetRect(frame, 0.5, 0.5) xRadius:10 yRadius:10];
+    [OVColor(OVRoleField) setFill];
+    [p fill];
+    [(focus ? OVColor(OVRoleFocus) : OVColor(OVRoleBorder)) setStroke];
+    p.lineWidth = focus ? 2 : 1;
+    [p stroke];
+    [self drawInteriorWithFrame:frame inView:v];
+}
+@end
+
+@interface OVSecureTextField : NSSecureTextField
+@end
+@implementation OVSecureTextField
++ (Class)cellClass { return OVSecureTextFieldCell.class; }
+- (NSSize)intrinsicContentSize { NSSize s = [super intrinsicContentSize]; s.height = 34; return s; }
+- (BOOL)becomeFirstResponder {
+    BOOL r = [super becomeFirstResponder];
+    self.needsDisplay = YES;
+    dispatch_async(dispatch_get_main_queue(), ^{ self.needsDisplay = YES; });
+    return r;
+}
+- (void)textDidEndEditing:(NSNotification *)n { [super textDidEndEditing:n]; self.needsDisplay = YES; }
+@end
+
+NSSecureTextField *OVSecureField(NSString *placeholder) {
+    OVSecureTextField *f = [[OVSecureTextField alloc] initWithFrame:NSZeroRect];
+    f.placeholderString = placeholder;
+    f.font = [NSFont systemFontOfSize:13];
+    f.textColor = OVColor(OVRoleText);
+    f.bezeled = NO;
+    f.bordered = NO;
+    f.drawsBackground = NO;
+    f.focusRingType = NSFocusRingTypeNone;
+    f.editable = YES;
+    f.selectable = YES;
+    [f setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+    return f;
+}
 
 #pragma mark - Empty state, play, log
 
@@ -769,7 +972,13 @@ void OVRepaintAll(void) {
 - (id)accessibilityValue { return self.stringValue; }
 @end
 
-NSView *OVPageHeader(NSString *title, NSString *subtitle, NSView *accessory) {
+static NSAttributedString *PageTitleText(NSString *title) {
+    return [[NSAttributedString alloc] initWithString:title ?: @"" attributes:@{
+        NSFontAttributeName: [NSFont systemFontOfSize:28 weight:NSFontWeightBold],
+        NSForegroundColorAttributeName: C(OVRoleText), NSKernAttributeName: @(-0.7)}];
+}
+
+NSView *OVPageHeaderWrapped(NSString *title, NSString *subtitle, NSView *accessory, BOOL wrapSubtitle) {
     NSTextField *t = [[OVHeadingField alloc] initWithFrame:NSZeroRect];   // labelWithString: would not give the subclass
     t.editable = NO;
     t.selectable = NO;
@@ -780,21 +989,43 @@ NSView *OVPageHeader(NSString *title, NSString *subtitle, NSView *accessory) {
     [t.cell setAccessibilityRole:@"AXHeading"];
     t.lineBreakMode = NSLineBreakByTruncatingTail;
     [t setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
-    t.attributedStringValue = [[NSAttributedString alloc] initWithString:title ?: @"" attributes:@{
-        NSFontAttributeName: [NSFont systemFontOfSize:28 weight:NSFontWeightBold],
-        NSForegroundColorAttributeName: C(OVRoleText), NSKernAttributeName: @(-0.7)}];
+    t.attributedStringValue = PageTitleText(title);
     NSMutableArray *texts = [NSMutableArray arrayWithObject:t];
     if (subtitle.length) {
         NSTextField *s = OVLabel(subtitle, 14, NSFontWeightRegular, C(OVRoleMuted));
+        if (wrapSubtitle) {
+            s.lineBreakMode = NSLineBreakByWordWrapping;
+            s.usesSingleLineMode = NO;
+            s.maximumNumberOfLines = 0;
+            s.translatesAutoresizingMaskIntoConstraints = NO;
+        }
         [texts addObject:s];
     }
     NSStackView *left = OVVStack(texts, 4);
+    if (wrapSubtitle) [left setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
     NSMutableArray *row = [NSMutableArray arrayWithObjects:left, OVSpacer(), nil];
     if (accessory) [row addObject:accessory];
     NSStackView *h = OVHStack(row, 12);
     h.alignment = NSLayoutAttributeCenterY;
     h.edgeInsets = NSEdgeInsetsMake(0, 0, 4, 0);
     return h;
+}
+
+NSView *OVPageHeader(NSString *title, NSString *subtitle, NSView *accessory) {
+    return OVPageHeaderWrapped(title, subtitle, accessory, NO);
+}
+
+static OVHeadingField *HeadingIn(NSView *v) {
+    if ([v isKindOfClass:OVHeadingField.class]) return (OVHeadingField *)v;
+    for (NSView *sub in v.subviews) { OVHeadingField *t = HeadingIn(sub); if (t) return t; }
+    return nil;
+}
+
+void OVPageHeaderSetTitle(NSView *header, NSString *title) {
+    OVHeadingField *t = HeadingIn(header);
+    if (!t) return;
+    t.attributedStringValue = PageTitleText(title);
+    t.toolTip = title.length ? title : nil;
 }
 
 NSScrollView *OVPageScroll(NSArray<NSView *> *views) {
