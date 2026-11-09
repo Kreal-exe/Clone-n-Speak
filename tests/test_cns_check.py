@@ -72,6 +72,21 @@ class CheckTests(unittest.TestCase):
         self.assertTrue(any(g["kind"] == "pause" and overlap(g, 2.8, 4.8) > 1.8 for g in r["regions"]))
         self.assertIn("long_pause", r["advice"])
 
+    def test_short_pause_is_not_longest(self):
+        wav = np.concatenate([speechlike(2.0), np.zeros(int(SR * 0.4), np.float32), speechlike(2.0)])
+        self.assertIsNone(self.check(wav)["longest_pause"])
+
+    def test_edge_debounce(self):
+        z = lambda s: np.zeros(int(SR * s), np.float32)  # noqa: E731
+        noise = lambda s: (10 ** (-58 / 20) * np.random.default_rng(5).standard_normal(int(SR * s))).astype(np.float32)  # noqa: E731
+        lead = z(1.0)
+        a = int(SR * 0.4)
+        lead[a:a + int(SR * 0.01)] = 0.5  # one click inside the lead silence
+        wav = np.concatenate([lead, speechlike(2.8), noise(0.6)])
+        r = self.check(wav)
+        self.assertAlmostEqual(r["lead_silence_s"], 1.0, delta=0.08)
+        self.assertAlmostEqual(r["tail_silence_s"], 0.6, delta=0.08)
+
     def test_clipping_region(self):
         wav = speechlike(3.0).copy()
         a = int(SR * 1.2)

@@ -116,7 +116,7 @@ def _distortion(x, sr, drive_db, tone, mix):
     from scipy.signal import lfilter
     if mix <= 0:
         return x
-    driven = x.astype(np.float64) * (2.0 * 10 ** (drive_db / 20.0))
+    driven = x.astype(np.float64) * (10 ** (drive_db / 20.0) / 0.7)  # 0.7 * (1/0.7): unity small-signal gain at 0 dB
     wet = 0.7 * driven / (1.0 + driven ** 4) ** 0.25  # soft clip, squarer than tanh: odd harmonics stand out
     fc = 800.0 * 25.0 ** tone  # tone 0 -> 800 Hz, 1 -> 20 kHz
     if fc < 0.45 * sr:
@@ -131,8 +131,8 @@ def _bitcrush(x, sr, bits, downsample, mix):
         return x
     bits, ds = int(round(bits)), int(round(downsample))
     wet = x[(np.arange(len(x)) // ds) * ds] if ds > 1 else x
-    levels = 2.0 ** (bits - 1)  # 2**bits values from -1 to 1 - 1/levels
-    wet = np.clip(np.round(wet.astype(np.float64) * levels), -levels, levels - 1) / levels
+    half = 2.0 ** (bits - 1)  # mid-rise quantiser: 2**bits levels, symmetric around 0 (no level at 0, so no DC bias)
+    wet = np.clip((np.floor(wet.astype(np.float64) * half) + 0.5) / half, -1.0 + 0.5 / half, 1.0 - 0.5 / half)
     return (x + mix * (wet - x)).astype(np.float32)
 
 
@@ -382,6 +382,8 @@ def fx_apply(req):
     chain = req.get("chain") or []
     _resolve(chain)  # bad parameters fail before any file is touched
     out = req.get("out")
+    if not req.get("audio"):
+        raise core.AudioInputError("bad_param", "Choose an audio file to process.")
     if not out:
         raise core.AudioInputError("bad_param", "Choose where to save the result.")
     wav, rate = core.read_audio(req["audio"], mono=False, sr=None)
