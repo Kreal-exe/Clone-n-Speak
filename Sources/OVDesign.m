@@ -297,6 +297,7 @@ NSView *OVStepCard(NSInteger step, NSString *symbol, NSString *title, NSString *
 
 @interface OVSegmented ()
 @property NSArray<NSString *> *titles, *symbols;
+@property NSArray<OVSegmentA11y *> *segA11y;   // cached: VoiceOver keeps identity and focus
 @end
 
 @implementation OVSegmentA11y
@@ -317,6 +318,7 @@ static const CGFloat kSegPad = 4, kSegH = 28;
     for (NSArray *it in items) { [t addObject:it[0]]; [y addObject:it.count > 1 ? it[1] : @""]; }
     s.titles = t;
     s.symbols = y;
+    s.selectedIndex = 0;
     [s setContentHuggingPriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
     return s;
 }
@@ -333,6 +335,7 @@ static const CGFloat kSegPad = 4, kSegH = 28;
     return NSMakeRect(x, kSegPad, [self widthOfSegment:i], kSegH);
 }
 - (NSSize)intrinsicContentSize {
+    if (!self.titles.count) return NSMakeSize(NSViewNoIntrinsicMetric, kSegH + 2 * kSegPad);
     NSRect last = [self rectOfSegment:self.titles.count - 1];
     return NSMakeSize(NSMaxX(last) + kSegPad, kSegH + 2 * kSegPad);
 }
@@ -340,7 +343,8 @@ static const CGFloat kSegPad = 4, kSegH = 28;
     if (i < 0 || i >= (NSInteger)self.titles.count || i == _selectedIndex) return;
     _selectedIndex = i;
     self.needsDisplay = YES;
-    for (id c in self.accessibilityChildren) NSAccessibilityPostNotification(c, NSAccessibilityValueChangedNotification);
+    for (id c in self.segA11y) NSAccessibilityPostNotification(c, NSAccessibilityValueChangedNotification);
+    NSAccessibilityPostNotification(self, NSAccessibilityValueChangedNotification);
 }
 - (void)setEnabled:(BOOL)e { [super setEnabled:e]; self.needsDisplay = YES; }
 - (void)drawRect:(NSRect)dirty {
@@ -389,18 +393,24 @@ static const CGFloat kSegPad = 4, kSegH = 28;
 }
 - (BOOL)isAccessibilityElement { return YES; }
 - (NSAccessibilityRole)accessibilityRole { return NSAccessibilityRadioGroupRole; }
-- (id)accessibilityValue { return self.titles[self.selectedIndex]; }
+- (id)accessibilityValue {
+    return (self.selectedIndex >= 0 && self.selectedIndex < (NSInteger)self.titles.count) ? self.titles[self.selectedIndex] : nil;
+}
 - (NSArray *)accessibilityChildren {
-    NSMutableArray *out = [NSMutableArray array];
-    for (NSInteger i = 0; i < (NSInteger)self.titles.count; i++) {
-        OVSegmentA11y *e = [OVSegmentA11y accessibilityElementWithRole:NSAccessibilityRadioButtonRole
-                                                                 frame:NSZeroRect label:self.titles[i] parent:self];
-        e.owner = self;
-        e.index = i;
-        if (self.window) e.accessibilityFrame = [self.window convertRectToScreen:[self convertRect:[self rectOfSegment:i] toView:nil]];
-        [out addObject:e];
+    if (self.segA11y.count != self.titles.count) {
+        NSMutableArray *out = [NSMutableArray array];
+        for (NSInteger i = 0; i < (NSInteger)self.titles.count; i++) {
+            OVSegmentA11y *e = [OVSegmentA11y accessibilityElementWithRole:NSAccessibilityRadioButtonRole
+                                                                     frame:NSZeroRect label:self.titles[i] parent:self];
+            e.owner = self;
+            e.index = i;
+            [out addObject:e];
+        }
+        self.segA11y = out;
     }
-    return out;
+    for (OVSegmentA11y *e in self.segA11y)
+        if (self.window) e.accessibilityFrame = [self.window convertRectToScreen:[self convertRect:[self rectOfSegment:e.index] toView:nil]];
+    return self.segA11y;
 }
 @end
 
@@ -468,18 +478,27 @@ NSView *OVBadge(NSString *text, OVRole tone) {
 NSView *OVProBadge(void) {
     NSView *b = OVBadge(L(@"16 GB"), OVRoleWarn);
     b.toolTip = L(@"This feature is meant for Macs with 16 GB of memory or more. On a Mac with less it may run out of memory.");
+    b.accessibilityElement = YES;
+    b.accessibilityRole = NSAccessibilityStaticTextRole;
+    b.accessibilityLabel = L(@"16 GB: needs a Mac with 16 GB of memory or more");
+    b.accessibilityHelp = b.toolTip;
     return b;
 }
 
+/// `w` is only used to center the alert over that window: a synchronous BOOL answer rules out a sheet.
 BOOL OVConfirmProRun(NSWindow *w) {
     double gb = [OVSettings physicalMemoryGB];
     if (gb >= 16) return YES;
     NSAlert *a = [NSAlert new];
     a.messageText = L(@"This may run out of memory");
     a.informativeText = [NSString stringWithFormat:L(@"This feature is meant for Macs with 16 GB of memory or more. This Mac has %.0f GB, so it may run out of memory or slow down a lot."), gb];
+    [a addButtonWithTitle:L(@"Cancel")];       // Return = the safe answer
     [a addButtonWithTitle:L(@"Run anyway")];
-    [a addButtonWithTitle:L(@"Cancel")];
-    return [a runModal] == NSAlertFirstButtonReturn;
+    if (w) {
+        NSRect f = a.window.frame;
+        [a.window setFrameOrigin:NSMakePoint(NSMidX(w.frame) - NSWidth(f) / 2, NSMidY(w.frame) - NSHeight(f) / 2)];
+    }
+    return [a runModal] == NSAlertSecondButtonReturn;
 }
 
 #pragma mark - Drop zone

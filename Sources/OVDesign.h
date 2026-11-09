@@ -44,7 +44,7 @@ NSView *OVProBadge(void);                       // "16 GB", warn tone, tooltip s
 /// On a Mac with less than 16 GB: an alert that memory may run out; YES = go on. Otherwise YES without asking.
 BOOL OVConfirmProRun(NSWindow *_Nullable w);
 
-/// Dashed drop target; click opens a file panel. `exts` are lowercase extensions without the dot.
+/// Dashed drop target; click opens a file panel. `onFiles` is stored by the zone: capture self weakly in it. `exts` are lowercase extensions without the dot.
 @interface OVDropZone : NSView
 + (instancetype)zoneWithTitle:(NSString *)t hint:(nullable NSString *)h types:(NSArray<NSString *> *)exts
                       onFiles:(void (^)(NSArray<NSURL *> *))cb;
