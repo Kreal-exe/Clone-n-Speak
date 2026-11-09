@@ -5,6 +5,7 @@
 #   tools/snap_matrix.sh                                                    the full matrix
 #   THEMES="dark" PALETTES="applio" SIZES="default" tools/snap_matrix.sh    a slice
 #   PAGES=synth,models  restricts the pages; FLIP=sunset adds <page>-flip.png (palette switched on the fly);
+#   SNAP_LOG=<file> keeps the app's stderr.
 #   APP=<path to .app> and OUT=<dir> override the build and the output folder.
 set -euo pipefail
 APP="${APP:-/tmp/cns-5.7-app/Clone'n'Speak.app}"
@@ -22,7 +23,7 @@ for size in $SIZES; do
       if [ "$size" = default ]; then unset OV_SNAPSHOT_SIZE; else export OV_SNAPSHOT_SIZE="$size"; fi
       if [ -n "${PAGES:-}" ]; then export OV_SNAPSHOT_PAGES="$PAGES"; fi
       if [ -n "${FLIP:-}" ]; then export OV_SNAPSHOT_FLIP="$FLIP"; fi
-      "$BIN" -autoSetup NO -disableLegacyMigration YES -migratedFromOmniVoiceUA YES -theme "$theme" -OVPalette "$pal" >/dev/null 2>&1 || true
+      "$BIN" -autoSetup NO -disableLegacyMigration YES -migratedFromOmniVoiceUA YES -theme "$theme" -OVPalette "$pal" >/dev/null 2>>"${SNAP_LOG:-/dev/null}" || true
       echo "$dir: $(ls "$dir" | wc -l | tr -d ' ') files"
     done
   done

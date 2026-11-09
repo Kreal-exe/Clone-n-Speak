@@ -80,6 +80,8 @@ static void Center(NSView *child, NSView *parent) {
     if ((self = [super initWithFrame:f])) _pillHeight = 36;
     return self;
 }
+/// An NSButton with a symbol image reports alignment insets (the image's), which made the frame taller than the constraint.
+- (NSEdgeInsets)alignmentRectInsets { return NSEdgeInsetsZero; }
 - (NSSize)intrinsicContentSize {
     CGFloat w = ceil([self.title sizeWithAttributes:@{NSFontAttributeName: self.font}].width) + 36 + (self.image ? 21 : 0);
     return NSMakeSize(w, _pillHeight);
