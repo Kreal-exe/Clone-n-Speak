@@ -3,7 +3,8 @@
 #import "OVLocale.h"
 #import "OVPages.h"
 
-@interface OVGalleryPage ()
+@interface OVGalleryPage () <NSTableViewDataSource, NSTableViewDelegate>
+@property NSTableView *rowTable;
 @property OVSegmented *modeSwitch;
 @property NSTextField *modeLabel;
 @property NSTextView *logText;
@@ -20,7 +21,7 @@ static NSView *Variant(NSString *caption, NSArray<NSView *> *views) {
 
 - (void)loadView {
     NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
-    [d registerDefaults:@{@"OVGalleryA": @0.35, @"OVGalleryB": @7.0}];
+    [d registerDefaults:@{@"OVGalleryA": @0.35, @"OVGalleryB": @7.0, @"OVGalleryC": @0.6, @"OVGalleryD": @8.0, @"OVGalleryChkOn": @YES, @"OVGalleryChkOff": @NO, @"OVGalleryChkHint": @YES}];
 
     // Buttons
     NSButton *off1 = OVPrimaryButton(L(@"Primary"), nil, nil);
@@ -73,14 +74,31 @@ static NSView *Variant(NSString *caption, NSArray<NSView *> *views) {
     dis.selectedIndex = 1;
     dis.enabled = NO;
     dis.accessibilityLabel = L(@"Disabled switch");
+    OVSegmented *icons = [OVSegmented segmentedWithItems:@[@[@"", @"face.smiling", L(@"Calm")], @[@"", @"bolt", L(@"Excited")],
+                                                           @[@"", @"moon", L(@"Sleepy")], @[@"", @"flame", L(@"Angry")]]];
+    icons.selectedIndex = 1;
+    icons.accessibilityLabel = L(@"Mood");
+    OVSegmented *none = [OVSegmented segmentedWithItems:@[@[L(@"Low"), @""], @[L(@"High"), @""]]];
+    none.selectedIndex = -1;
+    none.accessibilityLabel = L(@"Nothing selected");
     NSView *seg = OVVStack(@[Variant(L(@"With symbols"), @[self.modeSwitch, self.modeLabel]),
-                             Variant(L(@"Text only"), @[plain]), Variant(L(@"Disabled"), @[dis])], 14);
+                             Variant(L(@"Text only"), @[plain]), Variant(L(@"Icons only, with labels"), @[icons]),
+                             Variant(L(@"Nothing selected"), @[none]), Variant(L(@"Disabled"), @[dis])], 14);
 
     // Sliders
     OVSliderRow *s1 = [OVSliderRow rowWithTitle:L(@"Speed") hint:L(@"Enabled slider") key:@"OVGalleryA" min:0 max:1 format:@"%.2f" integer:NO];
     OVSliderRow *s2 = [OVSliderRow rowWithTitle:L(@"Steps") hint:L(@"Disabled slider") key:@"OVGalleryB" min:1 max:20 format:@"%.0f" integer:YES];
     s2.enabled = NO;
-    NSStackView *sliders = OVVStack(@[s1, s2], 14);
+    OVSliderRow *s3 = [OVSliderRow rowWithTitle:L(@"Strength") hint:nil key:@"OVGalleryC" min:0 max:1 format:@"%.2f" integer:NO];
+    s3.compact = YES;
+    s3.step = 0.05;
+    OVSliderRow *s4 = [OVSliderRow rowWithTitle:L(@"Pitch") hint:nil key:@"OVGalleryD" min:-12 max:12 format:@"%.0f" integer:YES];
+    s4.compact = YES;
+    s4.valueFormatter = ^NSString *(double v) { return [NSString stringWithFormat:@"%+.0f st", v]; };
+    [s4 refresh];
+    __weak OVDisclosure *wClosed = closed;
+    s1.onChange = ^{ wClosed.subtitle = [NSString stringWithFormat:L(@"Speed is now %.2f"), [NSUserDefaults.standardUserDefaults doubleForKey:@"OVGalleryA"]]; };
+    NSStackView *sliders = OVVStack(@[s1, s2, s3, s4], 14);
     OVFillWidth(sliders.arrangedSubviews, sliders);
 
     // Fields
@@ -90,17 +108,91 @@ static NSView *Variant(NSString *caption, NSArray<NSView *> *views) {
     NSTextField *offField = OVField(@"");
     offField.stringValue = L(@"Disabled field");
     offField.enabled = NO;
-    NSPopUpButton *popup = [NSPopUpButton new];
+    NSStackView *fields = OVVStack(@[empty, filled, offField], 10);
+    OVFillWidth(fields.arrangedSubviews, fields);
+
+    // Popup, checkboxes, switches, radio buttons
+    OVPopup *popup = [OVPopup popup];
     [popup addItemsWithTitles:@[L(@"First choice"), L(@"Second choice")]];
-    NSButton *on = [NSButton checkboxWithTitle:L(@"On") target:nil action:nil];
-    on.state = NSControlStateValueOn;
-    NSButton *off = [NSButton checkboxWithTitle:L(@"Off") target:nil action:nil];
-    NSStackView *fields = OVVStack(@[empty, filled, offField, OVHStack(@[popup, on, off], 16)], 10);
-    OVFillWidth(@[empty, filled, offField], fields);
+    OVPopup *longPopup = [OVPopup popup];
+    [longPopup addItemsWithTitles:@[L(@"A choice with a very long name that does not fit in the field and gets cut off")]];
+    OVPopup *offPopup = [OVPopup popup];
+    [offPopup addItemsWithTitles:@[L(@"Disabled popup")]];
+    offPopup.enabled = NO;
+    NSView *popups = OVVStack(@[Variant(L(@"Normal"), @[popup]), Variant(L(@"Long title"), @[longPopup]), Variant(L(@"Disabled"), @[offPopup])], 10);
+    [longPopup.widthAnchor constraintEqualToConstant:240].active = YES;
+    OVSwitch *swOn = [OVSwitch new];
+    swOn.on = YES;
+    swOn.accessibilityLabel = L(@"Switch on");
+    OVSwitch *swOff = [OVSwitch new];
+    swOff.accessibilityLabel = L(@"Switch off");
+    OVSwitch *swDis = [OVSwitch new];
+    swDis.enabled = NO;
+    swDis.accessibilityLabel = L(@"Switch disabled");
+    NSView *switches = OVHStack(@[Variant(L(@"On"), @[swOn]), Variant(L(@"Off"), @[swOff]), Variant(L(@"Disabled"), @[swDis]), OVSpacer()], 28);
+    NSButton *cOn = OVCheckbox(L(@"Checked"), @"OVGalleryChkOn");
+    NSButton *cOff = OVCheckbox(L(@"Unchecked"), @"OVGalleryChkOff");
+    NSButton *cDis = OVCheckbox(L(@"Disabled"), @"OVGalleryChkOff");
+    cDis.enabled = NO;
+    NSButton *cHint = OVCheckbox(L(@"Checkbox with a hint"), @"OVGalleryChkHint");
+    NSView *checks = OVVStack(@[OVHStack(@[cOn, cOff, cDis, OVSpacer()], 24), OVCheckRow(cHint, L(@"The hint sits under the checkbox, indented by 24 pt."))], 12);
+    OVFillWidth(@[checks.subviews.lastObject], (NSStackView *)checks);
+    NSButton *r1 = OVRadioButton(L(@"First option"), self, @selector(radioPicked:));
+    NSButton *r2 = OVRadioButton(L(@"Second option"), self, @selector(radioPicked:));
+    NSButton *r3 = OVRadioButton(L(@"Third option"), self, @selector(radioPicked:));
+    r2.state = NSControlStateValueOn;
+    NSView *radios = OVHStack(@[r1, r2, r3, OVSpacer()], 24);
+    NSView *controls = OVVStack(@[popups, switches, checks, radios], 18);
+    OVFillWidth(@[checks, radios], (NSStackView *)controls);
+
+    // Page header, field block, columns
+    NSView *hdr = OVPageHeader(L(@"Page title"), L(@"A short description of what the page does."), OVGhostButton(L(@"Action"), @"arrow.clockwise", nil, nil));
+    NSView *hdrBare = OVPageHeader(L(@"Title only"), nil, nil);
+    NSStackView *hdrs = OVVStack(@[hdr, hdrBare], 12);
+    OVFillWidth(hdrs.arrangedSubviews, hdrs);
+    OVPopup *fbPopup = [OVPopup popup];
+    [fbPopup addItemsWithTitles:@[L(@"First choice"), L(@"Second choice")]];
+    NSView *fieldBlock = OVFieldBlock(L(@"Field label"), L(@"A muted hint under the control explains what it does."), fbPopup);
+    NSView *fieldBlock2 = OVFieldBlock(L(@"Name"), nil, OVField(L(@"Placeholder text")));
+    NSView *cols = OVColumns(@[fieldBlock, fieldBlock2], 16);
+
+    // Text area
+    NSScrollView *ts = [NSTextView scrollableTextView];
+    ((NSTextView *)ts.documentView).string = L(@"Text in a text area. Click it to see the focus border.");
+    NSView *textArea = OVTextArea(ts, 90);
+    NSView *textAreaBlock = OVFieldBlock(L(@"Text"), L(@"The border turns to the focus color while you type."), textArea);
+
+    // Table rows: selected, hover, plain
+    self.rowTable = [NSTableView new];
+    NSTableColumn *col = [[NSTableColumn alloc] initWithIdentifier:@"c"];
+    col.resizingMask = NSTableColumnAutoresizingMask;
+    [self.rowTable addTableColumn:col];
+    self.rowTable.headerView = nil;
+    self.rowTable.backgroundColor = NSColor.clearColor;
+    self.rowTable.rowHeight = 36;
+    self.rowTable.intercellSpacing = NSMakeSize(0, 2);
+    self.rowTable.dataSource = self;
+    self.rowTable.delegate = self;
+    self.rowTable.selectionHighlightStyle = NSTableViewSelectionHighlightStyleRegular;
+    self.rowTable.focusRingType = NSFocusRingTypeNone;
+    self.rowTable.accessibilityLabel = L(@"Rows");
+    [self.rowTable reloadData];
+    [self.rowTable selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
+    [self.rowTable.heightAnchor constraintEqualToConstant:3 * 38].active = YES;
+
+    // Progress
+    NSProgressIndicator *pDet = OVProgressBar();
+    pDet.doubleValue = 0.6;
+    NSProgressIndicator *pInd = OVProgressBar();
+    pInd.indeterminate = YES;
+    [pInd startAnimation:nil];
+    NSStackView *progress = OVVStack(@[Variant(L(@"Determinate"), @[pDet]), Variant(L(@"Indeterminate"), @[pInd])], 12);
+    for (NSStackView *st in progress.arrangedSubviews) OVFillWidth(@[st.arrangedSubviews.lastObject], st);
+    OVFillWidth(progress.arrangedSubviews, progress);
 
     // Badges
     NSView *badges = OVHStack(@[OVBadge(L(@"Neutral"), OVRoleMuted), OVBadge(L(@"Ready"), OVRoleOK), OVBadge(L(@"Needs attention"), OVRoleWarn),
-                                OVBadge(L(@"Error"), OVRoleErr), OVProBadge(), OVSpacer()], 8);
+                                OVBadge(L(@"Error"), OVRoleErr), OVBadge(L(@"Accent"), OVRoleAccent), OVProBadge(), OVSpacer()], 8);
 
     // Drop zone, empty state, log
     OVDropZone *zone = [OVDropZone zoneWithTitle:L(@"Drop audio here") hint:L(@"or click to choose a file") types:@[@"wav", @"mp3", @"m4a", @"flac"]
@@ -120,21 +212,48 @@ static NSView *Variant(NSString *caption, NSArray<NSView *> *views) {
         OVStepCard(0, @"switch.2", L(@"Segmented switch"), nil, seg),
         OVStepCard(0, @"slider.horizontal.3", L(@"Sliders"), nil, sliders),
         OVStepCard(0, @"character.cursor.ibeam", L(@"Fields"), nil, fields),
+        OVStepCard(0, @"menubar.rectangle", L(@"Page header"), nil, hdrs),
+        OVStepCard(0, @"text.alignleft", L(@"Field block and columns"), nil, cols),
+        OVStepCard(0, @"filemenu.and.selection", L(@"Popup, switch, checkbox, radio"), nil, controls),
+        OVStepCard(0, @"text.cursor", L(@"Text area"), nil, textAreaBlock),
+        OVStepCard(0, @"list.bullet", L(@"Table rows"), L(@"Selected, hovered and plain rows."), self.rowTable),
+        OVStepCard(0, @"chart.bar", L(@"Progress"), nil, progress),
         OVStepCard(0, @"tag", L(@"Badges"), nil, badges),
         OVStepCard(0, @"square.and.arrow.down", L(@"Drop zone"), nil, zone),
         OVStepCard(0, @"tray", L(@"Empty state"), nil, emptyState),
         OVStepCard(0, @"terminal", L(@"Log"), nil, log),
     ];
-    NSMutableArray *rows = [NSMutableArray arrayWithObjects:OVTitle(L(@"Design gallery")),
-                            OVWrapLabel(L(@"Every component in each state. A developer page, not in the sidebar."), 13, nil), nil];
+    NSMutableArray *rows = [NSMutableArray arrayWithObject:
+        OVPageHeader(L(@"Design gallery"), L(@"Every component in each state. A developer page, not in the sidebar."), nil)];
     [rows addObjectsFromArray:cards];
-    NSStackView *page = OVVStack(rows, 16);
-    [page setCustomSpacing:6 afterView:rows[0]];
-    page.edgeInsets = NSEdgeInsetsMake(30, 32, 28, 32);
-    OVFillWidth(rows, page);
-    self.view = OVScrollPage(page);
+    self.view = OVPageScroll(rows);
 
     if ([d boolForKey:@"OVGalleryA11yDump"]) [self performSelector:@selector(dumpAccessibility) withObject:nil afterDelay:1.5];
+}
+
+- (void)radioPicked:(NSButton *)b {
+    for (NSView *v in b.superview.subviews)
+        if ([v isKindOfClass:NSButton.class] && v != b) ((NSButton *)v).state = NSControlStateValueOff;
+}
+
+- (NSInteger)numberOfRowsInTableView:(NSTableView *)t { return 3; }
+
+- (NSView *)tableView:(NSTableView *)t viewForTableColumn:(NSTableColumn *)c row:(NSInteger)row {
+    NSString *names[] = {L(@"Selected row"), L(@"Hovered row"), L(@"Plain row")};
+    NSTextField *l = OVLabel(names[row], 14, NSFontWeightMedium, nil);
+    NSTableCellView *cell = [NSTableCellView new];
+    [cell addSubview:l];
+    l.translatesAutoresizingMaskIntoConstraints = NO;
+    [NSLayoutConstraint activateConstraints:@[[l.leadingAnchor constraintEqualToAnchor:cell.leadingAnchor constant:14],
+                                              [l.trailingAnchor constraintEqualToAnchor:cell.trailingAnchor constant:-14],
+                                              [l.centerYAnchor constraintEqualToAnchor:cell.centerYAnchor]]];
+    return cell;
+}
+
+- (NSTableRowView *)tableView:(NSTableView *)t rowViewForRow:(NSInteger)row {
+    OVTableRowView *r = [OVTableRowView new];
+    if (row == 1) r.hovered = YES;   // a still picture cannot hover
+    return r;
 }
 
 - (void)modeChanged:(OVSegmented *)s {

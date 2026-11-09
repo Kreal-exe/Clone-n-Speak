@@ -501,8 +501,32 @@ static void OVRedrawTree(NSView *v) {
 
     // Developer aid: OV_SNAPSHOT_DIR=/path renders every page to PNG (no screen-recording permission needed).
     // Launch with `-autoSetup NO -disableLegacyMigration YES -migratedFromOmniVoiceUA YES` to keep it side-effect free.
-    NSString *snap = NSProcessInfo.processInfo.environment[@"OV_SNAPSHOT_DIR"];
-    if (snap.length) [self snapshotPages:[OVPageRegistry allPageIds] into:snap index:0];
+    // OV_SNAPSHOT_SIZE=WxH sets the content size first, OV_SNAPSHOT_PAGES=synth,voices limits the pages,
+    // OV_SNAPSHOT_FLIP=<paletteId> adds <page>-flip.png taken after switching to that palette on the fly,
+    // -OVA11yDump YES prints the accessibility tree of the shown page(s) to stderr.
+    NSDictionary *env = NSProcessInfo.processInfo.environment;
+    NSString *snap = env[@"OV_SNAPSHOT_DIR"];
+    NSString *size = env[@"OV_SNAPSHOT_SIZE"];
+    if (size.length) {
+        NSArray *wh = [size.lowercaseString componentsSeparatedByString:@"x"];
+        CGFloat w = wh.count == 2 ? [wh[0] doubleValue] : 0, h = wh.count == 2 ? [wh[1] doubleValue] : 0;
+        if (w >= 200 && h >= 200) {
+            self.window.contentMinSize = NSMakeSize(MIN(self.window.contentMinSize.width, w), MIN(self.window.contentMinSize.height, h));
+            [self.window setContentSize:NSMakeSize(w, h)];
+        } else NSLog(@"OV_SNAPSHOT_SIZE=%@ is not WxH", size);
+    }
+    NSArray<NSString *> *snapPages = [OVPageRegistry allPageIds];
+    if ([env[@"OV_SNAPSHOT_PAGES"] length]) {
+        NSMutableArray *only = [NSMutableArray array];
+        for (NSString *pg in [env[@"OV_SNAPSHOT_PAGES"] componentsSeparatedByString:@","]) {
+            NSString *t = [pg stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+            if ([snapPages containsObject:t]) [only addObject:t]; else if (t.length) NSLog(@"OV_SNAPSHOT_PAGES: unknown page %@", t);
+        }
+        snapPages = only;
+    }
+    if (snap.length) [self snapshotPages:snapPages into:snap index:0];
+    else if ([NSUserDefaults.standardUserDefaults boolForKey:@"OVA11yDump"])
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ [self dumpAccessibility]; });
 
     // Developer aid: OV_SELFTEST_AUDIO=sample.wav OV_SELFTEST_TEXT="transcript" clones a voice and speaks a phrase
     // through the real app classes, prints the results and quits.
@@ -555,43 +579,84 @@ static void OVRedrawTree(NSView *v) {
     }
 }
 
+static void OVDumpAX(id el, int depth, NSMutableSet *seen) {
+    if (depth > 40 || !el) return;
+    NSValue *key = [NSValue valueWithNonretainedObject:el];
+    if ([seen containsObject:key]) return;
+    [seen addObject:key];
+    NSString *role = [el respondsToSelector:@selector(accessibilityRole)] ? [el accessibilityRole] : nil;
+    BOOL isView = [el isKindOfClass:NSView.class];
+    if (role.length && (!isView || [el isAccessibilityElement] || ![role isEqualToString:NSAccessibilityGroupRole])) {
+        id v = [el respondsToSelector:@selector(accessibilityValue)] ? [el accessibilityValue] : nil;
+        fprintf(stderr, "A11Y %*s%s label=%s value=%s\n", depth * 2, "", role.UTF8String,
+                [[el accessibilityLabel] ?: @"-" UTF8String], [[v description] ?: @"-" UTF8String]);
+    }
+    NSArray *kids = [el respondsToSelector:@selector(accessibilityChildren)] ? [el accessibilityChildren] : nil;
+    if (!kids.count && isView) kids = [el subviews];
+    for (id k in kids) OVDumpAX(k, depth + 1, seen);
+}
+
+/// -OVA11yDump YES: role / label / value of every accessible element of the page that is shown.
+- (void)dumpAccessibility {
+    fprintf(stderr, "A11Y page=%s\n", self.content.currentId.UTF8String);
+    OVDumpAX(self.content.current.view, 0, [NSMutableSet set]);
+    fflush(stderr);
+}
+
+static void OVWriteSnapshot(NSView *v, NSString *file) {
+    [v displayIfNeeded];
+    NSBitmapImageRep *rep = [v bitmapImageRepForCachingDisplayInRect:v.bounds];
+    [v cacheDisplayInRect:v.bounds toBitmapImageRep:rep];
+    [[rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:file atomically:YES];
+}
+
 - (void)snapshotPages:(NSArray *)pages into:(NSString *)dir index:(NSUInteger)i {
     NSTimeInterval delay = i == 0 ? 6 : 1.5;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        if (i > 0) {
-            NSView *v = self.window.contentView;
-            NSBitmapImageRep *rep = [v bitmapImageRepForCachingDisplayInRect:v.bounds];
-            [v cacheDisplayInRect:v.bounds toBitmapImageRep:rep];
-            NSString *file = [dir stringByAppendingPathComponent:[NSString stringWithFormat:@"%@.png", pages[i - 1]]];
-            [[rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:file atomically:YES];
-            // A page taller than the window also gets <page>-2.png, <page>-3.png … (scrolled one screen at a time).
-            NSScrollView *sv = nil;
-            NSMutableArray<NSView *> *todo = [NSMutableArray arrayWithObject:v];
-            while (todo.count && !sv) {
-                NSView *c = todo.firstObject;
-                [todo removeObjectAtIndex:0];
-                if ([c isKindOfClass:NSScrollView.class] && NSHeight(((NSScrollView *)c).documentView.frame) > NSHeight(c.bounds) + 4) sv = (NSScrollView *)c;
-                [todo addObjectsFromArray:c.subviews];
-            }
-            if (sv) {
-                CGFloat page = NSHeight(sv.contentView.bounds) - 40, max = NSHeight(sv.documentView.frame) - NSHeight(sv.contentView.bounds);
-                for (int n = 2; n <= 8 && page > 0; n++) {
-                    CGFloat y = MIN((n - 1) * page, max);
-                    [sv.contentView scrollToPoint:NSMakePoint(0, y)];
-                    [sv reflectScrolledClipView:sv.contentView];
-                    [v displayIfNeeded];
-                    NSBitmapImageRep *r2 = [v bitmapImageRepForCachingDisplayInRect:v.bounds];
-                    [v cacheDisplayInRect:v.bounds toBitmapImageRep:r2];
-                    [[r2 representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
-                     writeToFile:[dir stringByAppendingPathComponent:[NSString stringWithFormat:@"%@-%d.png", pages[i - 1], n]] atomically:YES];
-                    if (y >= max) break;
-                }
-                [sv.contentView scrollToPoint:NSZeroPoint];
-            }
+        void (^next)(void) = ^{
+            if (i >= pages.count) { [NSApp terminate:nil]; return; }
+            [self show:pages[i]];
+            [self snapshotPages:pages into:dir index:i + 1];
+        };
+        if (i == 0) { next(); return; }
+        NSString *page = pages[i - 1];
+        NSView *v = self.window.contentView;
+        OVWriteSnapshot(v, [dir stringByAppendingPathComponent:[NSString stringWithFormat:@"%@.png", page]]);
+        // A page taller than the window also gets <page>-2.png, <page>-3.png … (scrolled one screen at a time).
+        NSScrollView *sv = nil;
+        NSMutableArray<NSView *> *todo = [NSMutableArray arrayWithObject:v];
+        while (todo.count && !sv) {
+            NSView *c = todo.firstObject;
+            [todo removeObjectAtIndex:0];
+            if ([c isKindOfClass:NSScrollView.class] && NSHeight(((NSScrollView *)c).documentView.frame) > NSHeight(c.bounds) + 4) sv = (NSScrollView *)c;
+            [todo addObjectsFromArray:c.subviews];
         }
-        if (i >= pages.count) { [NSApp terminate:nil]; return; }
-        [self show:pages[i]];
-        [self snapshotPages:pages into:dir index:i + 1];
+        if (sv) {
+            CGFloat step = NSHeight(sv.contentView.bounds) - 40, max = NSHeight(sv.documentView.frame) - NSHeight(sv.contentView.bounds);
+            for (int n = 2; n <= 8 && step > 0; n++) {
+                CGFloat y = MIN((n - 1) * step, max);
+                [sv.contentView scrollToPoint:NSMakePoint(0, y)];
+                [sv reflectScrolledClipView:sv.contentView];
+                OVWriteSnapshot(v, [dir stringByAppendingPathComponent:[NSString stringWithFormat:@"%@-%d.png", page, n]]);
+                if (y >= max) break;
+            }
+            [sv.contentView scrollToPoint:NSZeroPoint];
+            [sv reflectScrolledClipView:sv.contentView];
+        }
+        if ([NSUserDefaults.standardUserDefaults boolForKey:@"OVA11yDump"]) [self dumpAccessibility];
+        // OV_SNAPSHOT_FLIP: switch the palette on the fly, give the redraw 0.6 s, shoot <page>-flip.png, switch back.
+        NSString *flip = NSProcessInfo.processInfo.environment[@"OV_SNAPSHOT_FLIP"];
+        if (flip.length && ![flip isEqualToString:OVTheme.paletteId]) {
+            NSString *orig = OVTheme.paletteId;
+            [OVTheme setPaletteId:flip];
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                OVWriteSnapshot(v, [dir stringByAppendingPathComponent:[NSString stringWithFormat:@"%@-flip.png", page]]);
+                [OVTheme setPaletteId:orig];
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), next);
+            });
+            return;
+        }
+        next();
     });
 }
 

@@ -20,13 +20,16 @@ NSView *OVStepCard(NSInteger step, NSString *_Nullable symbol, NSString *title, 
 @interface OVDisclosure : NSView
 + (instancetype)disclosureWithTitle:(NSString *)t subtitle:(nullable NSString *)s symbol:(nullable NSString *)sym content:(NSView *)c;
 @property (nonatomic) BOOL expanded;
+@property (nonatomic, copy, nullable) NSString *subtitle;   // muted line under the title; can change while the page is shown
 - (void)setExpanded:(BOOL)expanded animated:(BOOL)animated;
 @end
 
 /// Segmented switch: radio group of radio buttons; ←/→ change the selection and send the action.
 @interface OVSegmented : NSControl
-+ (instancetype)segmentedWithItems:(NSArray<NSArray<NSString *> *> *)items;   // @[@[title, symbolOrEmpty]]
-@property (nonatomic) NSInteger selectedIndex;
+/// @[@[title, symbolOrEmpty]] or @[@[title, symbol, label]]. The optional 3rd element is the segment's accessibilityLabel and toolTip
+/// (for icon-only segments: pass an empty title).
++ (instancetype)segmentedWithItems:(NSArray<NSArray<NSString *> *> *)items;
+@property (nonatomic) NSInteger selectedIndex;   // -1 = nothing selected
 @end
 
 /// Slider that uses OVSliderCell.
@@ -39,7 +42,7 @@ NSView *OVStepCard(NSInteger step, NSString *_Nullable symbol, NSString *title, 
 /// Flat pill button: CTA fill (ghost = transparent with a 1px border). OVPrimaryButton and OVGhostButton build on it.
 NSButton *OVPillButtonMake(NSString *title, NSString *_Nullable symbol, id _Nullable target, SEL _Nullable action, BOOL ghost);
 NSButton *OVGhostButton(NSString *title, NSString *_Nullable symbol, id _Nullable target, SEL _Nullable action);
-NSView *OVBadge(NSString *text, OVRole tone);   // OVRoleMuted | OVRoleOK | OVRoleWarn | OVRoleErr
+NSView *OVBadge(NSString *text, OVRole tone);   // OVRoleMuted | OVRoleAccent | OVRoleOK | OVRoleWarn | OVRoleErr
 NSView *OVCompactBadge(NSString *text, OVRole tone);  // smaller OVBadge for dense rows
 NSView *OVProBadgeCompact(void);                // same, smaller: sidebar rows
 NSView *OVProBadge(void);                       // "16 GB", warn tone, tooltip says why
@@ -56,5 +59,37 @@ NSView *OVEmptyState(NSString *symbol, NSString *title, NSString *_Nullable text
 /// Round 32px play button; set `.image` to swap the glyph (e.g. pause.fill).
 NSButton *OVPlayButton(id _Nullable target, SEL _Nullable action);
 NSScrollView *OVLogView(NSTextView *_Nullable *_Nullable outText);
+
+#pragma mark - Page-level helpers
+
+/// `role` with `alpha` (multiplied into the palette color's own alpha); stays dynamic, resolves at draw time.
+NSColor *OVColorAlpha(OVRole role, CGFloat alpha);
+/// Walks every window: redraws, re-applies text/tint colors and scroll backgrounds. Runs on OVThemeDidChangeNotification (see +load of OVBoxView).
+void OVRepaintAll(void);
+
+/// Page title (28 bold, tracking -0.025em), optional muted 14 pt subtitle, optional accessory (button/badge) on the right; 4 pt below.
+NSView *OVPageHeader(NSString *title, NSString *_Nullable subtitle, NSView *_Nullable accessory);
+/// The standard page: OVVStack spacing 16, insets (24, 28, 28, 28), every view fills the width, inside OVScrollPage.
+NSScrollView *OVPageScroll(NSArray<NSView *> *views);
+/// Field label (14 semibold), the control (fills the width unless it is a button/switch/segmented), muted 13 pt hint below.
+NSView *OVFieldBlock(NSString *label, NSString *_Nullable hint, NSView *control);
+/// A checkbox (or radio) with its muted 13 pt hint indented by 24 below it.
+NSView *OVCheckRow(NSButton *check, NSString *_Nullable hint);
+/// Equal-width columns, each at least 260 pt; when the width cannot fit them they stack vertically. Top-aligned.
+NSView *OVColumns(NSArray<NSView *> *cols, CGFloat gap);
+/// Round radio button drawn by hand: put several in one superview with the same action to make a group.
+NSButton *OVRadioButton(NSString *title, id _Nullable target, SEL _Nullable action);
+/// Wraps NSScrollView.scrollableTextView in a field-colored box (1px border, radius 10, OVRoleFocus border while the text view has focus).
+NSView *OVTextArea(NSScrollView *textScroll, CGFloat minHeight);
+
+/// 36 x 20 switch: on = OVRoleCTA track with an OVRoleCTAText knob. Space/Return toggle it and send the action.
+@interface OVSwitch : NSControl
+@property (nonatomic) BOOL on;
+@end
+
+/// Table row: selection is an OVRoleAccentSoft plate (radius 8, inset 4), hover is an OVRoleField plate; no system blue.
+@interface OVTableRowView : NSTableRowView
+@property (nonatomic) BOOL hovered;   // follows the mouse; settable for static previews
+@end
 
 NS_ASSUME_NONNULL_END

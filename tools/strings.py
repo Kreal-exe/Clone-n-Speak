@@ -65,6 +65,10 @@ def merge():
 
 def check():
     table = load(TABLE) if TABLE.exists() else {}
+    # fragments count as translations before `merge` has copied them into the table
+    for f in sorted((RU / "fragments").glob("*.strings")):
+        for k, v in load(f).items():
+            table.setdefault(k, v)
     keys = source_keys()
     missing = sorted(k for k in keys if k not in table)
     bad = sorted(k for k in keys if k in table and sorted(SPEC_RE.findall(k)) != sorted(SPEC_RE.findall(table[k])))

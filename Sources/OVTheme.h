@@ -16,4 +16,6 @@ NSColor *OVColor(OVRole role);
 + (NSArray<NSDictionary *> *)palettes;      // @[@{@"id", @"title"}]
 + (NSString *)paletteId;                    // NSUserDefaults "OVPalette", default "applio"
 + (void)setPaletteId:(NSString *)pid;       // saves and posts OVThemeDidChangeNotification
+/// @[background, surface, accent, cta] of any palette in the light or dark variant: plain sRGB colors, not dynamic. Empty for an unknown id.
++ (NSArray<NSColor *> *)swatchesForPalette:(NSString *)pid dark:(BOOL)dark;
 @end

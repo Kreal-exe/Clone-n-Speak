@@ -58,6 +58,17 @@ NSColor *OVColor(OVRole role) {
     return out;
 }
 
++ (NSArray<NSColor *> *)swatchesForPalette:(NSString *)pid dark:(BOOL)dark {
+    for (NSDictionary *p in AllPalettes()) {
+        if (![p[@"id"] isEqualToString:pid]) continue;
+        NSDictionary *v = p[dark ? @"dark" : @"light"];
+        NSMutableArray *out = [NSMutableArray array];
+        for (NSString *k in @[@"background", @"surface", @"accent", @"cta"]) [out addObject:v[k] ? ColorFromHex(v[k]) : NSColor.magentaColor];
+        return out;
+    }
+    return @[];
+}
+
 + (NSString *)paletteId {
     return [NSUserDefaults.standardUserDefaults stringForKey:kPaletteKey] ?: kDefaultPalette;
 }

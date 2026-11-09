@@ -50,6 +50,10 @@ static void Center(NSView *child, NSView *parent) {
     if ((self = [super initWithFrame:f])) { _borderWidth = 1; self.wantsLayer = YES; }
     return self;
 }
++ (void)load {
+    [NSNotificationCenter.defaultCenter addObserverForName:OVThemeDidChangeNotification object:nil queue:NSOperationQueue.mainQueue
+                                                usingBlock:^(NSNotification *n) { OVRepaintAll(); }];
+}
 - (BOOL)wantsUpdateLayer { return YES; }
 - (void)updateLayer {
     CALayer *l = self.layer;
@@ -174,6 +178,7 @@ NSView *OVStepCard(NSInteger step, NSString *symbol, NSString *title, NSString *
 @property NSLayoutConstraint *heightC, *bottomPin;
 @property NSImageView *chevron;
 @property (copy) NSString *titleText;
+@property NSTextField *subtitleLabel;
 @end
 
 @implementation OVDisclosureHeader
@@ -211,7 +216,9 @@ NSView *OVStepCard(NSInteger step, NSString *symbol, NSString *title, NSString *
     NSMutableArray *row = [NSMutableArray arrayWithObject:d.chevron];
     if (sym.length) [row addObject:OVSymbol(sym, 15, C(OVRoleText))];
     NSTextField *title = OVLabel(t, 14, NSFontWeightSemibold, C(OVRoleText));
-    NSArray *texts = s.length ? @[title, OVLabel(s, 12, NSFontWeightRegular, C(OVRoleMuted))] : @[title];
+    d.subtitleLabel = OVLabel(s ?: @"", 12, NSFontWeightRegular, C(OVRoleMuted));
+    d.subtitleLabel.hidden = !s.length;
+    NSArray *texts = @[title, d.subtitleLabel];
     [row addObject:OVVStack(texts, 1)];
     [row addObject:OVSpacer()];
     NSStackView *line = OVHStack(row, 8);
@@ -246,6 +253,12 @@ NSView *OVStepCard(NSInteger step, NSString *symbol, NSString *title, NSString *
         d.heightC,
     ]];
     return d;
+}
+- (NSString *)subtitle { return self.subtitleLabel.stringValue.length ? self.subtitleLabel.stringValue : nil; }
+- (void)setSubtitle:(NSString *)s {
+    self.subtitleLabel.stringValue = s ?: @"";
+    self.subtitleLabel.hidden = !s.length;
+    self.header.accessibilityHelp = s;
 }
 - (void)toggle:(id)sender { [self setExpanded:!_expanded animated:YES]; }
 - (BOOL)expanded { return _expanded; }
@@ -296,7 +309,7 @@ NSView *OVStepCard(NSInteger step, NSString *symbol, NSString *title, NSString *
 @end
 
 @interface OVSegmented ()
-@property NSArray<NSString *> *titles, *symbols;
+@property NSArray<NSString *> *titles, *symbols, *labels;
 @property NSArray<OVSegmentA11y *> *segA11y;   // cached: VoiceOver keeps identity and focus
 @end
 
@@ -314,11 +327,18 @@ static const CGFloat kSegPad = 4, kSegH = 28;
 @implementation OVSegmented
 + (instancetype)segmentedWithItems:(NSArray<NSArray<NSString *> *> *)items {
     OVSegmented *s = [[OVSegmented alloc] initWithFrame:NSZeroRect];
-    NSMutableArray *t = [NSMutableArray array], *y = [NSMutableArray array];
-    for (NSArray *it in items) { [t addObject:it[0]]; [y addObject:it.count > 1 ? it[1] : @""]; }
+    NSMutableArray *t = [NSMutableArray array], *y = [NSMutableArray array], *l = [NSMutableArray array];
+    for (NSArray *it in items) {
+        [t addObject:it[0]];
+        [y addObject:it.count > 1 ? it[1] : @""];
+        [l addObject:it.count > 2 && [it[2] length] ? it[2] : it[0]];
+    }
     s.titles = t;
     s.symbols = y;
+    s.labels = l;
     s.selectedIndex = 0;
+    for (NSUInteger i = 0; i < items.count; i++)
+        if ([items[i] count] > 2 && [items[i][2] length]) [s addToolTipRect:[s rectOfSegment:i] owner:s userData:(void *)(uintptr_t)i];
     [s setContentHuggingPriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
     return s;
 }
@@ -326,8 +346,13 @@ static const CGFloat kSegPad = 4, kSegH = 28;
 - (BOOL)acceptsFirstResponder { return self.enabled; }
 - (NSFont *)segFont { return [NSFont systemFontOfSize:13 weight:NSFontWeightMedium]; }
 - (CGFloat)widthOfSegment:(NSInteger)i {
+    if (![self.titles[i] length] && [self.symbols[i] length]) return 40;   // icon only
     CGFloat w = ceil([self.titles[i] sizeWithAttributes:@{NSFontAttributeName: self.segFont}].width) + 28;
     return w + ([self.symbols[i] length] ? 20 : 0);
+}
+- (NSString *)view:(NSView *)view stringForToolTip:(NSToolTipTag)tag point:(NSPoint)point userData:(void *)data {
+    NSUInteger i = (NSUInteger)(uintptr_t)data;
+    return i < self.labels.count ? self.labels[i] : nil;
 }
 - (NSRect)rectOfSegment:(NSInteger)i {
     CGFloat x = kSegPad;
@@ -340,7 +365,7 @@ static const CGFloat kSegPad = 4, kSegH = 28;
     return NSMakeSize(NSMaxX(last) + kSegPad, kSegH + 2 * kSegPad);
 }
 - (void)setSelectedIndex:(NSInteger)i {
-    if (i < 0 || i >= (NSInteger)self.titles.count || i == _selectedIndex) return;
+    if (i < -1 || i >= (NSInteger)self.titles.count || i == _selectedIndex) return;
     _selectedIndex = i;
     self.needsDisplay = YES;
     for (id c in self.segA11y) NSAccessibilityPostNotification(c, NSAccessibilityValueChangedNotification);
@@ -364,7 +389,8 @@ static const CGFloat kSegPad = 4, kSegH = 28;
         NSDictionary *a = @{NSFontAttributeName: self.segFont, NSForegroundColorAttributeName: fg};
         NSSize ts = [self.titles[i] sizeWithAttributes:a];
         NSImage *g = [self.symbols[i] length] ? Tinted(Glyph(self.symbols[i], 13, NSFontWeightMedium), fg) : nil;
-        CGFloat iw = g ? g.size.width + 6 : 0;
+        BOOL iconOnly = g && ![self.titles[i] length];
+        CGFloat iw = g ? g.size.width + (iconOnly ? 0 : 6) : 0;
         CGFloat x = NSMinX(r) + round((NSWidth(r) - ts.width - iw) / 2);
         if (g) [g drawInRect:NSMakeRect(x, NSMidY(r) - g.size.height / 2, g.size.width, g.size.height)
                     fromRect:NSZeroRect operation:NSCompositingOperationSourceOver fraction:1 respectFlipped:YES hints:nil];
@@ -394,14 +420,14 @@ static const CGFloat kSegPad = 4, kSegH = 28;
 - (BOOL)isAccessibilityElement { return YES; }
 - (NSAccessibilityRole)accessibilityRole { return NSAccessibilityRadioGroupRole; }
 - (id)accessibilityValue {
-    return (self.selectedIndex >= 0 && self.selectedIndex < (NSInteger)self.titles.count) ? self.titles[self.selectedIndex] : nil;
+    return (self.selectedIndex >= 0 && self.selectedIndex < (NSInteger)self.titles.count) ? self.labels[self.selectedIndex] : nil;
 }
 - (NSArray *)accessibilityChildren {
     if (self.segA11y.count != self.titles.count) {
         NSMutableArray *out = [NSMutableArray array];
         for (NSInteger i = 0; i < (NSInteger)self.titles.count; i++) {
             OVSegmentA11y *e = [OVSegmentA11y accessibilityElementWithRole:NSAccessibilityRadioButtonRole
-                                                                     frame:NSZeroRect label:self.titles[i] parent:self];
+                                                                     frame:NSZeroRect label:self.labels[i] parent:self];
             e.owner = self;
             e.index = i;
             [out addObject:e];
@@ -466,8 +492,8 @@ static NSView *MakeBadge(NSString *text, OVRole tone, CGFloat font, CGFloat vpad
     BOOL muted = tone == OVRoleMuted;
     NSColor *tc = C(tone);
     NSTextField *l = OVLabel(text, font, NSFontWeightMedium, tc);
-    OVBoxView *b = [OVBoxView boxWithFill:muted ? nil : [tc colorWithAlphaComponent:0.12]
-                                   border:muted ? C(OVRoleBorder) : [tc colorWithAlphaComponent:0.45] radius:radius];
+    OVBoxView *b = [OVBoxView boxWithFill:muted ? nil : OVColorAlpha(tone, 0.12)
+                                   border:muted ? C(OVRoleBorder) : OVColorAlpha(tone, 0.45) radius:radius];
     [b addSubview:l];
     OVPin(l, b, NSEdgeInsetsMake(vpad, hpad, vpad, hpad));
     [b setContentHuggingPriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
@@ -678,3 +704,444 @@ NSScrollView *OVLogView(NSTextView **outText) {
     if (outText) *outText = tv;
     return sv;
 }
+
+#pragma mark - Colors and repaint
+
+NSColor *OVColorAlpha(OVRole role, CGFloat alpha) {
+    return [NSColor colorWithName:nil dynamicProvider:^NSColor *(NSAppearance *a) {
+        __block NSColor *out = NSColor.magentaColor;
+        [a performAsCurrentDrawingAppearance:^{
+            NSColor *c = [OVColor(role) colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+            if (c) out = [c colorWithAlphaComponent:c.alphaComponent * alpha];
+        }];
+        return out;
+    }];
+}
+
+static void RepaintView(NSView *v) {
+    if ([v isKindOfClass:NSScrollView.class]) {
+        NSScrollView *sv = (NSScrollView *)v;
+        if (sv.drawsBackground && sv.backgroundColor) sv.backgroundColor = sv.backgroundColor;
+    }
+    if ([v isKindOfClass:NSTextField.class]) {
+        NSTextField *t = (NSTextField *)v;
+        if (t.textColor) t.textColor = t.textColor;
+    }
+    if ([v isKindOfClass:NSImageView.class]) {
+        NSImageView *iv = (NSImageView *)v;
+        if (iv.contentTintColor) iv.contentTintColor = iv.contentTintColor;
+    }
+    if ([v isKindOfClass:NSButton.class]) {
+        NSButton *b = (NSButton *)v;
+        if (b.contentTintColor) b.contentTintColor = b.contentTintColor;
+    }
+    if ([v isKindOfClass:NSTextView.class]) {
+        NSTextView *tv = (NSTextView *)v;
+        if (tv.textColor && !tv.isEditable) tv.textColor = tv.textColor;
+    }
+    v.needsDisplay = YES;
+    [v.layer setNeedsDisplay];
+    for (NSView *sub in v.subviews) RepaintView(sub);
+}
+
+void OVRepaintAll(void) {
+    for (NSWindow *w in NSApp.windows) {
+        if (w.contentView) RepaintView(w.contentView);
+        [w invalidateShadow];
+    }
+}
+
+#pragma mark - Page header, scroll, field block, columns
+
+NSView *OVPageHeader(NSString *title, NSString *subtitle, NSView *accessory) {
+    NSTextField *t = OVTitle(title);
+    NSMutableArray *texts = [NSMutableArray arrayWithObject:t];
+    if (subtitle.length) {
+        NSTextField *s = OVLabel(subtitle, 14, NSFontWeightRegular, C(OVRoleMuted));
+        [texts addObject:s];
+    }
+    NSStackView *left = OVVStack(texts, 4);
+    NSMutableArray *row = [NSMutableArray arrayWithObjects:left, OVSpacer(), nil];
+    if (accessory) [row addObject:accessory];
+    NSStackView *h = OVHStack(row, 12);
+    h.alignment = NSLayoutAttributeCenterY;
+    h.edgeInsets = NSEdgeInsetsMake(0, 0, 4, 0);
+    t.accessibilityRole = NSAccessibilityStaticTextRole;
+    return h;
+}
+
+NSScrollView *OVPageScroll(NSArray<NSView *> *views) {
+    NSStackView *page = OVVStack(views, 16);
+    page.edgeInsets = NSEdgeInsetsMake(24, 28, 28, 28);
+    OVFillWidth(views, page);
+    return OVScrollPage(page);
+}
+
+NSView *OVFieldBlock(NSString *label, NSString *hint, NSView *control) {
+    NSTextField *l = OVLabel(label, 14, NSFontWeightSemibold, C(OVRoleText));
+    NSMutableArray *rows = [NSMutableArray arrayWithObjects:l, control, nil];
+    NSTextField *h = hint.length ? OVWrapLabel(hint, 13, C(OVRoleMuted)) : nil;
+    if (h) [rows addObject:h];
+    NSStackView *s = OVVStack(rows, 8);
+    if (h) [s setCustomSpacing:6 afterView:control];
+    BOOL natural = [control isKindOfClass:NSButton.class] || [control isKindOfClass:OVSwitch.class] ||
+                   [control isKindOfClass:OVSegmented.class] || [control isKindOfClass:NSImageView.class];
+    NSMutableArray *fill = [NSMutableArray arrayWithObject:l];
+    if (!natural) [fill addObject:control];
+    if (h) [fill addObject:h];
+    OVFillWidth(fill, s);
+    return s;
+}
+
+NSView *OVCheckRow(NSButton *check, NSString *hint) {
+    if (!hint.length) return check;
+    NSTextField *h = OVWrapLabel(hint, 13, C(OVRoleMuted));
+    NSView *indent = [NSView new];
+    [indent addSubview:h];
+    OVPin(h, indent, NSEdgeInsetsMake(0, 24, 0, 0));
+    NSStackView *s = OVVStack(@[check, indent], 4);
+    OVFillWidth(@[indent], s);
+    return s;
+}
+
+static const CGFloat kColumnMin = 260;
+
+@interface OVColumnsView : NSView
+@property NSArray<NSView *> *cols;
+@property CGFloat gap;
+@property NSArray<NSLayoutConstraint *> *rowC, *stackC;
+@property BOOL stacked;
+@end
+@implementation OVColumnsView
+- (void)build {
+    NSMutableArray *row = [NSMutableArray array], *stack = [NSMutableArray array];
+    NSView *prev = nil;
+    for (NSView *c in self.cols) {
+        c.translatesAutoresizingMaskIntoConstraints = NO;
+        [self addSubview:c];
+        [row addObject:[c.topAnchor constraintEqualToAnchor:self.topAnchor]];
+        [row addObject:[self.bottomAnchor constraintGreaterThanOrEqualToAnchor:c.bottomAnchor]];
+        [stack addObject:[c.leadingAnchor constraintEqualToAnchor:self.leadingAnchor]];
+        [stack addObject:[c.trailingAnchor constraintEqualToAnchor:self.trailingAnchor]];
+        if (prev) {
+            [row addObject:[c.leadingAnchor constraintEqualToAnchor:prev.trailingAnchor constant:self.gap]];
+            [row addObject:[c.widthAnchor constraintEqualToAnchor:prev.widthAnchor]];
+            [stack addObject:[c.topAnchor constraintEqualToAnchor:prev.bottomAnchor constant:self.gap]];
+        } else {
+            [row addObject:[c.leadingAnchor constraintEqualToAnchor:self.leadingAnchor]];
+            [stack addObject:[c.topAnchor constraintEqualToAnchor:self.topAnchor]];
+        }
+        prev = c;
+    }
+    [row addObject:[prev.trailingAnchor constraintEqualToAnchor:self.trailingAnchor]];
+    [stack addObject:[self.bottomAnchor constraintEqualToAnchor:prev.bottomAnchor]];
+    // the tallest column sets the height of the row
+    NSLayoutConstraint *tall = [self.bottomAnchor constraintEqualToAnchor:self.cols.firstObject.bottomAnchor];
+    tall.priority = NSLayoutPriorityDefaultLow;
+    [row addObject:tall];
+    self.rowC = row;
+    self.stackC = stack;
+    [NSLayoutConstraint activateConstraints:row];
+}
+- (void)layout {
+    [super layout];
+    CGFloat need = kColumnMin * self.cols.count + self.gap * (self.cols.count - 1);
+    BOOL stack = NSWidth(self.bounds) > 0 && NSWidth(self.bounds) < need;
+    if (stack == self.stacked) return;
+    self.stacked = stack;
+    [NSLayoutConstraint deactivateConstraints:stack ? self.rowC : self.stackC];
+    [NSLayoutConstraint activateConstraints:stack ? self.stackC : self.rowC];
+    self.needsLayout = YES;
+}
+@end
+
+NSView *OVColumns(NSArray<NSView *> *cols, CGFloat gap) {
+    OVColumnsView *v = [[OVColumnsView alloc] initWithFrame:NSZeroRect];
+    v.cols = cols;
+    v.gap = gap;
+    [v build];
+    return v;
+}
+
+#pragma mark - Popup
+
+@interface OVPopupCell : NSPopUpButtonCell
+@end
+@implementation OVPopupCell
+- (void)drawWithFrame:(NSRect)f inView:(NSView *)v {
+    BOOL focus = v.window.isKeyWindow && v.window.firstResponder == v;
+    NSBezierPath *p = [NSBezierPath bezierPathWithRoundedRect:NSInsetRect(f, 0.5, 0.5) xRadius:10 yRadius:10];
+    [NSGraphicsContext saveGraphicsState];
+    if (!self.enabled) CGContextSetAlpha(NSGraphicsContext.currentContext.CGContext, 0.6);
+    [C(OVRoleField) setFill];
+    [p fill];
+    if (self.isHighlighted) { [OVColorAlpha(OVRoleText, 0.06) setFill]; [p fill]; }
+    [(focus ? C(OVRoleFocus) : C(OVRoleBorder)) setStroke];
+    p.lineWidth = focus ? 2 : 1;
+    [p stroke];
+    NSImage *chev = Tinted(Glyph(@"chevron.down", 11, NSFontWeightSemibold), C(OVRoleMuted));
+    CGFloat chevW = chev.size.width;
+    if (chev) [chev drawInRect:NSMakeRect(NSMaxX(f) - 14 - chevW, round(NSMidY(f) - chev.size.height / 2), chevW, chev.size.height)
+                      fromRect:NSZeroRect operation:NSCompositingOperationSourceOver fraction:1 respectFlipped:YES hints:nil];
+    NSMutableParagraphStyle *ps = [NSMutableParagraphStyle new];
+    ps.lineBreakMode = NSLineBreakByTruncatingTail;
+    NSDictionary *a = @{NSFontAttributeName: [NSFont systemFontOfSize:13], NSForegroundColorAttributeName: C(OVRoleText), NSParagraphStyleAttributeName: ps};
+    NSString *t = self.selectedItem.title ?: @"";
+    CGFloat th = ceil([t sizeWithAttributes:a].height);
+    [t drawInRect:NSMakeRect(NSMinX(f) + 12, round(NSMidY(f) - th / 2), MAX(0, NSWidth(f) - 12 - 14 - chevW - 8 - 4), th) withAttributes:a];
+    [NSGraphicsContext restoreGraphicsState];
+}
+@end
+
+@implementation OVPopup
++ (Class)cellClass { return OVPopupCell.class; }
++ (instancetype)popup {
+    OVPopup *p = [[OVPopup alloc] initWithFrame:NSZeroRect pullsDown:NO];
+    p.bordered = NO;
+    p.focusRingType = NSFocusRingTypeNone;
+    p.font = [NSFont systemFontOfSize:13];
+    [p setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+    return p;
+}
+- (NSSize)intrinsicContentSize {
+    CGFloat w = 120;
+    NSDictionary *a = @{NSFontAttributeName: [NSFont systemFontOfSize:13]};
+    for (NSMenuItem *it in self.itemArray) w = MAX(w, ceil([it.title sizeWithAttributes:a].width) + 12 + 14 + 11 + 8);
+    return NSMakeSize(w, 36);
+}
+- (void)setEnabled:(BOOL)e { [super setEnabled:e]; self.needsDisplay = YES; }
+- (BOOL)acceptsFirstResponder { return self.enabled; }
+- (BOOL)becomeFirstResponder { self.needsDisplay = YES; return [super becomeFirstResponder]; }
+- (BOOL)resignFirstResponder { self.needsDisplay = YES; return [super resignFirstResponder]; }
+- (void)selectItemAtIndex:(NSInteger)i { [super selectItemAtIndex:i]; self.needsDisplay = YES; }
+- (void)viewDidMoveToWindow {
+    [super viewDidMoveToWindow];
+    [NSNotificationCenter.defaultCenter removeObserver:self name:NSWindowDidBecomeKeyNotification object:nil];
+    [NSNotificationCenter.defaultCenter removeObserver:self name:NSWindowDidResignKeyNotification object:nil];
+    if (!self.window) return;
+    for (NSNotificationName n in @[NSWindowDidBecomeKeyNotification, NSWindowDidResignKeyNotification])
+        [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(redraw:) name:n object:self.window];
+}
+- (void)redraw:(NSNotification *)n { self.needsDisplay = YES; }
+- (void)dealloc { [NSNotificationCenter.defaultCenter removeObserver:self]; }
+@end
+
+#pragma mark - Switch
+
+@implementation OVSwitch
+- (instancetype)initWithFrame:(NSRect)f {
+    if ((self = [super initWithFrame:NSMakeRect(0, 0, 36, 20)])) {
+        self.translatesAutoresizingMaskIntoConstraints = NO;
+        [self.widthAnchor constraintEqualToConstant:36].active = YES;
+        [self.heightAnchor constraintEqualToConstant:20].active = YES;
+        [self setContentHuggingPriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
+        [self setContentCompressionResistancePriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
+    }
+    return self;
+}
+- (NSSize)intrinsicContentSize { return NSMakeSize(36, 20); }
+- (void)setOn:(BOOL)on {
+    if (on == _on) return;
+    _on = on;
+    self.needsDisplay = YES;
+    NSAccessibilityPostNotification(self, NSAccessibilityValueChangedNotification);
+}
+- (void)setEnabled:(BOOL)e { [super setEnabled:e]; self.needsDisplay = YES; }
+- (BOOL)acceptsFirstResponder { return self.enabled; }
+- (BOOL)becomeFirstResponder { self.needsDisplay = YES; return [super becomeFirstResponder]; }
+- (BOOL)resignFirstResponder { self.needsDisplay = YES; return [super resignFirstResponder]; }
+- (void)flip {
+    if (!self.enabled) return;
+    self.on = !self.on;
+    [self sendAction:self.action to:self.target];
+}
+- (void)mouseDown:(NSEvent *)e {
+    if (!self.enabled) return;
+    [self.window makeFirstResponder:self];
+    [self flip];
+}
+- (void)keyDown:(NSEvent *)e {
+    NSString *c = e.charactersIgnoringModifiers;
+    if ([c isEqualToString:@" "] || [c isEqualToString:@"\r"]) [self flip]; else [super keyDown:e];
+}
+- (NSRect)focusRingMaskBounds { return self.bounds; }
+- (void)drawFocusRingMask { [[NSBezierPath bezierPathWithRoundedRect:self.bounds xRadius:10 yRadius:10] fill]; }
+- (void)drawRect:(NSRect)dirty {
+    NSRect b = self.bounds;
+    [NSGraphicsContext saveGraphicsState];
+    if (!self.enabled) CGContextSetAlpha(NSGraphicsContext.currentContext.CGContext, 0.45);
+    NSBezierPath *track = [NSBezierPath bezierPathWithRoundedRect:b xRadius:NSHeight(b) / 2 yRadius:NSHeight(b) / 2];
+    [(self.on ? C(OVRoleCTA) : C(OVRoleGhostBorder)) setFill];
+    [track fill];
+    CGFloat k = NSHeight(b) - 6;
+    NSRect knob = NSMakeRect(self.on ? NSMaxX(b) - 3 - k : NSMinX(b) + 3, NSMinY(b) + 3, k, k);
+    [(self.on ? C(OVRoleCTAText) : C(OVRoleMuted)) setFill];
+    [[NSBezierPath bezierPathWithOvalInRect:knob] fill];
+    [NSGraphicsContext restoreGraphicsState];
+}
+- (BOOL)isAccessibilityElement { return YES; }
+- (NSAccessibilityRole)accessibilityRole { return NSAccessibilityCheckBoxRole; }
+- (NSAccessibilitySubrole)accessibilitySubrole { return NSAccessibilitySwitchSubrole; }
+- (id)accessibilityValue { return @(self.on); }
+- (BOOL)accessibilityPerformPress { [self flip]; return YES; }
+@end
+
+#pragma mark - Radio
+
+@interface OVRadio : NSButton
+@end
+@implementation OVRadio
+- (instancetype)initWithFrame:(NSRect)f {
+    if ((self = [super initWithFrame:f])) {
+        [self setButtonType:NSButtonTypeRadio];
+        self.bordered = NO;
+        self.font = [NSFont systemFontOfSize:14];
+        [self setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+    }
+    return self;
+}
+- (NSSize)intrinsicContentSize {
+    return NSMakeSize(18 + (self.title.length ? 8 + ceil([self.title sizeWithAttributes:@{NSFontAttributeName: self.font}].width) : 0), 22);
+}
+- (void)setTitle:(NSString *)t { [super setTitle:t]; [self invalidateIntrinsicContentSize]; self.needsDisplay = YES; }
+- (void)setState:(NSControlStateValue)s { [super setState:s]; self.needsDisplay = YES; }
+- (void)setEnabled:(BOOL)e { [super setEnabled:e]; self.needsDisplay = YES; }
+- (BOOL)acceptsFirstResponder { return self.enabled; }
+- (BOOL)becomeFirstResponder { self.needsDisplay = YES; return [super becomeFirstResponder]; }
+- (BOOL)resignFirstResponder { self.needsDisplay = YES; return [super resignFirstResponder]; }
+- (NSRect)circleRect { return NSMakeRect(0, round((NSHeight(self.bounds) - 18) / 2), 18, 18); }
+- (NSRect)focusRingMaskBounds { return [self circleRect]; }
+- (void)drawFocusRingMask { [[NSBezierPath bezierPathWithOvalInRect:[self circleRect]] fill]; }
+- (void)keyDown:(NSEvent *)e {
+    if (e.keyCode == 36 || e.keyCode == 76) [self performClick:nil]; else [super keyDown:e];
+}
+- (void)drawRect:(NSRect)dirty {
+    BOOL on = self.state == NSControlStateValueOn;
+    NSRect c = [self circleRect];
+    [NSGraphicsContext saveGraphicsState];
+    if (!self.enabled) CGContextSetAlpha(NSGraphicsContext.currentContext.CGContext, 0.45);
+    NSBezierPath *ring = [NSBezierPath bezierPathWithOvalInRect:NSInsetRect(c, 0.5, 0.5)];
+    if (self.isHighlighted) { [OVColorAlpha(OVRoleText, 0.08) setFill]; [ring fill]; }
+    [(on ? C(OVRoleCTA) : C(OVRoleGhostBorder)) setStroke];
+    ring.lineWidth = on ? 1.5 : 1;
+    [ring stroke];
+    if (on) {
+        [C(OVRoleCTA) setFill];
+        [[NSBezierPath bezierPathWithOvalInRect:NSInsetRect(c, 5, 5)] fill];
+    }
+    if (self.title.length) {
+        NSMutableParagraphStyle *ps = [NSMutableParagraphStyle new];
+        ps.lineBreakMode = NSLineBreakByTruncatingTail;
+        NSDictionary *a = @{NSFontAttributeName: self.font, NSForegroundColorAttributeName: C(OVRoleText), NSParagraphStyleAttributeName: ps};
+        CGFloat th = ceil([self.title sizeWithAttributes:a].height);
+        [self.title drawInRect:NSMakeRect(26, round((NSHeight(self.bounds) - th) / 2), MAX(0, NSWidth(self.bounds) - 26), th) withAttributes:a];
+    }
+    [NSGraphicsContext restoreGraphicsState];
+}
+- (BOOL)isAccessibilityElement { return YES; }
+- (NSAccessibilityRole)accessibilityRole { return NSAccessibilityRadioButtonRole; }
+- (NSString *)accessibilityLabel { return super.accessibilityLabel ?: self.title; }
+- (id)accessibilityValue { return @(self.state == NSControlStateValueOn); }
+- (BOOL)accessibilityPerformPress { [self performClick:nil]; return YES; }
+@end
+
+NSButton *OVRadioButton(NSString *title, id target, SEL action) {
+    OVRadio *b = [[OVRadio alloc] initWithFrame:NSZeroRect];
+    b.title = title;
+    b.target = target;
+    b.action = action;
+    return b;
+}
+
+#pragma mark - Text area
+
+@interface OVTextAreaBox : OVBoxView
+@property (weak) NSTextView *textView;
+@property (weak) NSWindow *observedWindow;
+@property BOOL focused;
+@end
+@implementation OVTextAreaBox
+- (void)updateFocus {
+    BOOL f = NO;
+    NSResponder *r = self.window.firstResponder;
+    f = self.textView && r == self.textView && self.window.isKeyWindow;
+    if (f == self.focused) return;
+    self.focused = f;
+    self.borderColor = f ? C(OVRoleFocus) : C(OVRoleBorder);
+    self.borderWidth = f ? 2 : 1;
+}
+- (void)observeWindow {
+    if (self.observedWindow) {
+        [self.observedWindow removeObserver:self forKeyPath:@"firstResponder"];
+        [NSNotificationCenter.defaultCenter removeObserver:self name:NSWindowDidBecomeKeyNotification object:self.observedWindow];
+        [NSNotificationCenter.defaultCenter removeObserver:self name:NSWindowDidResignKeyNotification object:self.observedWindow];
+        self.observedWindow = nil;
+    }
+    if (!self.window) return;
+    self.observedWindow = self.window;
+    [self.window addObserver:self forKeyPath:@"firstResponder" options:0 context:NULL];
+    for (NSNotificationName n in @[NSWindowDidBecomeKeyNotification, NSWindowDidResignKeyNotification])
+        [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(focusChanged:) name:n object:self.window];
+    [self updateFocus];
+}
+- (void)viewDidMoveToWindow { [super viewDidMoveToWindow]; [self observeWindow]; }
+- (void)observeValueForKeyPath:(NSString *)k ofObject:(id)o change:(NSDictionary *)c context:(void *)ctx { [self updateFocus]; }
+- (void)focusChanged:(NSNotification *)n { [self updateFocus]; }
+- (void)dealloc {
+    [NSNotificationCenter.defaultCenter removeObserver:self];
+    @try { [self.observedWindow removeObserver:self forKeyPath:@"firstResponder"]; } @catch (NSException *e) {}
+}
+@end
+
+NSView *OVTextArea(NSScrollView *textScroll, CGFloat minHeight) {
+    OVTextAreaBox *box = [OVTextAreaBox boxWithFill:C(OVRoleField) border:C(OVRoleBorder) radius:10];
+    textScroll.drawsBackground = NO;
+    textScroll.borderType = NSNoBorder;
+    textScroll.hasVerticalScroller = YES;
+    textScroll.wantsLayer = YES;
+    textScroll.layer.cornerRadius = 9;
+    textScroll.layer.cornerCurve = kCACornerCurveContinuous;
+    textScroll.layer.masksToBounds = YES;
+    NSTextView *tv = [textScroll.documentView isKindOfClass:NSTextView.class] ? textScroll.documentView : nil;
+    if (tv) {
+        tv.drawsBackground = NO;
+        tv.textContainerInset = NSMakeSize(8, 10);
+        if (!tv.textColor) tv.textColor = C(OVRoleText);
+        box.textView = tv;
+        // Begin/EndEditing only cover typing; the first-responder observer in the box covers plain focus
+        for (NSNotificationName n in @[NSTextDidBeginEditingNotification, NSTextDidEndEditingNotification])
+            [NSNotificationCenter.defaultCenter addObserver:box selector:@selector(focusChanged:) name:n object:tv];
+    }
+    [box addSubview:textScroll];
+    OVPin(textScroll, box, NSEdgeInsetsMake(2, 2, 2, 2));
+    NSLayoutConstraint *h = [box.heightAnchor constraintGreaterThanOrEqualToConstant:minHeight];
+    h.active = YES;
+    return box;
+}
+
+#pragma mark - Table row
+
+@implementation OVTableRowView
+- (BOOL)isEmphasized { return NO; }
+- (void)setEmphasized:(BOOL)e {}
+- (NSBackgroundStyle)interiorBackgroundStyle { return NSBackgroundStyleNormal; }
+- (void)updateTrackingAreas {
+    [super updateTrackingAreas];
+    for (NSTrackingArea *a in self.trackingAreas) [self removeTrackingArea:a];
+    [self addTrackingArea:[[NSTrackingArea alloc] initWithRect:NSZeroRect
+        options:NSTrackingMouseEnteredAndExited | NSTrackingActiveInKeyWindow | NSTrackingInVisibleRect owner:self userInfo:nil]];
+}
+- (void)mouseEntered:(NSEvent *)e { self.hovered = YES; }
+- (void)mouseExited:(NSEvent *)e { self.hovered = NO; }
+- (void)setHovered:(BOOL)h { if (h == _hovered) return; _hovered = h; self.needsDisplay = YES; }
+- (void)drawBackgroundInRect:(NSRect)r {
+    if (!self.hovered || self.selected) return;
+    [C(OVRoleField) setFill];
+    [[NSBezierPath bezierPathWithRoundedRect:NSInsetRect(self.bounds, 4, 1) xRadius:8 yRadius:8] fill];
+}
+- (void)drawSelectionInRect:(NSRect)r {
+    [C(OVRoleAccentSoft) setFill];
+    [[NSBezierPath bezierPathWithRoundedRect:NSInsetRect(self.bounds, 4, 1) xRadius:8 yRadius:8] fill];
+}
+- (void)drawSeparatorInRect:(NSRect)r {}
+@end

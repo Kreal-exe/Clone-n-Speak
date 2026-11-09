@@ -189,15 +189,82 @@ NSButton *OVIconButton(NSString *symbol, NSString *tooltip, id target, SEL actio
     return b;
 }
 
-@interface OVDefaultsCheckbox : NSButton
-@property (copy) NSString *key;
+/// Checkbox drawn by hand: 18 pt square, GhostBorder frame, on = CTA fill with a checkmark. Space (native) and Return toggle it.
+@interface OVCheckButton : NSButton
+@property (copy, nullable) NSString *key;
 @end
-@implementation OVDefaultsCheckbox
-- (void)toggled:(id)s { [NSUserDefaults.standardUserDefaults setBool:self.state == NSControlStateValueOn forKey:self.key]; }
+@implementation OVCheckButton
+- (instancetype)initWithFrame:(NSRect)f {
+    if ((self = [super initWithFrame:f])) {
+        [self setButtonType:NSButtonTypeSwitch];
+        self.bordered = NO;
+        self.focusRingType = NSFocusRingTypeDefault;
+        self.font = [NSFont systemFontOfSize:14];
+        [self setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+    }
+    return self;
+}
+- (NSSize)intrinsicContentSize {
+    CGFloat w = 18 + (self.title.length ? 8 + ceil([self.title sizeWithAttributes:@{NSFontAttributeName: self.font}].width) : 0);
+    return NSMakeSize(w, 22);
+}
+- (void)setTitle:(NSString *)t { [super setTitle:t]; [self invalidateIntrinsicContentSize]; self.needsDisplay = YES; }
+- (void)setState:(NSControlStateValue)s { [super setState:s]; self.needsDisplay = YES; }
+- (void)setEnabled:(BOOL)e { [super setEnabled:e]; self.needsDisplay = YES; }
+- (BOOL)acceptsFirstResponder { return self.enabled; }
+- (BOOL)becomeFirstResponder { self.needsDisplay = YES; return [super becomeFirstResponder]; }
+- (BOOL)resignFirstResponder { self.needsDisplay = YES; return [super resignFirstResponder]; }
+- (NSRect)boxRect { return NSMakeRect(0, round((NSHeight(self.bounds) - 18) / 2), 18, 18); }
+- (NSRect)focusRingMaskBounds { return [self boxRect]; }
+- (void)drawFocusRingMask { [[NSBezierPath bezierPathWithRoundedRect:[self boxRect] xRadius:5 yRadius:5] fill]; }
+- (void)keyDown:(NSEvent *)e {
+    if (e.keyCode == 36 || e.keyCode == 76) [self performClick:nil]; else [super keyDown:e];
+}
+- (void)drawRect:(NSRect)dirty {
+    BOOL on = self.state == NSControlStateValueOn;
+    NSRect box = [self boxRect];
+    [NSGraphicsContext saveGraphicsState];
+    if (!self.enabled) CGContextSetAlpha(NSGraphicsContext.currentContext.CGContext, 0.45);
+    NSBezierPath *p = [NSBezierPath bezierPathWithRoundedRect:NSInsetRect(box, 0.5, 0.5) xRadius:5 yRadius:5];
+    if (on) { [OVColor(OVRoleCTA) setFill]; [p fill]; }
+    else if (self.isHighlighted) { [OVColorAlpha(OVRoleText, 0.08) setFill]; [p fill]; }
+    [(on ? OVColor(OVRoleCTA) : OVColor(OVRoleGhostBorder)) setStroke];
+    p.lineWidth = 1;
+    [p stroke];
+    if (on) {
+        NSBezierPath *tick = [NSBezierPath bezierPath];
+        CGFloat fy = self.isFlipped ? -1 : 1, y0 = self.isFlipped ? NSMaxY(box) : NSMinY(box);   // y measured from the bottom of the box
+        [tick moveToPoint:NSMakePoint(NSMinX(box) + 4.5, y0 + fy * 9.5)];
+        [tick lineToPoint:NSMakePoint(NSMinX(box) + 7.7, y0 + fy * 6.2)];
+        [tick lineToPoint:NSMakePoint(NSMinX(box) + 13.5, y0 + fy * 12.4)];
+        tick.lineWidth = 2;
+        tick.lineCapStyle = NSLineCapStyleRound;
+        tick.lineJoinStyle = NSLineJoinStyleRound;
+        [OVColor(OVRoleCTAText) setStroke];
+        [tick stroke];
+    }
+    if (self.title.length) {
+        NSMutableParagraphStyle *ps = [NSMutableParagraphStyle new];
+        ps.lineBreakMode = NSLineBreakByTruncatingTail;
+        NSDictionary *a = @{NSFontAttributeName: self.font, NSForegroundColorAttributeName: OVColor(OVRoleText), NSParagraphStyleAttributeName: ps};
+        CGFloat th = ceil([self.title sizeWithAttributes:a].height);
+        [self.title drawInRect:NSMakeRect(26, round((NSHeight(self.bounds) - th) / 2), MAX(0, NSWidth(self.bounds) - 26), th) withAttributes:a];
+    }
+    [NSGraphicsContext restoreGraphicsState];
+}
+- (BOOL)isAccessibilityElement { return YES; }
+- (NSAccessibilityRole)accessibilityRole { return NSAccessibilityCheckBoxRole; }
+- (NSString *)accessibilityLabel { return super.accessibilityLabel ?: self.title; }
+- (id)accessibilityValue { return @(self.state == NSControlStateValueOn); }
+- (BOOL)accessibilityPerformPress { [self performClick:nil]; return YES; }
+- (void)toggled:(id)s {
+    if (self.key.length) [NSUserDefaults.standardUserDefaults setBool:self.state == NSControlStateValueOn forKey:self.key];
+}
 @end
 
 NSButton *OVCheckbox(NSString *title, NSString *key) {
-    OVDefaultsCheckbox *b = [OVDefaultsCheckbox checkboxWithTitle:title target:nil action:nil];
+    OVCheckButton *b = [[OVCheckButton alloc] initWithFrame:NSZeroRect];
+    b.title = title;
     b.key = key;
     b.target = b;
     b.action = @selector(toggled:);
@@ -213,13 +280,72 @@ NSImageView *OVSymbol(NSString *name, CGFloat size, NSColor *tint) {
     return v;
 }
 
+/// Flat bar: the track is a field-coloured capsule, the fill is Text-coloured. Indeterminate draws a segment that runs back and forth
+/// (still, in the middle, under Reduce Motion).
+@interface OVFlatProgress : NSProgressIndicator
+@property BOOL running;
+@property CGFloat phase;
+@property (nonatomic, strong, nullable) NSTimer *timer;
+@end
+@implementation OVFlatProgress
+- (NSSize)intrinsicContentSize { return NSMakeSize(NSViewNoIntrinsicMetric, 6); }
+- (void)dealloc { [_timer invalidate]; }
+- (BOOL)isFlipped { return YES; }
+- (void)syncTimer {
+    BOOL still = NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion;
+    BOOL need = self.running && self.indeterminate && self.window && !still;
+    if (need && !self.timer) {
+        __weak OVFlatProgress *w = self;
+        self.timer = [NSTimer scheduledTimerWithTimeInterval:1.0 / 30 repeats:YES block:^(NSTimer *t) {
+            OVFlatProgress *s = w;
+            if (!s) { [t invalidate]; return; }
+            s.phase = fmod(s.phase + 1.0 / 60, 1);
+            s.needsDisplay = YES;
+        }];
+    } else if (!need && self.timer) {
+        [self.timer invalidate];
+        self.timer = nil;
+    }
+}
+- (void)startAnimation:(id)sender { self.running = YES; [self syncTimer]; self.needsDisplay = YES; }
+- (void)stopAnimation:(id)sender { self.running = NO; [self syncTimer]; self.needsDisplay = YES; }
+- (void)setIndeterminate:(BOOL)i { [super setIndeterminate:i]; [self syncTimer]; self.needsDisplay = YES; }
+- (void)setDoubleValue:(double)v { [super setDoubleValue:v]; self.needsDisplay = YES; }
+- (void)viewDidMoveToWindow { [super viewDidMoveToWindow]; [self syncTimer]; }
+- (void)drawRect:(NSRect)dirty {
+    NSRect b = self.bounds;
+    NSRect track = NSMakeRect(NSMinX(b), round(NSMidY(b) - 3), NSWidth(b), 6);
+    NSBezierPath *t = [NSBezierPath bezierPathWithRoundedRect:track xRadius:3 yRadius:3];
+    [OVColor(OVRoleField) setFill];
+    [t fill];
+    NSRect fill = NSZeroRect;
+    if (self.indeterminate) {
+        if (!self.running) return;
+        CGFloat w = NSWidth(track) * 0.3;
+        BOOL still = NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion;
+        CGFloat u = still ? 0.5 : (self.phase < 0.5 ? self.phase * 2 : (1 - self.phase) * 2);   // 0…1…0
+        fill = NSMakeRect(NSMinX(track) + u * (NSWidth(track) - w), NSMinY(track), w, 6);
+    } else {
+        double span = self.maxValue - self.minValue;
+        double f = span > 0 ? MIN(1, MAX(0, (self.doubleValue - self.minValue) / span)) : 0;
+        fill = NSMakeRect(NSMinX(track), NSMinY(track), NSWidth(track) * f, 6);
+    }
+    if (NSWidth(fill) <= 0) return;
+    [NSGraphicsContext saveGraphicsState];
+    [t addClip];
+    [OVColor(OVRoleText) setFill];
+    [[NSBezierPath bezierPathWithRoundedRect:fill xRadius:3 yRadius:3] fill];
+    [NSGraphicsContext restoreGraphicsState];
+}
+@end
+
 NSProgressIndicator *OVProgressBar(void) {
-    NSProgressIndicator *p = [NSProgressIndicator new];
+    OVFlatProgress *p = [[OVFlatProgress alloc] initWithFrame:NSZeroRect];
     p.style = NSProgressIndicatorStyleBar;
     p.indeterminate = NO;
     p.minValue = 0;
     p.maxValue = 1;
-    p.controlSize = NSControlSizeSmall;
+    p.displayedWhenStopped = YES;
     return p;
 }
 
@@ -312,54 +438,101 @@ NSScrollView *OVScrollPage(NSStackView *content) {
 @interface OVSliderRow ()
 @property NSSlider *slider;
 @property NSView *valuePill;
-@property NSTextField *value;
+@property NSTextField *value, *titleLabel, *hintLabel;
 @property NSString *key, *format;
 @property BOOL integer;
+@property NSArray<NSLayoutConstraint *> *fillConstraints;
 @end
 
 @implementation OVSliderRow
 + (instancetype)rowWithTitle:(NSString *)title hint:(NSString *)hint key:(NSString *)key
                          min:(double)min max:(double)max format:(NSString *)format integer:(BOOL)integer {
     OVSliderRow *r = [OVSliderRow new];
-    r.orientation = NSUserInterfaceLayoutOrientationHorizontal;
-    r.alignment = NSLayoutAttributeCenterY;
-    r.spacing = 12;
     r.key = key;
     r.format = format;
     r.integer = integer;
 
-    NSTextField *t = OVLabel(title, 13, NSFontWeightMedium, nil);
-    NSStackView *left = OVVStack(hint ? @[t, OVWrapLabel(hint, 11, nil)] : @[t], 2);
-    [left.widthAnchor constraintEqualToConstant:210].active = YES;
-
+    r.titleLabel = OVLabel(title, 14, NSFontWeightSemibold, nil);
+    r.hintLabel = hint.length ? OVWrapLabel(hint, 13, nil) : nil;
     r.slider = [OVSlider sliderWithValue:[NSUserDefaults.standardUserDefaults doubleForKey:key]
                                 minValue:min maxValue:max target:r action:@selector(moved:)];
     r.slider.continuous = YES;
-    [r.slider.widthAnchor constraintGreaterThanOrEqualToConstant:110].active = YES;
     r.slider.accessibilityLabel = title;
     r.value = OVLabel(@"", 13, NSFontWeightMedium, nil);
     r.value.font = [NSFont monospacedDigitSystemFontOfSize:13 weight:NSFontWeightMedium];
     r.value.alignment = NSTextAlignmentCenter;
+    r.value.accessibilityElement = NO;
     OVBoxView *pill = [OVBoxView boxWithFill:OVColor(OVRoleField) border:OVColor(OVRoleBorder) radius:8];
     [pill addSubview:r.value];
     OVPin(r.value, pill, NSEdgeInsetsMake(4, 8, 4, 8));
     [pill.widthAnchor constraintGreaterThanOrEqualToConstant:56].active = YES;
+    [pill setContentHuggingPriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
     r.valuePill = pill;
-    [r setViews:@[left, r.slider, pill] inGravity:NSStackViewGravityLeading];
+    [r rebuild];
     [r refresh];
     return r;
 }
+
+/// Lays the pieces out for the current `compact` value.
+- (void)rebuild {
+    [NSLayoutConstraint deactivateConstraints:self.fillConstraints ?: @[]];
+    for (NSView *v in self.arrangedSubviews) { [self removeArrangedSubview:v]; [v removeFromSuperview]; }
+    NSMutableArray *fills = [NSMutableArray array];
+    if (self.compact) {
+        self.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+        self.alignment = NSLayoutAttributeCenterY;
+        self.spacing = 12;
+        self.titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
+        [fills addObject:[self.titleLabel.widthAnchor constraintEqualToConstant:82]];
+        for (NSView *v in @[self.titleLabel, self.slider, self.valuePill]) [self addArrangedSubview:v];
+        [self.slider setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+        [fills addObject:[self.slider.widthAnchor constraintGreaterThanOrEqualToConstant:110]];
+    } else {
+        self.orientation = NSUserInterfaceLayoutOrientationVertical;
+        self.alignment = NSLayoutAttributeLeading;
+        self.spacing = 6;
+        NSStackView *top = OVHStack(@[self.titleLabel, OVSpacer(), self.valuePill], 8);
+        NSMutableArray *rows = [NSMutableArray arrayWithObjects:top, self.slider, nil];
+        if (self.hintLabel) [rows addObject:self.hintLabel];
+        for (NSView *v in rows) {
+            [self addArrangedSubview:v];
+            v.translatesAutoresizingMaskIntoConstraints = NO;
+            [fills addObject:[v.widthAnchor constraintEqualToAnchor:self.widthAnchor]];
+        }
+    }
+    self.fillConstraints = fills;
+    [NSLayoutConstraint activateConstraints:fills];
+}
+- (void)setCompact:(BOOL)c {
+    if (c == _compact) return;
+    _compact = c;
+    [self rebuild];
+}
 - (void)moved:(NSSlider *)s {
-    double v = self.integer ? round(s.doubleValue) : round(s.doubleValue * 100) / 100;
+    double v = s.doubleValue;
+    if (self.step > 0) v = round((v - s.minValue) / self.step) * self.step + s.minValue;
+    else v = self.integer ? round(v) : round(v * 100) / 100;
+    v = MIN(s.maxValue, MAX(s.minValue, v));
+    s.doubleValue = v;
     [NSUserDefaults.standardUserDefaults setDouble:v forKey:self.key];
-    self.value.stringValue = [NSString stringWithFormat:self.format, v];
+    [self showValue:v];
+    if (self.onChange) self.onChange();
+}
+- (void)showValue:(double)v {
+    NSString *t = self.valueFormatter ? self.valueFormatter(v) : [NSString stringWithFormat:self.format, v];
+    self.value.stringValue = t;
+    self.slider.accessibilityValueDescription = t;
 }
 - (BOOL)enabled { return self.slider.enabled; }
-- (void)setEnabled:(BOOL)e { self.slider.enabled = e; self.value.alphaValue = e ? 1 : 0.5; }
+- (void)setEnabled:(BOOL)e {
+    self.slider.enabled = e;
+    self.value.alphaValue = e ? 1 : 0.5;
+    self.titleLabel.alphaValue = e ? 1 : 0.6;
+}
 - (void)refresh {
     double v = [NSUserDefaults.standardUserDefaults doubleForKey:self.key];
     self.slider.doubleValue = v;
-    self.value.stringValue = [NSString stringWithFormat:self.format, v];
+    [self showValue:v];
 }
 @end
 
@@ -378,8 +551,8 @@ NSScrollView *OVScrollPage(NSStackView *content) {
 }
 @end
 
-NSPopUpButton *OVDefaultsPopup(NSArray<NSArray<NSString *> *> *items, NSString *key, id target, SEL action) {
-    NSPopUpButton *p = [NSPopUpButton new];
+OVPopup *OVDefaultsPopup(NSArray<NSArray<NSString *> *> *items, NSString *key, id target, SEL action) {
+    OVPopup *p = [OVPopup popup];
     OVPopupBinder *b = [OVPopupBinder new];
     b.key = key;
     b.target = target;
