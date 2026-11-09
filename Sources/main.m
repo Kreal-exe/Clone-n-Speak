@@ -9,6 +9,8 @@
 #import "OVStore.h"
 #import "OVPaths.h"
 #import "OVMemory.h"
+#import "OVPageRegistry.h"
+#import "OVDesign.h"
 
 #pragma mark - Sidebar
 
@@ -33,24 +35,73 @@
 }
 @end
 
-/// Rounded, barely tinted box behind the sidebar status.
+/// Card behind the sidebar status: surface fill and hairline border from the palette.
 @interface OVTintBox : NSView
 @end
 @implementation OVTintBox
 - (BOOL)wantsUpdateLayer { return YES; }
 - (void)updateLayer {
-    self.layer.cornerRadius = 11;
-    self.layer.backgroundColor = [NSColor.labelColor colorWithAlphaComponent:0.055].CGColor;
+    [self.effectiveAppearance performAsCurrentDrawingAppearance:^{
+        self.layer.cornerRadius = 10;
+        self.layer.borderWidth = 1;
+        self.layer.backgroundColor = OVColor(OVRoleSurface).CGColor;
+        self.layer.borderColor = OVColor(OVRoleBorder).CGColor;
+    }];
 }
+@end
+
+/// Selected row: a soft accent plate instead of the system blue.
+@interface OVSidebarRowView : NSTableRowView
+@end
+@implementation OVSidebarRowView
+- (void)drawSelectionInRect:(NSRect)r {
+    if (self.selectionHighlightStyle == NSTableViewSelectionHighlightStyleNone) return;
+    [OVColor(OVRoleAccentSoft) setFill];
+    [[NSBezierPath bezierPathWithRoundedRect:NSInsetRect(self.bounds, 0, 0) xRadius:7.5 yRadius:7.5] fill];
+}
+- (void)setSelected:(BOOL)selected { [super setSelected:selected]; self.needsDisplay = YES; }
+- (BOOL)isEmphasized { return NO; }
+@end
+
+/// Page row: icon, title, optional compact "16 GB" badge.
+@interface OVSidebarCell : NSTableCellView
+@property NSView *proBadge;
+@property (copy) NSString *symbolName;
+@property (nonatomic) BOOL selectedRow;
+@end
+@implementation OVSidebarCell
+- (void)setSelectedRow:(BOOL)sel {
+    _selectedRow = sel;
+    [self restyle];
+}
+- (void)restyle {
+    // Selected text stays OVRoleText: the neutral Applio accent (#9e9e9e) on its soft plate is dimmer than unselected rows.
+    self.textField.textColor = OVColor(OVRoleText);
+    // Image tint is not re-resolved by AppKit: resolve the dynamic color under this view's appearance.
+    __block NSColor *tint;
+    [self.effectiveAppearance performAsCurrentDrawingAppearance:^{
+        tint = [OVColor(self.selectedRow ? OVRoleText : OVRoleMuted) colorUsingType:NSColorTypeComponentBased] ?: OVColor(OVRoleMuted);
+        tint = [NSColor colorWithCGColor:OVColor(self.selectedRow ? OVRoleText : OVRoleMuted).CGColor] ?: tint;
+    }];
+    self.imageView.contentTintColor = nil;
+    if (self.symbolName) {   // palette-colored symbol: a plain tint renders near-black under the sidebar's vibrancy
+        NSImageSymbolConfiguration *cfg = [[NSImageSymbolConfiguration configurationWithPointSize:16 weight:NSFontWeightRegular]
+            configurationByApplyingConfiguration:[NSImageSymbolConfiguration configurationWithPaletteColors:@[tint]]];
+        self.imageView.image = [[NSImage imageWithSystemSymbolName:self.symbolName accessibilityDescription:nil] imageWithSymbolConfiguration:cfg];
+    }
+}
+- (void)viewDidChangeEffectiveAppearance { [self restyle]; }
+- (void)viewDidMoveToWindow { [self restyle]; }
 @end
 
 @interface OVSidebar : NSViewController <NSTableViewDataSource, NSTableViewDelegate>
 @property NSTableView *table;
-@property NSArray<NSArray<NSString *> *> *items; // id, title, symbol
+@property NSArray<NSDictionary *> *items;   // group header: @{@"group"}, page: registry entry + @"groupTitle"
 @property NSTextField *footer, *footerDetail, *tagline;
 @property NSImageView *footerIcon;
 @property OVMemoryMeter *meter;
 @property NSButton *themeButton;
+@property NSView *statusCard;
 @property (copy) void (^onSelect)(NSString *page);
 - (void)selectPage:(NSString *)page;
 - (void)reloadTexts;
@@ -62,23 +113,35 @@
     [self.table addTableColumn:[[NSTableColumn alloc] initWithIdentifier:@"i"]];
     self.table.headerView = nil;
     self.table.style = NSTableViewStyleSourceList;
-    self.table.rowHeight = 34;
+    self.table.rowHeight = 32;
+    self.table.intercellSpacing = NSMakeSize(0, 2);
+    self.table.floatsGroupRows = NO;
     self.table.dataSource = self;
     self.table.delegate = self;
     self.table.backgroundColor = NSColor.clearColor;
     NSScrollView *sv = [NSScrollView new];
     sv.documentView = self.table;
     sv.drawsBackground = NO;
+    sv.hasVerticalScroller = YES;
+    sv.autohidesScrollers = YES;
+    sv.scrollerStyle = NSScrollerStyleOverlay;
+    self.table.accessibilityLabel = L(@"Pages");
 
     NSImageView *logo = [NSImageView imageViewWithImage:NSApp.applicationIconImage];
     logo.imageScaling = NSImageScaleProportionallyUpOrDown;
-    [logo.widthAnchor constraintEqualToConstant:40].active = YES;
-    [logo.heightAnchor constraintEqualToConstant:40].active = YES;
-    NSTextField *brand = OVLabel(OVAppName, 15.5, NSFontWeightBold, nil);
-    brand.font = OVRoundedFont(15.5, NSFontWeightBold);
-    self.tagline = OVWrapLabel(@"", 10.5, NSColor.secondaryLabelColor);
-    self.tagline.maximumNumberOfLines = 2;
-    NSStackView *head = OVHStack(@[logo, OVVStack(@[brand, self.tagline], 1)], 8);
+    logo.accessibilityElement = NO;
+    [logo.widthAnchor constraintEqualToConstant:32].active = YES;
+    [logo.heightAnchor constraintEqualToConstant:32].active = YES;
+    NSTextField *brand = OVLabel(OVAppName, 14, NSFontWeightBold, OVColor(OVRoleText));
+    brand.font = OVRoundedFont(14, NSFontWeightBold);
+    brand.lineBreakMode = NSLineBreakByTruncatingTail;
+    [brand setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+    NSString *ver = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"";
+    NSView *verBadge = OVCompactBadge([@"v" stringByAppendingString:ver], OVRoleMuted);
+    self.tagline = OVWrapLabel(@"", 10.5, NSColor.secondaryLabelColor);  // kept as the brand tooltip
+    [verBadge setContentCompressionResistancePriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
+    NSStackView *head = OVHStack(@[logo, brand, verBadge], 7);
+    head.alignment = NSLayoutAttributeCenterY;
 
     // status card: what the engine is doing, memory at a glance, theme switch
     self.footerIcon = OVSymbol(@"circle.fill", 8, NSColor.tertiaryLabelColor);
@@ -101,10 +164,10 @@
     NSView *root = [NSView new];
     for (NSView *v in @[head, sv, foot]) { v.translatesAutoresizingMaskIntoConstraints = NO; [root addSubview:v]; }
     [NSLayoutConstraint activateConstraints:@[
-        [head.topAnchor constraintEqualToAnchor:root.topAnchor constant:46],
+        [head.topAnchor constraintEqualToAnchor:root.topAnchor constant:44],
         [head.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:16],
         [head.trailingAnchor constraintEqualToAnchor:root.trailingAnchor constant:-10],
-        [sv.topAnchor constraintEqualToAnchor:head.bottomAnchor constant:18],
+        [sv.topAnchor constraintEqualToAnchor:head.bottomAnchor constant:10],
         [sv.leadingAnchor constraintEqualToAnchor:root.leadingAnchor],
         [sv.trailingAnchor constraintEqualToAnchor:root.trailingAnchor],
         [sv.bottomAnchor constraintEqualToAnchor:foot.topAnchor constant:-10],
@@ -114,7 +177,9 @@
         [root.widthAnchor constraintGreaterThanOrEqualToConstant:200],
     ]];
     self.view = root;
+    self.statusCard = foot;
     NSNotificationCenter *nc = NSNotificationCenter.defaultCenter;
+    [nc addObserver:self selector:@selector(themeChanged) name:OVThemeDidChangeNotification object:nil];
     for (NSNotificationName n in @[OVRuntimeDidChangeNotification, OVModelsDidChangeNotification, OVWorkerDidChangeNotification,
                                    OVWorkerMemoryDidChangeNotification])
         [nc addObserver:self selector:@selector(refreshFooter) name:n object:nil];
@@ -122,21 +187,32 @@
 }
 
 - (void)reloadTexts {
-    self.items = @[@[@"setup", L(@"Setup"), @"checklist"],
-                   @[@"synth", L(@"Speech"), @"waveform"],
-                   @[@"voices", L(@"Voices"), @"person.wave.2"],
-                   @[@"models", L(@"Models"), @"shippingbox"],
-                   @[@"settings", L(@"Settings"), @"slider.horizontal.3"],
-                   @[@"log", L(@"Log"), @"text.alignleft"]];
+    NSMutableArray *items = [NSMutableArray array];
+    for (NSDictionary *g in [OVPageRegistry groups]) {
+        [items addObject:@{@"group": g[@"title"]}];
+        for (NSDictionary *p in g[@"pages"]) {
+            NSMutableDictionary *e = [p mutableCopy];
+            e[@"groupTitle"] = g[@"title"];
+            [items addObject:e];
+        }
+    }
+    self.items = items;
     self.tagline.stringValue = L(@"voice cloning · 600+ languages");
+    self.view.toolTip = self.tagline.stringValue;
     NSInteger sel = self.table.selectedRow;
     [self.table reloadData];
-    if (sel >= 0) [self.table selectRowIndexes:[NSIndexSet indexSetWithIndex:sel] byExtendingSelection:NO];
+    if (sel >= 0 && sel < (NSInteger)items.count) [self.table selectRowIndexes:[NSIndexSet indexSetWithIndex:sel] byExtendingSelection:NO];
     [self refreshThemeButton];
     [self refreshFooter];
 }
 
 - (void)viewDidChangeEffectiveAppearance { [self refreshThemeButton]; }
+
+- (void)themeChanged {
+    self.statusCard.needsDisplay = YES;
+    [self.table enumerateAvailableRowViewsUsingBlock:^(NSTableRowView *rv, NSInteger row) { rv.needsDisplay = YES; }];
+    [self refreshFooter];
+}
 
 - (void)refreshThemeButton {
     BOOL dark = [OVLocale isDark];
@@ -183,39 +259,97 @@
 
 - (NSInteger)numberOfRowsInTableView:(NSTableView *)t { return self.items.count; }
 
+- (BOOL)tableView:(NSTableView *)t isGroupRow:(NSInteger)row { return self.items[row][@"group"] != nil; }
+- (BOOL)tableView:(NSTableView *)t shouldSelectRow:(NSInteger)row { return self.items[row][@"group"] == nil; }
+- (CGFloat)tableView:(NSTableView *)t heightOfRow:(NSInteger)row {
+    if (self.items[row][@"group"] == nil) return 32;
+    return row == 0 ? 26 : 32;   // room above every header but the first
+}
+
+- (NSTableRowView *)tableView:(NSTableView *)t rowViewForRow:(NSInteger)row {
+    NSDictionary *it = self.items[row];
+    if (it[@"group"]) {
+        NSTableRowView *rv = [NSTableRowView new];
+        rv.accessibilityRole = NSAccessibilityStaticTextRole;
+        rv.accessibilityLabel = it[@"group"];
+        return rv;
+    }
+    OVSidebarRowView *rv = [OVSidebarRowView new];
+    NSString *label = [NSString stringWithFormat:@"%@, %@", it[@"title"], it[@"groupTitle"]];
+    if ([it[@"pro"] boolValue]) label = [label stringByAppendingFormat:@", %@", L(@"needs 16 GB")];
+    rv.accessibilityLabel = label;
+    return rv;
+}
+
 - (NSView *)tableView:(NSTableView *)t viewForTableColumn:(NSTableColumn *)c row:(NSInteger)row {
-    NSTableCellView *cell = [t makeViewWithIdentifier:@"cell" owner:self];
+    NSDictionary *it = self.items[row];
+    if (it[@"group"]) {
+        NSTableCellView *cell = [t makeViewWithIdentifier:@"group" owner:self];
+        if (!cell) {
+            cell = [NSTableCellView new];
+            cell.identifier = @"group";
+            NSTextField *tf = OVLabel(@"", 11, NSFontWeightSemibold, OVColor(OVRoleMuted));
+            tf.translatesAutoresizingMaskIntoConstraints = NO;
+            [cell addSubview:tf];
+            cell.textField = tf;
+            [NSLayoutConstraint activateConstraints:@[
+                [tf.leadingAnchor constraintEqualToAnchor:cell.leadingAnchor constant:8],
+                [tf.trailingAnchor constraintLessThanOrEqualToAnchor:cell.trailingAnchor constant:-4],
+                [tf.bottomAnchor constraintEqualToAnchor:cell.bottomAnchor constant:-3]]];
+        }
+        // 11 pt, semibold, caps, +0.05 em tracking
+        cell.textField.attributedStringValue = [[NSAttributedString alloc] initWithString:[it[@"group"] uppercaseString] attributes:@{
+            NSFontAttributeName: [NSFont systemFontOfSize:11 weight:NSFontWeightSemibold],
+            NSForegroundColorAttributeName: OVColor(OVRoleMuted),
+            NSKernAttributeName: @0.55}];
+        return cell;
+    }
+    OVSidebarCell *cell = [t makeViewWithIdentifier:@"cell" owner:self];
     if (!cell) {
-        cell = [NSTableCellView new];
+        cell = [OVSidebarCell new];
         cell.identifier = @"cell";
         NSImageView *iv = [NSImageView new];
+        iv.symbolConfiguration = [NSImageSymbolConfiguration configurationWithPointSize:16 weight:NSFontWeightRegular];
         NSTextField *tf = OVLabel(@"", 13.5, NSFontWeightMedium, nil);
+        tf.lineBreakMode = NSLineBreakByTruncatingTail;
+        [tf setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
         cell.imageView = iv;
         cell.textField = tf;
-        NSStackView *s = OVHStack(@[iv, tf], 8);
-        [iv.widthAnchor constraintEqualToConstant:20].active = YES;
+        cell.proBadge = OVProBadgeCompact();
+        NSStackView *s = OVHStack(@[iv, tf, cell.proBadge], 9);
+        [s setCustomSpacing:6 afterView:tf];
+        [iv.widthAnchor constraintEqualToConstant:18].active = YES;
         [cell addSubview:s];
-        OVPin(s, cell, NSEdgeInsetsMake(0, 6, 0, 4));
+        s.translatesAutoresizingMaskIntoConstraints = NO;
+        [NSLayoutConstraint activateConstraints:@[
+            [s.leadingAnchor constraintEqualToAnchor:cell.leadingAnchor constant:8],
+            [s.trailingAnchor constraintLessThanOrEqualToAnchor:cell.trailingAnchor constant:-6],
+            [s.centerYAnchor constraintEqualToAnchor:cell.centerYAnchor]]];
     }
-    NSArray *it = self.items[row];
-    cell.textField.stringValue = it[1];
-    cell.imageView.image = [NSImage imageWithSystemSymbolName:it[2] accessibilityDescription:it[1]];
-    cell.imageView.symbolConfiguration = [NSImageSymbolConfiguration configurationWithPointSize:14 weight:NSFontWeightMedium];
+    cell.textField.stringValue = it[@"title"];
+    cell.symbolName = it[@"symbol"];
+    cell.proBadge.hidden = ![it[@"pro"] boolValue];
+    cell.selectedRow = row == t.selectedRow;
     return cell;
 }
 
 - (void)tableViewSelectionDidChange:(NSNotification *)n {
     NSInteger r = self.table.selectedRow;
-    if (r >= 0 && self.onSelect) self.onSelect(self.items[r][0]);
+    for (NSInteger i = 0; i < (NSInteger)self.items.count; i++) {
+        OVSidebarCell *c = [self.table viewAtColumn:0 row:i makeIfNecessary:NO];
+        if ([c isKindOfClass:OVSidebarCell.class]) c.selectedRow = i == r;
+    }
+    if (r >= 0 && self.onSelect) self.onSelect(self.items[r][@"id"]);
 }
 
 - (void)selectPage:(NSString *)page {
     for (NSUInteger i = 0; i < self.items.count; i++)
-        if ([self.items[i][0] isEqualToString:page]) {
+        if ([self.items[i][@"id"] isEqualToString:page]) {
             if (self.table.selectedRow != (NSInteger)i)
                 [self.table selectRowIndexes:[NSIndexSet indexSetWithIndex:i] byExtendingSelection:NO];
             return;
         }
+    [self.table deselectAll:nil];   // a page that is not in the sidebar (Log, gallery)
 }
 @end
 
@@ -246,10 +380,10 @@
 - (void)show:(NSString *)page {
     NSViewController *vc = self.pages[page];
     if (!vc) {
-        Class cls = @{@"setup": OVSetupPage.class, @"synth": OVSynthPage.class, @"voices": OVVoicesPage.class,
-                      @"models": OVModelsPage.class, @"settings": OVSettingsPage.class, @"log": OVLogPage.class, @"gallery": OVGalleryPage.class}[page];
+        Class cls = [OVPageRegistry classForPage:page];
         if (!cls) return;
         vc = [cls new];
+        if ([vc isKindOfClass:OVPlaceholderPage.class]) ((OVPlaceholderPage *)vc).pageId = page;
         self.pages[page] = vc;
         [self addChildViewController:vc];
     }
@@ -358,7 +492,7 @@ static void OVRedrawTree(NSView *v) {
     // Developer aid: OV_SNAPSHOT_DIR=/path renders every page to PNG (no screen-recording permission needed).
     // Launch with `-autoSetup NO -disableLegacyMigration YES -migratedFromOmniVoiceUA YES` to keep it side-effect free.
     NSString *snap = NSProcessInfo.processInfo.environment[@"OV_SNAPSHOT_DIR"];
-    if (snap.length) [self snapshotPages:@[@"setup", @"synth", @"voices", @"models", @"settings", @"log", @"gallery"] into:snap index:0];
+    if (snap.length) [self snapshotPages:[OVPageRegistry allPageIds] into:snap index:0];
 
     // Developer aid: OV_SELFTEST_AUDIO=sample.wav OV_SELFTEST_TEXT="transcript" clones a voice and speaks a phrase
     // through the real app classes, prints the results and quits.
@@ -597,12 +731,14 @@ static void OVRedrawTree(NSView *v) {
 
     NSMenuItem *goItem = [bar addItemWithTitle:L(@"Go") action:nil keyEquivalent:@""];
     NSMenu *go = [[NSMenu alloc] initWithTitle:L(@"Go")];
-    NSArray *pages = @[@[L(@"Speech"), @"1", @"synth"], @[L(@"Voices"), @"2", @"voices"], @[L(@"Models"), @"3", @"models"],
-                       @[L(@"Setup"), @"4", @"setup"], @[L(@"Log"), @"5", @"log"]];
-    for (NSArray *p in pages) {
-        NSMenuItem *it = [go addItemWithTitle:p[0] action:@selector(goPage:) keyEquivalent:p[1]];
-        it.representedObject = p[2];
-        it.target = self;
+    NSUInteger n = 0;   // ⌘1…⌘9 go to the first nine sidebar pages; groups are separated by a line
+    for (NSDictionary *g in [OVPageRegistry groups]) {
+        if (go.numberOfItems) [go addItem:NSMenuItem.separatorItem];
+        for (NSDictionary *p in g[@"pages"]) {
+            NSMenuItem *it = [go addItemWithTitle:p[@"title"] action:@selector(goPage:) keyEquivalent:++n <= 9 ? [NSString stringWithFormat:@"%lu", (unsigned long)n] : @""];
+            it.representedObject = p[@"id"];
+            it.target = self;
+        }
     }
     goItem.submenu = go;
 
@@ -610,6 +746,11 @@ static void OVRedrawTree(NSView *v) {
     NSMenu *win = [[NSMenu alloc] initWithTitle:L(@"Window")];
     [win addItemWithTitle:L(@"Minimize") action:@selector(performMiniaturize:) keyEquivalent:@"m"];
     [win addItemWithTitle:L(@"Close") action:@selector(performClose:) keyEquivalent:@"w"];
+    [win addItem:NSMenuItem.separatorItem];
+    NSMenuItem *logItem = [win addItemWithTitle:L(@"Log") action:@selector(goPage:) keyEquivalent:@"l"];
+    logItem.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagOption;
+    logItem.representedObject = @"log";
+    logItem.target = self;
     winItem.submenu = win;
     NSApp.windowsMenu = win;
 

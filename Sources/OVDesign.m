@@ -462,21 +462,25 @@ static const CGFloat kSegPad = 4, kSegH = 28;
 
 #pragma mark - Badges
 
-NSView *OVBadge(NSString *text, OVRole tone) {
+static NSView *MakeBadge(NSString *text, OVRole tone, CGFloat font, CGFloat vpad, CGFloat hpad, CGFloat radius) {
     BOOL muted = tone == OVRoleMuted;
     NSColor *tc = C(tone);
-    NSTextField *l = OVLabel(text, 12, NSFontWeightMedium, tc);
+    NSTextField *l = OVLabel(text, font, NSFontWeightMedium, tc);
     OVBoxView *b = [OVBoxView boxWithFill:muted ? nil : [tc colorWithAlphaComponent:0.12]
-                                   border:muted ? C(OVRoleBorder) : [tc colorWithAlphaComponent:0.45] radius:10];
+                                   border:muted ? C(OVRoleBorder) : [tc colorWithAlphaComponent:0.45] radius:radius];
     [b addSubview:l];
-    OVPin(l, b, NSEdgeInsetsMake(3, 9, 3, 9));
+    OVPin(l, b, NSEdgeInsetsMake(vpad, hpad, vpad, hpad));
     [b setContentHuggingPriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
     [b setContentCompressionResistancePriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
     return b;
 }
 
-NSView *OVProBadge(void) {
-    NSView *b = OVBadge(L(@"16 GB"), OVRoleWarn);
+NSView *OVBadge(NSString *text, OVRole tone) { return MakeBadge(text, tone, 12, 3, 9, 10); }
+
+NSView *OVCompactBadge(NSString *text, OVRole tone) { return MakeBadge(text, tone, 10, 1, 6, 7); }
+
+static NSView *ProBadge(BOOL compact) {
+    NSView *b = compact ? MakeBadge(L(@"16 GB"), OVRoleWarn, 10, 1, 6, 7) : OVBadge(L(@"16 GB"), OVRoleWarn);
     b.toolTip = L(@"This feature is meant for Macs with 16 GB of memory or more. On a Mac with less it may run out of memory.");
     b.accessibilityElement = YES;
     b.accessibilityRole = NSAccessibilityStaticTextRole;
@@ -484,6 +488,8 @@ NSView *OVProBadge(void) {
     b.accessibilityHelp = b.toolTip;
     return b;
 }
+NSView *OVProBadge(void) { return ProBadge(NO); }
+NSView *OVProBadgeCompact(void) { return ProBadge(YES); }
 
 /// `w` is only used to center the alert over that window: a synchronous BOOL answer rules out a sheet.
 BOOL OVConfirmProRun(NSWindow *w) {

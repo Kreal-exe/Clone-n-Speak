@@ -40,6 +40,8 @@ NSView *OVStepCard(NSInteger step, NSString *_Nullable symbol, NSString *title, 
 NSButton *OVPillButtonMake(NSString *title, NSString *_Nullable symbol, id _Nullable target, SEL _Nullable action, BOOL ghost);
 NSButton *OVGhostButton(NSString *title, NSString *_Nullable symbol, id _Nullable target, SEL _Nullable action);
 NSView *OVBadge(NSString *text, OVRole tone);   // OVRoleMuted | OVRoleOK | OVRoleWarn | OVRoleErr
+NSView *OVCompactBadge(NSString *text, OVRole tone);  // smaller OVBadge for dense rows
+NSView *OVProBadgeCompact(void);                // same, smaller: sidebar rows
 NSView *OVProBadge(void);                       // "16 GB", warn tone, tooltip says why
 /// On a Mac with less than 16 GB: an alert that memory may run out; YES = go on. Otherwise YES without asking.
 BOOL OVConfirmProRun(NSWindow *_Nullable w);

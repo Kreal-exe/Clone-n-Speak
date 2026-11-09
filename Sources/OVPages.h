@@ -31,6 +31,10 @@ BOOL OVEverythingReady(void);
 @interface OVModelsPage : NSViewController @end
 @interface OVSettingsPage : NSViewController @end
 @interface OVLogPage : NSViewController @end
+/// Stand-in for pages that are not built yet; the content container sets `pageId` after creating it.
+@interface OVPlaceholderPage : NSViewController
+@property (nonatomic, copy, nullable) NSString *pageId;
+@end
 /// Developer-only page with every OVDesign component (not in the sidebar; OVNavigate(@"gallery") or -OVStartPage gallery).
 @interface OVGalleryPage : NSViewController @end
 
