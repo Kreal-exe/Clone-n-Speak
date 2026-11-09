@@ -73,16 +73,18 @@ NSNotificationName const OVWorkerEventNotification = @"OVWorkerEvent";
     [OVPaths ensure];
     NSArray<NSString *> *files = [[fm contentsOfDirectoryAtPath:bundled error:nil]
         filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"self ENDSWITH '.py'"]];
+    BOOL copyFailed = NO;
     for (NSString *name in files) {
+        if ([name hasPrefix:@"._"]) continue; // AppleDouble leftovers
         NSString *from = [bundled stringByAppendingPathComponent:name], *to = [runtime stringByAppendingPathComponent:name];
         NSData *a = [NSData dataWithContentsOfFile:from], *b = [NSData dataWithContentsOfFile:to];
         if (a && b && [a isEqualToData:b]) continue; // the same content: leave it (and its date) alone
         [fm removeItemAtPath:to error:nil];
-        [fm copyItemAtPath:from toPath:to error:nil];
+        if (![fm copyItemAtPath:from toPath:to error:nil]) copyFailed = YES;
     }
-    if (files.count) { // scripts an older version left behind would be auto-loaded by the worker again
+    if (files.count && !copyFailed) { // scripts an older version left behind would be auto-loaded by the worker again
         for (NSString *name in [fm contentsOfDirectoryAtPath:runtime error:nil]) {
-            if ([name hasSuffix:@".py"] && ![files containsObject:name])
+            if ([name hasSuffix:@".py"] && ![name hasPrefix:@"._"] && ![files containsObject:name])
                 [fm removeItemAtPath:[runtime stringByAppendingPathComponent:name] error:nil];
         }
     }

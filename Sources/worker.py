@@ -2055,6 +2055,9 @@ def main():
             emit("result", data=fn(req) or {})
             if req.get("low_memory"):
                 unload_stt()
+        except core.AudioInputError as e:  # a bad input: the message already names the action; keep the code
+            print(f"{type(e).__name__}[{e.code}]: {e.message}", file=sys.stderr, flush=True)
+            emit("error", msg=e.message, code=e.code)
         except Exception as e:
             tb = traceback.format_exc()
             print(tb, file=sys.stderr, flush=True)

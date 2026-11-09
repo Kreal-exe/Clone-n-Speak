@@ -120,6 +120,47 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(open(path, "rb").read(), before)
         self.assertFalse(os.path.exists(path + ".part"))
 
+    def test_write_audio_cleans_up_when_replace_fails(self):
+        from unittest import mock
+        target = self.p("crash.wav")
+        seen = {}
+
+        def boom(src, dst):
+            seen["part_existed"] = os.path.exists(src)
+            raise OSError("disk went away")
+        with mock.patch.object(os, "replace", boom):
+            with self.assertRaises(OSError):
+                core.write_audio(target, tone(440, 0.2, 24000), 24000)
+        self.assertTrue(seen["part_existed"])
+        self.assertEqual(os.listdir(self.dir), [])
+
+    def test_too_long_is_decided_from_the_header(self):
+        from unittest import mock
+        path = self.p("long.wav")
+        write_wav(path, np.zeros(1500 * 8000, dtype=np.float32), 8000)
+        with mock.patch.object(core, "_read_wav", side_effect=AssertionError("decoded")):
+            with self.assertRaises(core.AudioInputError) as cm:
+                core.read_audio(path)
+        self.assertEqual(cm.exception.code, "too_long")
+
+    def test_unreadable_wav_falls_back_then_reports_unsupported(self):
+        from unittest import mock
+        path = self.p("odd.wav")
+        write_wav(path, tone(440, 0.5, 24000), 24000)
+        fallback = (tone(440, 0.5, 24000), 24000)
+        with mock.patch.object(core, "_read_wav", side_effect=core._Unreadable()), \
+                mock.patch.object(core, "_read_other", return_value=fallback) as other:
+            x, r = core.read_audio(path)
+        other.assert_called_once()
+        self.assertEqual((len(x), r), (12000, 24000))
+
+    def test_channels_first_swap_only_for_non_wav_decoders(self):
+        from unittest import mock
+        path = self.p("wide.wav")  # a wide WAV (3 frames, 5 channels) must not be transposed
+        write_wav(path, np.zeros((3, 5), dtype=np.float32) + 0.1, 24000, "float32")
+        x, _ = core.read_audio(path, mono=False)
+        self.assertEqual(x.shape, (3, 5))
+
     def test_resample_and_map_channels(self):
         stereo = np.stack([tone(440, 0.5, 48000), tone(440, 0.5, 48000)], axis=1)
         self.assertEqual(core.resample(stereo, 48000, 24000).shape, (12000, 2))
@@ -205,6 +246,7 @@ class CoreTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     core.register_effect(name + "_bad", fn, {"amount": bad})
             self.assertNotIn(name + "_bad", core.EFFECTS)
+            core.register_effect(name + "_min", fn, {"amount": {"min": 0.0, "max": 1.0, "default": 0.0}})  # default == min is fine
             with self.assertRaises(ValueError):
                 core.register_effect(name + "_c", fn, {"mode": {"choices": ["a", "b"], "default": "c"}})
             core.register_effect(name + "_c", fn, {"mode": {"choices": ["a", "b"], "default": "a"}})
@@ -245,6 +287,18 @@ class CoreTests(unittest.TestCase):
         finally:
             for n in ("cns_ok", "cns_bad", "cns_syntax"):
                 sys.modules.pop(n, None)
+
+    def test_autoload_skips_colliding_commands(self):
+        with open(self.p("cns_dup.py"), "w") as f:
+            f.write("COMMANDS = {'hello': lambda r: 'mine', 'fresh': lambda r: 'new'}\n")
+        mine = lambda r: 'builtin'  # noqa: E731
+        commands = {"hello": mine}
+        try:
+            core.load_modules(commands, self.dir)
+        finally:
+            sys.modules.pop("cns_dup", None)
+        self.assertIs(commands["hello"], mine)
+        self.assertIn("fresh", commands)
 
     def test_events_are_bound(self):
         seen = []

@@ -70,13 +70,48 @@ def _limit_text(max_seconds):
     return ("%d" % m) if m == int(m) else ("%.1f" % m)
 
 
+class _Unreadable(Exception):
+    pass
+
+
+def _wav_header(path):
+    """(rate, frames) from the RIFF header without decoding the samples, or None when it cannot be told."""
+    import struct
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as f:
+            head = f.read(12)
+            if head[:4] not in (b"RIFF", b"RF64") or head[8:12] != b"WAVE":
+                return None
+            rate = align = None
+            while True:
+                chunk = f.read(8)
+                if len(chunk) < 8:
+                    return None
+                cid, csize = chunk[:4], struct.unpack("<I", chunk[4:])[0]
+                if cid == b"fmt ":
+                    fmt = f.read(csize)
+                    rate, align = struct.unpack("<I", fmt[4:8])[0], struct.unpack("<H", fmt[12:14])[0]
+                    f.seek(csize & 1, 1)
+                elif cid == b"data":
+                    if csize == 0xFFFFFFFF or f.tell() + csize > size:
+                        csize = size - f.tell()
+                    if not rate or not align:
+                        return None
+                    return rate, csize // align
+                else:
+                    f.seek(csize + (csize & 1), 1)
+    except (OSError, struct.error):
+        return None
+
+
 def _read_wav(path):
     import numpy as np
     from scipy.io import wavfile
     try:
         sr, data = wavfile.read(path)
     except Exception:
-        _fail("unsupported", "This file is not a readable WAV. Convert it to WAV first (Audio Tools → Convert).")
+        raise _Unreadable()
     data = np.asarray(data)
     if data.dtype == np.uint8:
         x = (data.astype(np.float32) - 128.0) / 128.0
@@ -87,7 +122,7 @@ def _read_wav(path):
     elif data.dtype in (np.float32, np.float64):
         x = np.nan_to_num(data.astype(np.float32), nan=0.0, posinf=1.0, neginf=-1.0)
     else:
-        _fail("unsupported", "This WAV format is not supported. Convert it to WAV first (Audio Tools → Convert).")
+        raise _Unreadable()
     return x, int(sr)
 
 
@@ -101,7 +136,10 @@ def _read_other(path):
     except Exception:
         _fail("unsupported", "This file could not be decoded. Convert it to WAV first (Audio Tools → Convert).")
     import numpy as np
-    return np.asarray(data, dtype=np.float32), int(sr)
+    data = np.asarray(data, dtype=np.float32)
+    if data.ndim == 2 and data.shape[0] < data.shape[1] and data.shape[0] <= 8:
+        data = data.T  # channels-first decoders
+    return data, int(sr)
 
 
 def resample(wav, sr_from, sr_to):
@@ -131,11 +169,20 @@ def read_audio(path, *, sr=None, mono=True, min_seconds=0.0, max_seconds=MAX_SEC
     with open(path, "rb") as f:
         head = f.read(12)
     is_wav = path.lower().endswith(".wav") or (head[:4] in (b"RIFF", b"RF64") and head[8:12] == b"WAVE")
-    wav, rate = _read_wav(path) if is_wav else _read_other(path)
+    if is_wav and max_seconds:  # refuse a huge file from its header, before decoding it
+        header = _wav_header(path)
+        if header and header[0] > 0 and header[1] / float(header[0]) > max_seconds:
+            _fail("too_long", "The audio is %.0f minutes long. Cut it first: the limit is %s minutes."
+                              % (header[1] / float(header[0]) / 60.0, _limit_text(max_seconds)))
+    if is_wav:
+        try:
+            wav, rate = _read_wav(path)
+        except _Unreadable:
+            wav, rate = _read_other(path)  # a WAV flavour scipy cannot read may still decode elsewhere
+    else:
+        wav, rate = _read_other(path)
     if wav.ndim == 2 and wav.shape[1] == 1:
         wav = wav[:, 0]
-    if wav.ndim == 2 and wav.shape[0] < wav.shape[1] and wav.shape[0] <= 8:
-        wav = wav.T  # channels-first decoders
     if wav.ndim != 2 and wav.ndim != 1:
         _fail("unsupported", "This audio layout is not supported. Convert it to WAV first (Audio Tools → Convert).")
     n = wav.shape[0]
@@ -312,7 +359,7 @@ def quality_report(wav, sr=SR):
 # Registries
 # --------------------------------------------------------------------------
 EFFECTS = {}       # name -> {"fn", "params", "tail", "title"}
-POST_SYNTH = []    # hooks (wav, sr, req) -> wav, run on a finished take
+POST_SYNTH = []    # hooks (wav, sr, req) -> wav, run on a finished take; wav is mono (n,) and a hook must return mono (n,)
 PRE_ENHANCE = []   # hooks (req, wav, sr) -> wav, run on a sample before cleaning
 TOOLS = {}         # cmd -> {"request": (in_path, out_path) -> dict, "setup": (tmpdir) -> ctx | None, "streams": False}
 
@@ -391,7 +438,11 @@ def load_modules(commands, directory=None):
                 except BaseException:
                     sys.modules.pop(name, None)
                     raise
-            commands.update(getattr(mod, "COMMANDS", {}) or {})
+            for cmd, fn in (getattr(mod, "COMMANDS", {}) or {}).items():
+                if cmd in commands:
+                    _warn("module %s: command %s already exists, skipped" % (name, cmd))
+                else:
+                    commands[cmd] = fn
             loaded.append(name)
         except Exception as e:
             _warn("module %s was skipped: %s: %s" % (name, type(e).__name__, e))
