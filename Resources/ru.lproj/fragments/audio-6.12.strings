@@ -1,0 +1,6 @@
+/* Player bar and waveform (task 6.12). */
+"%@ of %@" = "%@ из %@";
+"Audio waveform" = "Волна звука";
+"Original" = "Оригинал";
+"Playback position" = "Позиция воспроизведения";
+"Result" = "Результат";

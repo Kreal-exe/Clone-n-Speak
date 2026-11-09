@@ -30,6 +30,11 @@ import traceback
 import unicodedata
 import wave
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # cns_core and the cns_* modules sit next to this file
+import cns_core as core  # noqa: E402
+from cns_core import frames_db, track_f0  # noqa: E402,F401  (kept importable from here)
+_biquad, _compress = core.biquad, core.compress
+
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
 
@@ -489,16 +494,6 @@ def write_wav(path, audio, sr=SR):
     return len(pcm) / sr
 
 
-def frames_db(wav, sr=SR, frame=0.03):
-    import numpy as np
-    n = max(1, int(sr * frame))
-    usable = len(wav) // n * n
-    if usable == 0:
-        return np.array([-120.0])
-    fr = wav[:usable].reshape(-1, n)
-    return 20 * np.log10(np.sqrt((fr ** 2).mean(axis=1) + 1e-12) + 1e-12)
-
-
 def polish(wav, sr=SR, pad=0.1):
     """Trim silence at the edges, even out loudness, soft fades — like upstream post-processing."""
     import numpy as np
@@ -587,36 +582,6 @@ def resolve_style(style):
     }
 
 
-def _biquad(kind, freq, gain_db, sr=SR, q=0.707):
-    """RBJ cookbook low shelf / high shelf / peak as one second-order section."""
-    import numpy as np
-    A = 10 ** (gain_db / 40.0)
-    w = 2 * np.pi * freq / sr
-    cw, alpha = np.cos(w), np.sin(w) / (2 * q)
-    if kind == "peak":
-        b = [1 + alpha * A, -2 * cw, 1 - alpha * A]
-        a = [1 + alpha / A, -2 * cw, 1 - alpha / A]
-    else:
-        k = 2 * np.sqrt(A) * alpha
-        sign = 1 if kind == "low" else -1  # the two shelves mirror each other
-        b = [A * ((A + 1) - sign * (A - 1) * cw + k), sign * 2 * A * ((A - 1) - sign * (A + 1) * cw),
-             A * ((A + 1) - sign * (A - 1) * cw - k)]
-        a = [(A + 1) + sign * (A - 1) * cw + k, -sign * 2 * ((A - 1) + sign * (A + 1) * cw),
-             (A + 1) + sign * (A - 1) * cw - k]
-    return np.array([b[0], b[1], b[2], a[0], a[1], a[2]]) / a[0]
-
-
-def _compress(wav, amount, sr=SR):
-    """Gentle RMS compressor (up to ~3:1 above −24 dBFS): evens out loud and quiet syllables."""
-    import numpy as np
-    from scipy.signal import lfilter
-    k = np.exp(-1.0 / (0.02 * sr))  # 20 ms level detector
-    env = np.sqrt(np.maximum(lfilter([1 - k], [1, -k], wav.astype(np.float64) ** 2), 1e-12))
-    threshold, ratio = 10 ** (-24 / 20), 1 + 3.3 * amount
-    gain = np.where(env > threshold, (env / threshold) ** (1 / ratio - 1), 1.0)
-    return (wav * gain).astype(np.float32)
-
-
 def shape_voice(wav, fx, sr=SR):
     """Tone, presence, dynamics and level of the finished take."""
     import numpy as np
@@ -652,28 +617,6 @@ def change_pitch(wav, semitones):
     from scipy.signal import resample_poly
     ratio = Fraction(2 ** (-semitones / 12.0)).limit_denominator(240)
     return resample_poly(wav, ratio.numerator, ratio.denominator).astype(np.float32)
-
-
-def track_f0(wav, sr=SR, hop=0.01):
-    """Rough pitch track by autocorrelation: Hz per 10 ms frame, 0 where there is no voice."""
-    import numpy as np
-    from scipy.signal import medfilt
-    n, step = int(sr * 0.04), int(sr * hop)
-    if len(wav) < n + step:
-        return np.zeros(0)
-    frames = np.lib.stride_tricks.sliding_window_view(np.asarray(wav, dtype=np.float64), n)[::step]
-    frames = frames - frames.mean(axis=1, keepdims=True)
-    rms = np.sqrt((frames ** 2).mean(axis=1))
-    ac = np.fft.irfft(np.abs(np.fft.rfft(frames, 2 * n, axis=1)) ** 2, axis=1)[:, :n]
-    lo, hi = sr // 400, sr // 60
-    lag = lo + np.argmax(ac[:, lo:hi], axis=1)
-    strength = ac[np.arange(len(lag)), lag] / (ac[:, 0] + 1e-12)
-    voiced = (strength > 0.45) & (rms > 0.15 * np.percentile(rms, 90))
-    f0 = np.where(voiced, sr / lag, 0.0)
-    if voiced.sum() > 5:
-        smooth = medfilt(f0, 5)  # single-frame octave jumps
-        f0 = np.where(voiced & (smooth > 0), smooth, 0.0)
-    return f0
 
 
 def scale_melody(wav, k, sr=SR, hop=0.01):
@@ -1924,7 +1867,8 @@ def cmd_synth(req):
         if i < len(segments) - 1:
             pieces.append(np.zeros(int(SR * (0.45 if para_end else 0.18) * fx["pause_mul"]), dtype=np.float32))
     silence = np.zeros(int(SR * 0.1), dtype=np.float32)
-    audio = np.concatenate([silence, shape_voice(np.concatenate(pieces), fx), silence])
+    voiced = core.run_post_synth(shape_voice(np.concatenate(pieces), fx), SR, req)  # effect chain etc.
+    audio = np.concatenate([silence, voiced, silence])
     if improve:
         weight = sum(len(s) for s, _ in segments) or 1
         clarity = 1.0 - sum(takes[i]["cer"] * len(segments[i][0]) for i in range(len(segments))) / weight
@@ -1960,33 +1904,7 @@ def cmd_prepare(req):
 # --------------------------------------------------------------------------
 def cmd_analyze(req):
     """Quick quality report of a voice sample: length, loudness, clipping, noise, pauses."""
-    import numpy as np
-    wav = load_mono(req["audio"])
-    dur = len(wav) / SR
-    db = frames_db(wav)
-    peak = float(np.abs(wav).max()) if len(wav) else 0.0
-    clip = float((np.abs(wav) > 0.985).mean()) if len(wav) else 0.0
-    noise = float(np.percentile(db, 10))
-    speech = float(np.percentile(db, 90))
-    voiced = float((db > noise + 12).mean())
-    rms_db = float(20 * np.log10(np.sqrt((wav ** 2).mean() + 1e-12)))
-    issues = []
-    if dur < 3:
-        issues.append("short")
-    if dur > 15:
-        issues.append("long")
-    if clip > 0.001:
-        issues.append("clipping")
-    if speech - noise < 25:
-        issues.append("noisy")
-    if rms_db < -32:
-        issues.append("quiet")
-    if voiced < 0.45:
-        issues.append("pauses")
-    score = 100 - 18 * len(issues) - max(0, 30 - (speech - noise))
-    return {"seconds": round(dur, 2), "rms_db": round(rms_db, 1), "peak": round(peak, 3), "clipping": round(clip, 4),
-            "snr_db": round(speech - noise, 1), "voiced": round(voiced, 2), "issues": issues,
-            "score": int(max(5, min(100, score)))}
+    return core.quality_report(load_mono(req["audio"]), SR)
 
 
 def _spectral_gate(wav, sr=SR, strength=1.0):
@@ -2012,7 +1930,7 @@ def cmd_enhance(req):
     """Clean a voice sample: high-pass, noise reduction, trim/shorten silences, loudness normalisation."""
     import numpy as np
     from scipy.signal import butter, sosfiltfilt
-    wav = load_mono(req["audio"])
+    wav = core.run_pre_enhance(req, load_mono(req["audio"]), SR)
     wav = sosfiltfilt(butter(4, 70, btype="highpass", fs=SR, output="sos"), wav).astype("float32")
     if req.get("denoise", True):
         wav = _spectral_gate(wav)
@@ -2109,6 +2027,8 @@ COMMANDS = {
     "install_accent": cmd_install_accent,
     "train_voice": cmd_train_voice,
 }
+core.bind(emit=emit, status=status, free=lambda: (unload_tts(), unload_stt()))
+core.load_modules(COMMANDS)
 
 
 def main():
@@ -2135,6 +2055,9 @@ def main():
             emit("result", data=fn(req) or {})
             if req.get("low_memory"):
                 unload_stt()
+        except core.AudioInputError as e:  # a bad input: the message already names the action; keep the code
+            print(f"{type(e).__name__}[{e.code}]: {e.message}", file=sys.stderr, flush=True)
+            emit("error", msg=e.message, code=e.code)
         except Exception as e:
             tb = traceback.format_exc()
             print(tb, file=sys.stderr, flush=True)
