@@ -47,6 +47,12 @@ def main():
         bfile[t] = gid("buildvar" + t)
         objs.append(f"{bfile[t]} = {{isa = PBXBuildFile; fileRef = {variant[t]}; }};")
 
+    # plain resource: the palettes
+    fref["themes.json"] = gid("refthemes.json")
+    objs.append(f'{fref["themes.json"]} = {{isa = PBXFileReference; lastKnownFileType = text.json; path = "themes.json"; sourceTree = "<group>"; }};')
+    bfile["themes.json"] = gid("buildthemes.json")
+    objs.append(f'{bfile["themes.json"]} = {{isa = PBXBuildFile; fileRef = {fref["themes.json"]}; }};')
+
     fw_refs, fw_builds = [], []
     for fw in FRAMEWORKS:
         r, b = gid("fwref" + fw), gid("fwb" + fw)
@@ -59,12 +65,12 @@ def main():
                               "fwph", "iconph", "pcfg", "tcfg", "pdbg", "prel", "tdbg", "trel"]}
     objs.append(f'{P["app"]} = {{isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "{NAME}.app"; sourceTree = BUILT_PRODUCTS_DIR; }};')
     objs.append(f'{P["src"]} = {{isa = PBXGroup; children = ({", ".join(fref[f] for f in srcs + hdrs + others)}); path = Sources; sourceTree = "<group>"; }};')
-    objs.append(f'{P["res"]} = {{isa = PBXGroup; children = ({", ".join(variant.values())}); path = Resources; sourceTree = "<group>"; }};')
+    objs.append(f'{P["res"]} = {{isa = PBXGroup; children = ({", ".join(list(variant.values()) + [fref["themes.json"]])}); path = Resources; sourceTree = "<group>"; }};')
     objs.append(f'{P["fwg"]} = {{isa = PBXGroup; children = ({", ".join(fw_refs)}); name = Frameworks; sourceTree = "<group>"; }};')
     objs.append(f'{P["prod"]} = {{isa = PBXGroup; children = ({P["app"]}); name = Products; sourceTree = "<group>"; }};')
     objs.append(f'{P["main"]} = {{isa = PBXGroup; children = ({P["src"]}, {P["res"]}, {P["fwg"]}, {P["prod"]}); sourceTree = "<group>"; }};')
     objs.append(f'{P["srcph"]} = {{isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = ({", ".join(bfile[f] for f in srcs)}); runOnlyForDeploymentPostprocessing = 0; }};')
-    res_files = [bfile["worker.py"]] + [bfile[t] for t in tables]
+    res_files = [bfile["worker.py"], bfile["themes.json"]] + [bfile[t] for t in tables]
     objs.append(f'{P["resph"]} = {{isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = ({", ".join(res_files)}); runOnlyForDeploymentPostprocessing = 0; }};')
     objs.append(f'{P["fwph"]} = {{isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = ({", ".join(fw_builds)}); runOnlyForDeploymentPostprocessing = 0; }};')
     script = ("set -e\\n"

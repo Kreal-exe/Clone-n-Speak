@@ -39,7 +39,7 @@ class ThemeTests(unittest.TestCase):
         self.assertTrue(all(p["title"] for p in data))
 
     def test_applio_dark_tokens(self):
-        want = dict(background="#110f0f", surface="#262626", field="#171717", text="#ffffff", muted="#a3a3a3",
+        want = dict(background="#110f0f", surface="#262626", border="#ffffff17", field="#171717", text="#ffffff", muted="#a3a3a3",
                     accentSoft="#404040", cta="#525252", ctaText="#ffffff", log="#0a0a0a", ok="#4ade80",
                     warn="#fbbf24", err="#f87171", focus="#3b82f6")
         d = load()["applio"]["dark"]

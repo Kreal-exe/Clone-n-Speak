@@ -26,8 +26,11 @@ static NSArray<NSDictionary *> *AllPalettes(void) {
     dispatch_once(&once, ^{
         NSString *path = [NSBundle.mainBundle pathForResource:@"themes" ofType:@"json"];
         NSData *data = path ? [NSData dataWithContentsOfFile:path] : nil;
-        NSDictionary *root = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+        NSError *err = nil;
+        NSDictionary *root = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:&err] : nil;
         all = [root[@"palettes"] isKindOfClass:NSArray.class] ? root[@"palettes"] : @[];
+        if (!all.count) NSLog(@"OVTheme: no palettes loaded from %@ (%@)", path ?: @"themes.json (not in bundle)",
+                              err.localizedDescription ?: (data ? @"no \"palettes\" array" : @"unreadable"));
     });
     return all;
 }

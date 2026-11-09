@@ -1,7 +1,7 @@
 {
   "palettes": [
     {"id": "applio", "title": "Applio",
-      "dark": {"background": "#110f0f", "surface": "#262626", "field": "#171717", "border": "#262626", "text": "#ffffff", "muted": "#a3a3a3", "accent": "#9e9e9e", "accentSoft": "#404040", "cta": "#525252", "ctaText": "#ffffff", "ghostBorder": "#404040", "log": "#0a0a0a", "ok": "#4ade80", "warn": "#fbbf24", "err": "#f87171", "focus": "#3b82f6"},
+      "dark": {"background": "#110f0f", "surface": "#262626", "field": "#171717", "border": "#ffffff17", "text": "#ffffff", "muted": "#a3a3a3", "accent": "#9e9e9e", "accentSoft": "#404040", "cta": "#525252", "ctaText": "#ffffff", "ghostBorder": "#404040", "log": "#0a0a0a", "ok": "#4ade80", "warn": "#fbbf24", "err": "#f87171", "focus": "#3b82f6"},
       "light": {"background": "#fafafa", "surface": "#ffffff", "field": "#f4f4f5", "border": "#e4e4e7", "text": "#09090b", "muted": "#71717a", "accent": "#52525b", "accentSoft": "#e4e4e7", "cta": "#18181b", "ctaText": "#ffffff", "ghostBorder": "#d4d4d8", "log": "#f4f4f5", "ok": "#16a34a", "warn": "#d97706", "err": "#dc2626", "focus": "#2563eb"}
     },
     {"id": "amethyst", "title": "Amethyst",
