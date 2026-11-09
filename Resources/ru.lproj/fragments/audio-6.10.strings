@@ -1,0 +1,6 @@
+/* On-demand packages for optional features (task 6.10). */
+"Nothing to install." = "Устанавливать нечего.";
+"The engine isn’t installed yet — install it on the Setup page first." = "Движок ещё не установлен — сначала установите его на странице «Подготовка».";
+"Another installation is already running. Wait for it to finish." = "Уже идёт другая установка. Дождитесь её завершения.";
+"This package can’t be installed from here." = "Этот пакет нельзя установить отсюда.";
+"The packages were installed but can’t be imported (see the log for details)" = "Пакеты установлены, но не импортируются (подробности в журнале).";
