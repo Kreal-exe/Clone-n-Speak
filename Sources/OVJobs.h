@@ -67,6 +67,9 @@ extern NSString *const OVJobKindSynth, *const OVJobKindBatch, *const OVJobKindCo
 /// Fail with stopRequested set ends as Stopped; succeed always ends as Succeeded.
 - (void)succeedWithResult:(nullable NSDictionary *)result outputs:(NSArray<NSString *> *)finalPaths;
 - (void)failWithError:(NSString *)message;
+/// Same, with the machine-readable error code of the worker (for instance "engine_missing"). A Failed job then has
+/// result == @{@"code": code} (and no outputs); jobs failed without a code keep result == nil.
+- (void)failWithError:(NSString *)message code:(nullable NSString *)code;
 @end
 
 typedef id<OVJobRunner> _Nonnull (^OVJobRunnerFactory)(OVJob *job);

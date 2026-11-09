@@ -44,7 +44,7 @@
                         done:^(NSDictionary *data, NSString *error) {
         if (self->_finished) return;
         if (ctx.stopRequested) { [self fail:@"Stopped"]; return; }
-        if (error) { [self fail:error]; return; }
+        if (error) { [self fail:error code:OVWorker.shared.lastErrorCode]; return; }
         NSMutableArray *outs = [NSMutableArray array];
         if ([data[@"path"] isKindOfClass:NSString.class]) [outs addObject:data[@"path"]];
         if ([data[@"outputs"] isKindOfClass:NSArray.class])
@@ -54,11 +54,12 @@
     }];
 }
 
-- (void)fail:(NSString *)message {
+- (void)fail:(NSString *)message { [self fail:message code:nil]; }
+- (void)fail:(NSString *)message code:(NSString *)code {
     if (_finished) return;
     _finished = YES;
     [self stopObserving];
-    [_ctx failWithError:message];
+    [_ctx failWithError:message code:code];
 }
 
 - (void)stopObserving {
@@ -99,6 +100,11 @@ static NSString *OVShortText(NSDictionary *r, NSString *fmt) {
                  title:^NSString *(NSDictionary *r) {
         NSString *v = [r[@"voice"] isKindOfClass:NSDictionary.class] ? r[@"voice"][@"name"] : nil;
         return v.length ? [NSString stringWithFormat:L(@"Training: %@"), v] : L(@"Voice training");
+    } factory:OVWorkerRunnerFactory() onSuccess:nil];
+    [jobs registerKind:OVJobKindSeparate lane:OVJobLaneCompute retryable:YES
+                 title:^NSString *(NSDictionary *r) {
+        NSString *n = [r[@"_name"] isKindOfClass:NSString.class] ? r[@"_name"] : @"";
+        return n.length ? [NSString stringWithFormat:L(@"Remove music: %@"), n] : L(@"Remove music");
     } factory:OVWorkerRunnerFactory() onSuccess:nil];
     [jobs registerKind:OVJobKindInstall lane:OVJobLaneNetwork retryable:YES
                  title:^NSString *(NSDictionary *r) { return L(@"Installing components"); }
