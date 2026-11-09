@@ -1,0 +1,37 @@
+# Pro env (Python 3.11, torch 2.8.0): Applio backend 59c1131 + Seed-VC + audio-separator 0.45.0. Verified on M4 / macOS 15.
+# Install: 1) uv pip install -r this file
+#          2) uv pip install --no-deps descript-audio-codec==1.0.0 descript-audiotools
+#          3) uv pip install argbind pyloudnorm randomname flatten_dict ffmpy markdown2 pygments pystoi torch-stoi ipython rich tensorboard importlib_resources
+# (dac/audiotools metadata wants protobuf<3.20, tensorboard 2.21 wants protobuf>=6; protobuf 7.x works for both at runtime.)
+torch==2.8.0
+torchaudio==2.8.0
+numpy==2.4.6
+click==8.1.8
+requests==2.34.2
+tqdm==4.68.4
+faiss-cpu==1.14.3
+librosa==0.11.0
+scipy==1.17.1
+soundfile==0.14.0
+stftpitchshift==2.0
+soxr==1.1.0
+torchcrepe==0.0.24
+torchfcpe==0.0.4
+einops==0.8.2
+transformers==4.46.3
+huggingface-hub>=0.28.1,<1
+matplotlib==3.11.0
+tensorboard==2.21.0
+onnx==1.23.1
+onnxruntime>=1.17
+edge-tts==7.3.1
+beautifulsoup4==4.15.0
+sounddevice==0.5.5
+webrtcvad-wheels==2.0.14
+psutil==7.2.2
+uvicorn>=0.30.0
+fastapi>=0.110.0
+websockets>=13.0
+munch==4.0.0
+pyyaml
+audio-separator[cpu]==0.45.0
