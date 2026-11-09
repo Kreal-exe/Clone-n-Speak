@@ -1,5 +1,6 @@
 // deps: OVVoiceCheck.m OVLocale.m
 #import <Foundation/Foundation.h>
+#import <AVFoundation/AVFoundation.h>
 #import "OVVoiceCheck.h"
 
 static int gFails = 0;
@@ -43,17 +44,43 @@ static void testEnhanceRequestModes(void) {
 
 static void testCompareFlags(void) {
     NSDictionary *res = @{@"samples": @[@{@"rms_db": @-20, @"snr_db": @35}, @{@"rms_db": @-20, @"snr_db": @34},
-                                         @{@"rms_db": @-32, @"snr_db": @12}],
-                          @"pairs": @[@{@"a": @0, @"b": @1, @"duplicate": @YES}], @"median_rms_db": @-20};
+                                         @{@"rms_db": @-32, @"snr_db": @12}, @{@"rms_db": @-40, @"snr_db": @34}],
+                          @"pairs": @[@{@"a": @0, @"b": @1, @"duplicate": @YES}], @"median_rms_db": @-26, @"outliers": @[@2, @3]};
     ASSERT([OVCompareFlags(res, 0) count] == 0, "first is clean");
     ASSERT([OVCompareFlags(res, 1) containsObject:@"Duplicate"], "duplicate");
-    NSArray *f = OVCompareFlags(res, 2);
-    ASSERT([f containsObject:@"Much quieter"] && [f containsObject:@"Noisier"], "outlier flags");
+    ASSERT([OVCompareFlags(res, 2) containsObject:@"Noisier"], "noisy outlier");
+    ASSERT([OVCompareFlags(res, 3) containsObject:@"Much quieter"], "quiet outlier");
+    NSDictionary *none = @{@"samples": @[@{@"rms_db": @-30, @"snr_db": @10}], @"pairs": @[], @"median_rms_db": @-20, @"outliers": @[]};
+    ASSERT([OVCompareFlags(none, 0) count] == 0, "not an outlier: no flag, whatever the numbers");
+}
+
+static void testMoreAdviceCodes(void) {
+    ASSERT([OVAdviceInfo(@"long_pause")[@"button"] isEqualToString:@"Shorten pauses"], "long_pause");
+    ASSERT([OVAdviceInfo(@"long_pause")[@"action"] isEqualToString:@"light"], "long_pause action");
+    ASSERT([OVAdviceInfo(@"hum")[@"button"] isEqualToString:@"Denoise"] && [OVAdviceInfo(@"hum")[@"action"] isEqualToString:@"dfn"], "hum");
+}
+
+static void testWaveformPeaks(void) {
+    NSString *path = [NSTemporaryDirectory() stringByAppendingPathComponent:@"peaks_test.wav"];
+    NSDictionary *settings = @{AVFormatIDKey: @(kAudioFormatLinearPCM), AVSampleRateKey: @8000, AVNumberOfChannelsKey: @1,
+                               AVLinearPCMBitDepthKey: @16, AVLinearPCMIsFloatKey: @NO};
+    AVAudioFile *f = [[AVAudioFile alloc] initForWriting:[NSURL fileURLWithPath:path] settings:settings error:nil];
+    AVAudioPCMBuffer *b = [[AVAudioPCMBuffer alloc] initWithPCMFormat:f.processingFormat frameCapacity:8000];
+    b.frameLength = 8000;
+    for (int i = 0; i < 8000; i++) b.floatChannelData[0][i] = i < 4000 ? 0.5f : 0.0f;   // loud first half, silent second
+    [f writeFromBuffer:b error:nil];
+    f = nil;
+    NSArray *p = OVWaveformPeaksForFile(path, 10);
+    ASSERT(p.count == 10, "bucket count");
+    ASSERT([p[1][1] floatValue] > 0.45f, "first half is loud");
+    ASSERT([p[8][1] floatValue] == 0 && [p[8][0] floatValue] == 0, "second half is silent");
+    ASSERT(OVWaveformPeaksForFile(@"/nonexistent/x.wav", 10) == nil, "unreadable file -> nil");
+    [[NSFileManager defaultManager] removeItemAtPath:path error:nil];
 }
 
 int main(void) {
     @autoreleasepool {
-        testRegionsToTooltips(); testAdviceMapping(); testEnhanceRequestModes(); testCompareFlags();
+        testRegionsToTooltips(); testAdviceMapping(); testEnhanceRequestModes(); testCompareFlags(); testMoreAdviceCodes(); testWaveformPeaks();
         printf(gFails ? "voicescheck_test: %d FAILED\n" : "voicescheck_test: OK\n", gFails);
     }
     return gFails ? 1 : 0;

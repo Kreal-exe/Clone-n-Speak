@@ -49,14 +49,17 @@ NSArray<NSString *> *OVCompareFlags(NSDictionary *result, NSUInteger index) {
     for (NSDictionary *p in result[@"pairs"])
         if ([p[@"b"] unsignedIntegerValue] == index && [p[@"duplicate"] boolValue]) { [out addObject:L(@"Duplicate")]; break; }
     NSDictionary *s = samples[index];
+    // The engine decides who is an outlier (compare_samples "outliers"); here only the reason is named.
+    if (![result[@"outliers"] containsObject:@(index)]) return out;
     double medRms = [result[@"median_rms_db"] doubleValue];
     NSMutableArray<NSNumber *> *snrs = [NSMutableArray array];
     for (NSDictionary *x in samples) [snrs addObject:x[@"snr_db"] ?: @0];
     [snrs sortUsingSelector:@selector(compare:)];
     double medSnr = snrs.count % 2 ? [snrs[snrs.count / 2] doubleValue]
                                    : ([snrs[snrs.count / 2 - 1] doubleValue] + [snrs[snrs.count / 2] doubleValue]) / 2;
-    if (medRms - [s[@"rms_db"] doubleValue] > 6) [out addObject:L(@"Much quieter")];
-    if (medSnr - [s[@"snr_db"] doubleValue] > 10) [out addObject:L(@"Noisier")];
+    double quieter = medRms - [s[@"rms_db"] doubleValue], noisier = medSnr - [s[@"snr_db"] doubleValue];
+    if (quieter <= 0 && noisier <= 0) return out;
+    [out addObject:quieter >= noisier ? L(@"Much quieter") : L(@"Noisier")];
     return out;
 }
 
