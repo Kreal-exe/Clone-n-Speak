@@ -1,32 +1,15 @@
 #import "OVUI.h"
+#import "OVTheme.h"
 #import <objc/runtime.h>
 #import <QuartzCore/QuartzCore.h>
 
 NSNotificationName const OVLogBufferNotification = @"OVLogBuffer";
 
-static NSColor *Dynamic(NSColor *light, NSColor *dark) {
-    return [NSColor colorWithName:nil dynamicProvider:^NSColor *(NSAppearance *a) {
-        return [a bestMatchFromAppearancesWithNames:@[NSAppearanceNameAqua, NSAppearanceNameDarkAqua]] == NSAppearanceNameDarkAqua ? dark : light;
-    }];
-}
-
 static NSColor *RGB(CGFloat r, CGFloat g, CGFloat b) { return [NSColor colorWithSRGBRed:r green:g blue:b alpha:1]; }
 
-NSColor *OVCardColor(void) {
-    static NSColor *c;
-    if (!c) c = Dynamic([NSColor colorWithWhite:1 alpha:1], RGB(0.150, 0.156, 0.176));
-    return c;
-}
-NSColor *OVWindowColor(void) {
-    static NSColor *c;
-    if (!c) c = Dynamic(RGB(0.953, 0.957, 0.972), RGB(0.090, 0.094, 0.110));
-    return c;
-}
-NSColor *OVAccent(void) {
-    static NSColor *c;
-    if (!c) c = Dynamic(RGB(0.14, 0.42, 0.96), RGB(0.42, 0.64, 1.0));
-    return c;
-}
+NSColor *OVCardColor(void) { return OVColor(OVRoleSurface); }
+NSColor *OVWindowColor(void) { return OVColor(OVRoleBackground); }
+NSColor *OVAccent(void) { return OVColor(OVRoleAccent); }
 NSColor *OVGreen(void) { return NSColor.systemGreenColor; }
 
 NSGradient *OVBrandGradient(void) {

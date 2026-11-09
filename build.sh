@@ -54,6 +54,7 @@ for lproj in "$ROOT"/Resources/*.lproj; do
   mkdir -p "$RES/$(basename "$lproj")"
   cp "$lproj"/*.strings "$RES/$(basename "$lproj")/"
 done
+cp "$ROOT/Resources/themes.json" "$RES/themes.json"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 
 # The icon is drawn in code.

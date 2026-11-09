@@ -1,6 +1,7 @@
 #import <Cocoa/Cocoa.h>
 #import "OVPages.h"
 #import "OVUI.h"
+#import "OVTheme.h"
 #import "OVLocale.h"
 #import "OVRuntime.h"
 #import "OVModels.h"
@@ -283,6 +284,12 @@
 @property BOOL autoSwitch;
 @end
 
+static void OVRedrawTree(NSView *v) {
+    v.needsDisplay = YES;
+    v.needsLayout = YES;
+    for (NSView *sub in v.subviews) OVRedrawTree(sub);
+}
+
 @implementation AppDelegate
 
 - (void)applicationDidFinishLaunching:(NSNotification *)n {
@@ -290,6 +297,10 @@
     [NSUserDefaults.standardUserDefaults registerDefaults:@{@"autoPlay": @YES, @"autoSetup": @YES}];
     [OVPaths ensure];
     [OVLocale applyTheme];
+    // Colors are dynamic: a palette change only needs the whole view tree redrawn.
+    [NSNotificationCenter.defaultCenter addObserverForName:OVThemeDidChangeNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *note) {
+        for (NSWindow *w in NSApp.windows) OVRedrawTree(w.contentView);
+    }];
     [NSNotificationCenter.defaultCenter addObserverForName:OVLogNotification object:nil queue:nil usingBlock:^(NSNotification *note) {
         OVLogAppend(note.userInfo[@"line"]);
     }];
