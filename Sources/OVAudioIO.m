@@ -2,6 +2,8 @@
 #import <AVFoundation/AVFoundation.h>
 
 NSErrorDomain const OVAudioIOErrorDomain = @"OVAudioIO";
+BOOL OVAudioIOTestDiscardFrames = NO;  // tests only: makes the reader yield no frames (the Empty path)
+BOOL OVAudioIOTestSkipPrecheck = NO;  // tests only: exercises the mid-stream limit
 
 // L() lives in OVLocale.m (AppKit). This weak fallback lets the Foundation-only test build link;
 // in the app the strong definition wins.
@@ -14,6 +16,7 @@ static NSError *IOError(NSInteger code, NSString *msg) {
 static NSString *MsgUnsupported(void) { return L(@"This file can't be read as audio or video."); }
 static NSString *MsgNoAudio(void) { return L(@"This video has no audio track."); }
 static NSString *MsgTooLong(void) { return L(@"Cut it first: this file is longer than the allowed length."); }
+static NSString *MsgWrite(void) { return L(@"Could not save the converted audio. Check the free disk space and try again."); }
 static NSString *MsgEmpty(void) { return L(@"No sound was found in this file."); }
 
 static NSArray<AVAssetTrack *> *TracksOf(AVAsset *asset, AVMediaType type) {
@@ -59,7 +62,7 @@ BOOL OVDecodeAudio(NSString *src, NSString *dstWav, OVDecodeOptions opts, double
                 else fail = IOError(OVAudioIOUnsupported, MsgUnsupported());
                 break;
             }
-            if (opts.maxSeconds > 0) {
+            if (opts.maxSeconds > 0 && !OVAudioIOTestSkipPrecheck) {
                 double dur = 0;
                 for (AVAssetTrack *t in audio) dur = MAX(dur, CMTimeGetSeconds(CMTimeRangeGetEnd(t.timeRange)));
                 if (dur > opts.maxSeconds + 1e-3) { fail = IOError(OVAudioIOTooLong, MsgTooLong()); break; }
@@ -90,26 +93,37 @@ BOOL OVDecodeAudio(NSString *src, NSString *dstWav, OVDecodeOptions opts, double
 
             [fm createDirectoryAtPath:[dstWav stringByDeletingLastPathComponent] withIntermediateDirectories:YES attributes:nil error:nil];
             fp = fopen(part.fileSystemRepresentation, "wb");
-            if (!fp) { fail = IOError(OVAudioIOUnsupported, [NSString stringWithFormat:@"Cannot write %@", part]); break; }
+            if (!fp) { fail = IOError(OVAudioIOWriteFailed, MsgWrite()); break; }
             NSData *ph = WavHeader((uint32_t)llround(rate), (uint16_t)ch, 0);
-            fwrite(ph.bytes, 1, ph.length, fp);
+            if (fwrite(ph.bytes, 1, ph.length, fp) != ph.length) { fail = IOError(OVAudioIOWriteFailed, MsgWrite()); break; }
 
+            NSMutableData *scratch = [NSMutableData data];
             uint64_t frames = 0;
             uint64_t limit = opts.maxSeconds > 0 ? (uint64_t)ceil(opts.maxSeconds * rate) + (uint64_t)(rate * 0.002) : UINT64_MAX;
-            BOOL over = NO;
-            CMSampleBufferRef sb;
-            while ((sb = [out copyNextSampleBuffer])) {
-                CMBlockBufferRef bb = CMSampleBufferGetDataBuffer(sb);
-                size_t len = bb ? CMBlockBufferGetDataLength(bb) : 0;
-                if (len) {
-                    NSMutableData *tmp = [NSMutableData dataWithLength:len];
-                    CMBlockBufferCopyDataBytes(bb, 0, len, tmp.mutableBytes);
-                    fwrite(tmp.bytes, 1, len, fp);
-                    frames += len / (4 * (size_t)ch);
+            BOOL over = NO, writeFailed = NO;
+            for (;;) {
+                @autoreleasepool {  // keeps CoreMedia temporaries from piling up over a long file
+                    CMSampleBufferRef sb = [out copyNextSampleBuffer];
+                    if (!sb) break;
+                    CMBlockBufferRef bb = CMSampleBufferGetDataBuffer(sb);
+                    size_t len = bb && !OVAudioIOTestDiscardFrames ? CMBlockBufferGetDataLength(bb) : 0;
+                    if (len) {
+                        char *ptr = NULL; size_t avail = 0;
+                        if (CMBlockBufferGetDataPointer(bb, 0, &avail, NULL, &ptr) == kCMBlockBufferNoErr && avail == len) {
+                            if (fwrite(ptr, 1, len, fp) != len) writeFailed = YES;
+                        } else {  // non-contiguous buffer: copy into one reused scratch buffer
+                            if (scratch.length < len) scratch.length = len;
+                            CMBlockBufferCopyDataBytes(bb, 0, len, scratch.mutableBytes);
+                            if (fwrite(scratch.bytes, 1, len, fp) != len) writeFailed = YES;
+                        }
+                        frames += len / (4 * (size_t)ch);
+                    }
+                    CFRelease(sb);
                 }
-                CFRelease(sb);
+                if (writeFailed) break;
                 if (frames > limit) { over = YES; [reader cancelReading]; break; }
             }
+            if (writeFailed) { [reader cancelReading]; fail = IOError(OVAudioIOWriteFailed, MsgWrite()); break; }
             // The resampler drops its tail; restore the exact length (rate * duration) with silence.
             if (!over && rate != nativeRate && frames > 0) {
                 double dur = 0;
@@ -117,7 +131,7 @@ BOOL OVDecodeAudio(NSString *src, NSString *dstWav, OVDecodeOptions opts, double
                 uint64_t want = (uint64_t)llround(dur * rate);
                 if (want > frames && want - frames <= (uint64_t)(rate * 0.1)) {
                     NSMutableData *z = [NSMutableData dataWithLength:(want - frames) * (size_t)ch * 4];
-                    fwrite(z.bytes, 1, z.length, fp);
+                    if (fwrite(z.bytes, 1, z.length, fp) != z.length) { fail = IOError(OVAudioIOWriteFailed, MsgWrite()); break; }
                     frames = want;
                 }
             }
@@ -126,12 +140,11 @@ BOOL OVDecodeAudio(NSString *src, NSString *dstWav, OVDecodeOptions opts, double
             if (frames == 0) { fail = IOError(OVAudioIOEmpty, MsgEmpty()); break; }
             if (frames * (uint64_t)ch * 4 > 0xFFFFFF00u) { fail = IOError(OVAudioIOTooLong, MsgTooLong()); break; }
             NSData *h = WavHeader((uint32_t)llround(rate), (uint16_t)ch, (uint32_t)frames);
-            fseek(fp, 0, SEEK_SET);
-            fwrite(h.bytes, 1, h.length, fp);
+            BOOL hdrOK = fseek(fp, 0, SEEK_SET) == 0 && fwrite(h.bytes, 1, h.length, fp) == h.length;
             int cr = fclose(fp);
             fp = NULL;
-            if (cr != 0 || rename(part.fileSystemRepresentation, dstWav.fileSystemRepresentation) != 0) {
-                fail = IOError(OVAudioIOUnsupported, @"Write failed");
+            if (!hdrOK || cr != 0 || rename(part.fileSystemRepresentation, dstWav.fileSystemRepresentation) != 0) {
+                fail = IOError(OVAudioIOWriteFailed, MsgWrite());
                 break;
             }
             if (seconds) *seconds = (double)frames / rate;

@@ -190,6 +190,30 @@ static void testTooLong(void) {
     ASSERT(!Exists(dst) && !Exists([dst stringByAppendingString:@".part"]), "no leftovers");
 }
 
+extern BOOL OVAudioIOTestSkipPrecheck;
+
+static void testTooLongMidStream(void) {
+    NSString *dst = Tmp(@"mid.wav"); NSError *e = nil;
+    OVAudioIOTestSkipPrecheck = YES;  // the up-front duration check would catch this; test the frame-count path
+    BOOL ok = OVDecodeAudio(Fixture(@"tone-1s-44k-mono.mp3"), dst, Opts(0, NO, 0.3), NULL, &e);
+    OVAudioIOTestSkipPrecheck = NO;
+    ASSERT(!ok, "must fail");
+    ASSERT(e.code == OVAudioIOTooLong, "code %ld", (long)e.code);
+    ASSERT(!Exists(dst) && !Exists([dst stringByAppendingString:@".part"]), "no leftovers");
+}
+
+extern BOOL OVAudioIOTestDiscardFrames;
+
+static void testEmpty(void) {
+    NSString *dst = Tmp(@"empty.wav"); NSError *e = nil;
+    OVAudioIOTestDiscardFrames = YES;  // a readable audio track that yields no frames
+    BOOL ok = OVDecodeAudio(Fixture(@"tone-1s-44k-mono.mp3"), dst, Opts(0, NO, 0), NULL, &e);
+    OVAudioIOTestDiscardFrames = NO;
+    ASSERT(!ok, "must fail");
+    ASSERT(e.code == OVAudioIOEmpty, "code %ld", (long)e.code);
+    ASSERT(!Exists(dst) && !Exists([dst stringByAppendingString:@".part"]), "no leftovers");
+}
+
 static void testMediaKind(void) {
     ASSERT(OVMediaKindOfFile(Fixture(@"tone-1s-44k-mono.mp3")) == OVMediaAudio, "mp3");
     ASSERT(OVMediaKindOfFile(Fixture(@"tone-video-1s.mp4")) == OVMediaVideo, "mp4");
@@ -204,7 +228,7 @@ int main(void) {
         [[NSFileManager defaultManager] createDirectoryAtPath:gDir withIntermediateDirectories:YES attributes:nil error:nil];
         setvbuf(stdout, NULL, _IONBF, 0);
         void (*tests[])(void) = {testDecodeMP3, testDecodeM4AMadeInTest, testWAVRates, testStereoToMono, testVideoExtractsAudio,
-                                 testVideoWithoutAudioTrack, testNotMedia, testTooLong, testMediaKind};
+                                 testVideoWithoutAudioTrack, testNotMedia, testTooLong, testTooLongMidStream, testEmpty, testMediaKind};
         for (size_t i = 0; i < sizeof tests / sizeof *tests; i++) { printf("test %zu\n", i); tests[i](); }
         [[NSFileManager defaultManager] removeItemAtPath:gDir error:nil];
         if (gFails) { printf("%d failure(s)\n", gFails); return 1; }
