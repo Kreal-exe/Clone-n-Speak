@@ -361,6 +361,32 @@ NSTask *OVRunTask(NSString *path, NSArray<NSString *> *args, NSDictionary *env,
     }];
 }
 
+/// On-demand packages for optional features (music removal: onnxruntime, ~76 MB). They are not part of kRequirements:
+/// only people who use the feature download them. Installed into the app's own environment, like the extras.
+- (void)installOptionalPackages:(NSArray<NSString *> *)pkgs title:(NSString *)t
+                       progress:(void (^)(double, NSString *))p
+                           done:(void (^)(NSString *_Nullable error))done {
+    NSString *uv = [self findUV];
+    NSString *py = [OVPaths ownPython];
+    if (!pkgs.count) { done(L(@"Nothing to install.")); return; }
+    if (!uv) { done(L(@"The uv package manager wasn’t found — reinstall the engine on the Setup page.")); return; }
+    if (![NSFileManager.defaultManager isExecutableFileAtPath:py]) {
+        done(L(@"The engine isn’t installed yet — install it on the Setup page first."));
+        return;
+    }
+    [self log:t];
+    if (p) p(-1, t);
+    NSMutableArray *args = [@[@"pip", @"install", @"--python", py] mutableCopy];
+    [args addObjectsFromArray:pkgs];
+    __weak typeof(self) w = self;
+    OVRunTask(uv, args, [self uvEnv], ^(NSString *l) {
+        [w log:l];
+        if (p) p(-1, l);
+    }, ^(int st) {
+        done(st == 0 ? nil : L(@"Couldn’t install packages (see the log for details)"));
+    });
+}
+
 - (void)verifyInstall {
     [self setStep:L(@"Verifying installation…") progress:0.98];
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{

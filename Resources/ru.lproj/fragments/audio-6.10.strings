@@ -1,0 +1,3 @@
+/* On-demand packages for optional features (task 6.10). */
+"Nothing to install." = "Устанавливать нечего.";
+"The engine isn’t installed yet — install it on the Setup page first." = "Движок ещё не установлен — сначала установите его на странице «Подготовка».";

@@ -20,6 +20,7 @@ static NSString *J(NSString *a, NSString *b) { return [a stringByAppendingPathCo
 + (NSString *)binDir       { return J([self runtime], @"bin"); }
 + (NSString *)accent       { return J([self support], @"accent"); }
 + (NSString *)models       { return J([self legacySupport], @"models"); }
++ (NSString *)separationModels { return J(J([self support], @"models"), @"separation"); }
 + (NSString *)voices       { return J([self support], @"voices"); }
 + (NSString *)logs         { return J([self support], @"logs"); }
 + (NSString *)workerScript { return J([self runtime], @"worker.py"); }
