@@ -204,12 +204,16 @@ static const CGFloat kTrackH = 4, kKnob = 12;
     self.scrub.position = pos;
     self.scrub.value = dur > 0 ? pos / dur : 0;
     NSString *a = OVFormatTime(pos), *b = OVFormatTime(dur);
-    if (![self.elapsed.stringValue isEqualToString:a]) self.elapsed.stringValue = a;
-    if (![self.total.stringValue isEqualToString:b]) self.total.stringValue = b;
-    NSAccessibilityPostNotification(self.scrub, NSAccessibilityValueChangedNotification);
+    BOOL textChanged = ![self.elapsed.stringValue isEqualToString:a] || ![self.total.stringValue isEqualToString:b];
+    if (textChanged) {
+        self.elapsed.stringValue = a;
+        self.total.stringValue = b;
+        NSAccessibilityPostNotification(self.scrub, NSAccessibilityValueChangedNotification);
+    }
     if (playing && self.window && !self.timer) {
         __weak OVPlayerBar *w = self;
-        self.timer = [NSTimer scheduledTimerWithTimeInterval:0.1 repeats:YES block:^(NSTimer *t) { [w refresh]; }];
+        self.timer = [NSTimer timerWithTimeInterval:0.1 repeats:YES block:^(NSTimer *t) { [w refresh]; }];
+        [NSRunLoop.mainRunLoop addTimer:self.timer forMode:NSRunLoopCommonModes];
     } else if ((!playing || !self.window) && self.timer) {
         [self.timer invalidate];
         self.timer = nil;

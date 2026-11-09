@@ -38,7 +38,7 @@ static const CGFloat kRegionBar = 3;   // solid strip at the top of a region: ca
 - (NSSize)intrinsicContentSize { return NSMakeSize(NSViewNoIntrinsicMetric, 80); }
 
 - (void)setPeaks:(NSArray *)p { _peaks = [p copy] ?: @[]; self.needsDisplay = YES; }
-- (void)setRegions:(NSArray *)r { _regions = [r copy] ?: @[]; _hoverIndex = -1; self.needsDisplay = YES; }
+- (void)setRegions:(NSArray *)r { _regions = [r copy] ?: @[]; self.hoverIndex = -1; self.needsDisplay = YES; }
 - (void)setDuration:(NSTimeInterval)d { _duration = (isfinite(d) && d > 0) ? d : 0; self.needsDisplay = YES; }
 - (void)setPosition:(NSTimeInterval)p {
     p = isfinite(p) ? MAX(0, _duration > 0 ? MIN(p, _duration) : p) : 0;

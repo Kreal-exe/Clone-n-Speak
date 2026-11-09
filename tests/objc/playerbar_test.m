@@ -172,12 +172,19 @@ static void testABSwitchKeepsPosition(void) {
         CHECK([fp.currentPath isEqualToString:@"/o.wav"] && fp.playing == playing && fp.currentTime == 12.5, "state after switch");
         CHECK(bar.originalSelected, "original selected");
 
-        // The other file is shorter: past its end means its end.
-        [bar selectOriginal:NO];
+    }
+    {   // The target file is shorter than the current position: past its end means its end.
+        FakePlayer *fp = [FakePlayer new];
         fp.durations = @{@"/r.wav": @10, @"/o.wav": @28};
-        [fp.log removeAllObjects];
+        OVPlayerBar *bar = [[OVPlayerBar alloc] initWithFrame:NSMakeRect(0, 0, 500, 32)];
+        bar.player = fp; bar.path = @"/r.wav"; bar.originalPath = @"/o.wav";
         [bar selectOriginal:YES];
-        CHECK(fp.currentTime == 10 || fp.currentTime == 12.5, "position kept in seconds (%g)", fp.currentTime);
+        [fp play:@"/o.wav"];
+        fp.currentTime = 20;
+        [fp.log removeAllObjects];
+        [bar selectOriginal:NO];
+        CHECK([fp.log containsObject:@"seek:10"], "clamped to the new duration: %s", fp.log.description.UTF8String);
+        CHECK(![fp.log containsObject:@"seek:20"], "unclamped seek issued");
     }
     // Nothing loaded: switching only changes the side.
     FakePlayer *idle = [FakePlayer new];
