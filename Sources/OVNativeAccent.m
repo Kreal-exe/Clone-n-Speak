@@ -49,7 +49,7 @@ NSNotificationName const OVNativeAccentDidChangeNotification = @"OVNativeAccentD
     self.progress = 0;
     self.step = L(@"Starting…");
     [self changed];
-    NSDictionary *req = @{@"cmd": @"install_accent", @"dir": [OVPaths accent], @"uv": uv, @"env": [[OVRuntime shared] uvEnv]};
+    NSDictionary *req = @{@"cmd": @"install_accent", @"explicit_download": @YES, @"dir": [OVPaths accent], @"uv": uv, @"env": [[OVRuntime shared] uvEnv]};
     __weak typeof(self) w = self;
     [[OVWorker shared] request:req status:^(NSString *msg) {
         w.step = msg;
