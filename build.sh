@@ -48,11 +48,12 @@ mkdir -p "$APP/Contents/MacOS" "$RES" "$OUT/AppIcon.iconset"
 
 clang -fobjc-arc -O2 -mmacosx-version-min=13.0 -arch arm64 -Wall -Werror \
   -framework Cocoa -framework AVFAudio -framework AVFoundation -framework UniformTypeIdentifiers \
-  -framework NaturalLanguage -framework QuartzCore \
+  -framework NaturalLanguage -framework QuartzCore -framework CoreMedia \
   "$ROOT"/Sources/*.m -o "$APP/Contents/MacOS/$NAME"
 
 cp "$ROOT/Sources/Info.plist" "$APP/Contents/Info.plist"
-cp "$ROOT/Sources/worker.py" "$RES/worker.py"   # the app copies it into its Python runtime
+mkdir -p "$RES/py"
+cp "$ROOT"/Sources/*.py "$RES/py/"   # worker.py and the cns_* modules; the app copies them into its Python runtime
 for lproj in "$ROOT"/Resources/*.lproj; do
   mkdir -p "$RES/$(basename "$lproj")"
   cp "$lproj"/*.strings "$RES/$(basename "$lproj")/"
