@@ -65,6 +65,11 @@ class PresetTests(unittest.TestCase):
         self.assertEqual(p["format"], {"id": "wav", "quality": 3})
         self.assertTrue(w)
 
+    def test_missing_format_stays_absent(self):
+        d = base()
+        del d["format"]
+        self.assertNotIn("format", presets.validate_preset(d)[0])
+
     def test_formant_range(self):
         self.assertEqual(presets.validate_preset(base(formant=9))[0]["formant"], 2.0)
         self.assertEqual(presets.validate_preset(base(formant=0.1))[0]["formant"], 0.5)

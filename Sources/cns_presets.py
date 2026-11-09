@@ -75,8 +75,6 @@ def _clean_chain(raw, warnings):
 
 def _clean_format(raw, warnings):
     fmt = {"id": "wav", "quality": None}
-    if raw is None:
-        return fmt
     if not isinstance(raw, dict):
         warnings.append("The export format was not an object; WAV was used.")
         return fmt
@@ -130,8 +128,9 @@ def validate_preset(data):
         else:
             warnings.append("Style value \"%s\" is not a number or text and was dropped." % (key,))
     preset = {"version": PRESET_VERSION, "name": name, "style": style,
-              "format": _clean_format(data.get("format"), warnings),
               "chain": _clean_chain(data.get("chain", []), warnings)}
+    if data.get("format") is not None:  # absent stays absent: the app keeps its current format
+        preset["format"] = _clean_format(data["format"], warnings)
     if "formant" in data:
         f = data["formant"]
         if _is_number(f):

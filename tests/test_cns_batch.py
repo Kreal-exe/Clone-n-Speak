@@ -84,6 +84,52 @@ class BatchTests(unittest.TestCase):
                 batch.COMMANDS["batch_plan"]({"text": " \n \n", "mode": "lines"})
             self.assertEqual(c.exception.code, "empty")
 
+    def test_utf32_and_errors(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "t.txt")
+            with open(p, "wb") as f:
+                f.write("Привет\nмир".encode("utf-32"))
+            r = batch.COMMANDS["batch_plan"]({"path": p, "mode": "lines"})
+            self.assertEqual(texts(r["items"]), ["Привет", "мир"])
+            with self.assertRaises(core.AudioInputError):
+                batch.COMMANDS["batch_plan"]({"path": d, "mode": "lines"})
+            os.chmod(p, 0)
+            try:
+                with self.assertRaises(core.AudioInputError):
+                    batch.COMMANDS["batch_plan"]({"path": p, "mode": "lines"})
+            finally:
+                os.chmod(p, 0o644)
+
+    def test_missing_inputs(self):
+        with self.assertRaises(core.AudioInputError) as c:
+            batch.COMMANDS["batch_plan"]({})
+        self.assertEqual(c.exception.code, "bad_param")
+        self.assertEqual(batch.COMMANDS["batch_plan"]({"text": "a"})["names"], ["001-a.wav"])
+
+    def test_srt_reversed(self):
+        with self.assertRaises(core.AudioInputError) as c:
+            batch.split_items("1\n00:00:05,000 --> 00:00:03,000\nx\n", "srt")
+        self.assertEqual(c.exception.code, "bad_param")
+
+    def test_unsafe_names(self):
+        items = batch.split_items("hi", "whole")
+        for bad in ("wav/../../../evil", "../x", "toolongext", "w av"):
+            with self.assertRaises(core.AudioInputError):
+                batch.output_names(items, bad)
+            with self.assertRaises(core.AudioInputError):
+                batch.COMMANDS["batch_plan"]({"text": "hi", "ext": bad})
+        self.assertEqual(batch.output_names(items, None), ["001-hi.wav"])
+        evil = [{"index": 1, "slug": "../../x", "text": "t"}]
+        self.assertEqual(batch.output_names(evil, "wav"), ["001-x.wav"])
+
+    def test_markdown_is_not_quadratic(self):
+        import time
+        cases = ["```x\n" * 50000, "*a " * 20000, "_a " * 20000, "![" * 20000, "[a](" * 20000, "**a " * 10000]
+        for text in cases:
+            t = time.time()
+            batch.clean_markdown(text)
+            self.assertLess(time.time() - t, 2.0, text[:6])
+
     def test_plan_from_text(self):
         r = batch.COMMANDS["batch_plan"]({"text": "a\nb", "mode": "lines"})
         self.assertEqual(r["names"], ["001-a.wav", "002-b.wav"])
