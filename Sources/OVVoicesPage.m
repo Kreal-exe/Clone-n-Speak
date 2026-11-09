@@ -165,7 +165,7 @@ static NSTextField *HeaderTitle(NSView *v) {
                                            types:@[@"wav", @"mp3", @"m4a", @"flac", @"ogg", @"aac", @"mp4", @"mov"]
                                          onFiles:^(NSArray<NSURL *> *urls) {
         // same condition as a drop on the page itself
-        if (![OVWorker shared].busy && !weakSelf.recorder.recording && urls.firstObject) [weakSelf importAudio:urls.firstObject.path];
+        if (urls.firstObject) [weakSelf importDropped:urls.firstObject.path];
     }];
     NSStackView *playRow = OVHStack(@[self.playButton, self.refInfo, OVSpacer(), self.recordButton], 12);
     playRow.alignment = NSLayoutAttributeCenterY;
@@ -249,7 +249,7 @@ static NSTextField *HeaderTitle(NSView *v) {
     root.alignment = NSLayoutAttributeTop;
     [root registerForDraggedTypes:@[NSPasteboardTypeFileURL]];
     root.onDrop = ^(NSString *path) {  // a recording dropped on the page becomes the sample of the voice shown
-        if (![OVWorker shared].busy && !weakSelf.recorder.recording) [weakSelf importAudio:path];
+        [weakSelf importDropped:path];
     };
     left.translatesAutoresizingMaskIntoConstraints = NO;
     rightScroll.translatesAutoresizingMaskIntoConstraints = NO;
@@ -427,7 +427,7 @@ static NSTextField *HeaderTitle(NSView *v) {
 
     if (audio) {
         double d = OVAudioDuration(audio);
-        NSString *warn = d < 2.5 ? L(@"  ⚠︎ too short") : d > 20 ? L(@"  ⚠︎ longer than 20 s — trim it to 3–10 s") : @"";
+        NSString *warn = d < 2.5 ? L(@"  · too short") : d > 20 ? L(@"  · longer than 20 s — trim it to 3–10 s") : @"";
         BOOL bad = d < 2.5 || d > 20;
         for (NSView *old in [self.sampleBadge.arrangedSubviews copy]) { [self.sampleBadge removeArrangedSubview:old]; [old removeFromSuperview]; }
         [self.sampleBadge addArrangedSubview:OVBadge(bad ? OVFormatDuration(d) : L(@"OK"), bad ? OVRoleWarn : OVRoleOK)];
@@ -476,7 +476,19 @@ static NSTextField *HeaderTitle(NSView *v) {
     return [dir stringByAppendingPathComponent:name];
 }
 
+/// A file from the drop zone or a drop on the page: ignored with an explanation while a job or a recording runs.
+- (void)importDropped:(NSString *)path {
+    if ([OVWorker shared].busy || self.recorder.recording) {
+        self.status.textColor = OVColor(OVRoleWarn);
+        self.status.stringValue = self.recorder.recording ? L(@"Stop the recording first — the file was not added.")
+                                                          : L(@"The engine is busy — the file was not added. Try again in a moment.");
+        return;
+    }
+    [self importAudio:path];
+}
+
 - (void)importAudio:(NSString *)src {
+    self.status.textColor = OVColor(OVRoleMuted);
     NSString *dst = [self draftPath:[NSUUID.UUID.UUIDString stringByAppendingPathExtension:@"wav"]];
     NSError *err = nil;
     double secs = 0;
