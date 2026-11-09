@@ -1,0 +1,6 @@
+/* Voices page (task 5.2). */
+"Clone a voice from 3–10 seconds of speech." = "Клонируйте голос по 3–10 секундам речи.";
+"Drop a recording here" = "Перетащите запись сюда";
+"OK" = "OK";
+"WAV, MP3, M4A, FLAC · 3–10 s · or click to choose" = "WAV, MP3, M4A, FLAC · 3–10 с · или нажмите, чтобы выбрать";
+"What the sample says" = "Что говорится в образце";
