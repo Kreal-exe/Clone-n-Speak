@@ -1,0 +1,18 @@
+/* Speech page restyle (task 5.1). */
+"Type text and speak it in a cloned voice." = "Введите текст и озвучьте его клонированным голосом.";
+"Voice and style" = "Голос и стиль";
+"Result" = "Результат";
+"LoRA" = "LoRA";
+"Voice style" = "Стиль голоса";
+"Auto-improve" = "Автоулучшение";
+"No recordings yet" = "Озвучек пока нет";
+"voice %.0f%%" = "голос %.0f%%";
+" · clarity %.0f%%" = " · чёткость %.0f%%";
+"Pause" = "Пауза";
+"Detected in the text: %@" = "Определён по тексту: %@";
+"Recognized from the text as you type" = "Определяется по тексту, пока вы печатаете";
+"Language chosen by hand" = "Язык выбран вручную";
+"LoRA “%@” is on. LoRA and accent removal" = "LoRA «%@» включён. LoRA и удаление акцента";
+"Mark the stress on the selected vowel (or the one before the cursor): виши́вка. Press again to remove it. Shortcut ⌘'. The mark steers Auto-improve: of the takes of that phrase, the one that stresses this syllable wins. It is not sent to the model — marks make Ukrainian sound Russian." = "Отметить ударение на выделенной гласной (или на гласной перед курсором): виши́вка. Повторное нажатие убирает его. Сочетание клавиш ⌘'. Ударение управляет автоулучшением: из дублей этой фразы остаётся тот, где ударение падает на этот слог. Модели оно не передаётся — ударения в тексте делают украинскую речь русской по звучанию.";
+"Stress marked. It counts only with Auto-improve on, which picks the take that stresses it — the model itself ignores marks" = "Ударение отмечено. Оно учитывается только при включённом автоулучшении, которое выбирает дубль с этим ударением — сама модель ударения не понимает";
+"LoRA · %@" = "LoRA · %@";
