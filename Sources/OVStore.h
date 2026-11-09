@@ -5,6 +5,8 @@ NS_ASSUME_NONNULL_BEGIN
 extern NSNotificationName const OVVoicesDidChangeNotification;
 extern NSNotificationName const OVHistoryDidChangeNotification;
 
+@class OVJob;
+
 #pragma mark - Voices
 
 /// A cloned voice: folder with meta.plist, reference.wav and prompt.pt.
@@ -67,6 +69,8 @@ extern NSNotificationName const OVHistoryDidChangeNotification;
 - (NSString *)newOutputPathForText:(NSString *)text;
 - (void)record:(NSString *)path text:(NSString *)text voice:(nullable OVVoice *)voice result:(NSDictionary *)result;
 - (void)remove:(OVGeneration *)g;
+/// The history entry of a finished synth job: its text, voice (request[@"_voiceId"]) and result.
+- (void)recordJob:(OVJob *)job;
 @end
 
 #pragma mark - Audio helpers

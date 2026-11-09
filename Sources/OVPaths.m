@@ -22,6 +22,7 @@ static NSString *J(NSString *a, NSString *b) { return [a stringByAppendingPathCo
 + (NSString *)models       { return J([self legacySupport], @"models"); }
 + (NSString *)voices       { return J([self support], @"voices"); }
 + (NSString *)logs         { return J([self support], @"logs"); }
++ (NSString *)jobs         { return J([self support], @"jobs"); }
 + (NSString *)workerScript { return J([self runtime], @"worker.py"); }
 + (NSString *)outputs {
     NSString *music = NSSearchPathForDirectoriesInDomains(NSMusicDirectory, NSUserDomainMask, YES).firstObject
@@ -33,7 +34,7 @@ static NSString *J(NSString *a, NSString *b) { return [a stringByAppendingPathCo
 + (void)ensure {
     NSFileManager *fm = NSFileManager.defaultManager;
     for (NSString *d in @[[self support], [self runtime], [self binDir],
-                          [self voices], [self logs], [self outputs]])
+                          [self voices], [self logs], [self jobs], [self outputs]])
         [fm createDirectoryAtPath:d withIntermediateDirectories:YES attributes:nil error:nil];
 }
 

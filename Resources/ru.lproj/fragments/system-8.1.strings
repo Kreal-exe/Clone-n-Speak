@@ -1,0 +1,23 @@
+/* Job manager (task 8.1). */
+"The app closed while this task was running. Start it again." = "Приложение закрылось, пока задача выполнялась. Запустите её снова.";
+"Unknown kind of task: %@. Update the app or the plugin." = "Неизвестный вид задачи: %@. Обновите приложение или плагин.";
+"Too many tasks are waiting. Wait for some to finish, then send the request again." = "В очереди слишком много задач. Дождитесь, пока часть завершится, и отправьте запрос снова.";
+"The task could not start: %@" = "Задачу не удалось запустить: %@";
+"The task could not start." = "Задачу не удалось запустить.";
+"No program to run was given." = "Не указана программа для запуска.";
+"The task failed." = "Задача не удалась.";
+"The process ended without a result. See the log of this task." = "Процесс завершился без результата. Подробности в журнале задачи.";
+"The process was terminated by signal %d. See the log of this task." = "Процесс прерван сигналом %d. Подробности в журнале задачи.";
+"Exit code %d. See the log of this task." = "Код выхода %d. Подробности в журнале задачи.";
+"The task has no command." = "У задачи нет команды.";
+"Waiting for the engine…" = "Ждём, пока освободится движок…";
+"Starting the engine…" = "Запускаем движок…";
+"Speech: %@" = "Озвучка: %@";
+"Voice cloning" = "Клонирование голоса";
+"Training: %@" = "Обучение: %@";
+"Voice training" = "Обучение голоса";
+"Installing components" = "Установка компонентов";
+"1 task is running" = "Выполняется 1 задача";
+"%lu tasks are running" = "Выполняется задач: %lu";
+"If you quit now, the running tasks are stopped and their unfinished files are deleted." = "Если выйти сейчас, выполняющиеся задачи остановятся, а их незаконченные файлы удалятся.";
+"Stop and quit" = "Остановить и выйти";

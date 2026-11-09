@@ -11,6 +11,7 @@
 #import "OVMemory.h"
 #import "OVPageRegistry.h"
 #import "OVDesign.h"
+#import "OVJobs.h"
 
 #pragma mark - Sidebar
 
@@ -484,6 +485,7 @@ static void OVRedrawTree(NSView *v) {
     [self migrateOldVoice];
     [[OVVoices shared] reload];
     [[OVHistory shared] reload];
+    [OVJobs registerBuiltinKinds];
     [self buildMenu];
     [self buildWindow];
 
@@ -734,6 +736,7 @@ static void OVWriteSnapshot(NSView *v, NSString *file) {
     self.window.titlebarAppearsTransparent = YES;
     self.window.titleVisibility = NSWindowTitleHidden;
     self.window.title = OVAppName;
+    self.window.releasedWhenClosed = NO;   // the window comes back on a click on the Dock icon while tasks run
     NSToolbar *tb = [[NSToolbar alloc] initWithIdentifier:@"main"];
     tb.showsBaselineSeparator = NO;
     self.window.toolbar = tb;
@@ -857,7 +860,30 @@ static void OVWriteSnapshot(NSView *v, NSString *file) {
 - (void)goPage:(NSMenuItem *)it { [self show:it.representedObject]; }
 - (void)showSettings:(id)s { [self show:@"settings"]; }
 
-- (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)a { return YES; }
+/// Closing the last window ends the app, unless tasks are running (and, from 8.6, while the local API is on):
+/// they go on in the background with the Dock icon, and a click on it opens the window again.
+- (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)a {
+    return OVJobs.shared.activeCount == 0;
+}
+
+- (BOOL)applicationShouldHandleReopen:(NSApplication *)a hasVisibleWindows:(BOOL)visible {
+    if (!visible) [self.window makeKeyAndOrderFront:nil];
+    return NO;
+}
+
+- (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)a {
+    NSUInteger n = OVJobs.shared.activeCount;
+    if (n == 0) return NSTerminateNow;
+    NSAlert *alert = [NSAlert new];
+    alert.messageText = n == 1 ? L(@"1 task is running") : [NSString stringWithFormat:L(@"%lu tasks are running"), (unsigned long)n];
+    alert.informativeText = L(@"If you quit now, the running tasks are stopped and their unfinished files are deleted.");
+    [alert addButtonWithTitle:L(@"Stop and quit")];
+    [alert addButtonWithTitle:L(@"Cancel")];
+    [NSApp activateIgnoringOtherApps:YES];
+    if ([alert runModal] != NSAlertFirstButtonReturn) return NSTerminateCancel;
+    [OVJobs.shared stopAllAndWait:3];
+    return NSTerminateNow;
+}
 - (BOOL)applicationSupportsSecureRestorableState:(NSApplication *)a { return YES; }
 
 - (void)applicationWillTerminate:(NSNotification *)n {

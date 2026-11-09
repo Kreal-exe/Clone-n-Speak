@@ -4,6 +4,7 @@
 #import "OVLocale.h"
 #import "OVMemory.h"
 #import "OVWorker.h"
+#import "OVJobs.h"
 #import <AVFAudio/AVFAudio.h>
 
 NSNotificationName const OVVoicesDidChangeNotification = @"OVVoicesDidChange";
@@ -234,6 +235,14 @@ NSNotificationName const OVHistoryDidChangeNotification = @"OVHistoryDidChange";
     if ([r[@"problems"] count]) meta[@"problems"] = r[@"problems"];
     [meta writeToFile:[path.stringByDeletingPathExtension stringByAppendingPathExtension:@"plist"] atomically:YES];
     [self reload];
+}
+
+- (void)recordJob:(OVJob *)job {
+    NSString *path = [job.result[@"path"] isKindOfClass:NSString.class] ? job.result[@"path"] : job.outputs.firstObject;
+    NSString *text = [job.request[@"text"] isKindOfClass:NSString.class] ? job.request[@"text"] : nil;
+    if (!path.length || !text) return;
+    NSString *vid = [job.request[@"_voiceId"] isKindOfClass:NSString.class] ? job.request[@"_voiceId"] : nil;
+    [self record:path text:text voice:vid ? [[OVVoices shared] voiceWithId:vid] : nil result:job.result ?: @{}];
 }
 
 - (void)remove:(OVGeneration *)g {

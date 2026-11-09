@@ -15,6 +15,7 @@ NS_ASSUME_NONNULL_BEGIN
 + (NSString *)logs;           // …/logs
 + (NSString *)workerScript;   // …/runtime/worker.py
 + (NSString *)outputs;        // ~/Music/Clone'n'Speak
++ (NSString *)jobs;           // …/jobs (the task manager's records)
 + (void)ensure;
 
 /// Folders of the previous version (OmniVoice UA).
