@@ -277,6 +277,36 @@
 
 #pragma mark - App delegate
 
+static NSRect OVDefaultWindowFrame(NSScreen *screen) {
+    NSRect vis = screen.visibleFrame;
+    CGFloat w = MIN(MAX(vis.size.width * 0.80, 1100), 1600);
+    CGFloat h = MIN(MAX(vis.size.height * 0.88, 720), 1100);
+    w = MIN(w, vis.size.width - 16);   // small screens scale the window down below the clamps, 8 pt margin each side
+    h = MIN(h, vis.size.height - 16);
+    return NSMakeRect(NSMidX(vis) - w / 2, NSMidY(vis) - h / 2, round(w), round(h));
+}
+
+static NSScreen *OVScreenForFrame(NSRect f) {
+    for (NSScreen *s in NSScreen.screens)
+        if (NSContainsRect(s.visibleFrame, f)) return s;
+    return NSScreen.mainScreen ?: NSScreen.screens.firstObject;
+}
+
+/// The default frame of the screen the window will appear on; the saved origin (OVWindowOrigin) is kept only when
+/// the whole window then fits on a connected screen, otherwise the window is centred on the main screen.
+static NSRect OVInitialWindowFrame(void) {
+    NSString *saved = [NSUserDefaults.standardUserDefaults stringForKey:@"OVWindowOrigin"];
+    if (saved.length) {
+        NSPoint o = NSPointFromString(saved);
+        for (NSScreen *s in NSScreen.screens) {
+            NSRect f = OVDefaultWindowFrame(s);
+            f.origin = o;
+            if (NSContainsRect(s.visibleFrame, f)) return f;
+        }
+    }
+    return OVDefaultWindowFrame(NSScreen.mainScreen ?: NSScreen.screens.firstObject);
+}
+
 @interface AppDelegate : NSObject <NSApplicationDelegate, NSWindowDelegate>
 @property NSWindow *window;
 @property OVSidebar *sidebar;
@@ -455,6 +485,11 @@ static void OVRedrawTree(NSView *v) {
     [self.sidebar selectPage:page];
 }
 
+- (void)windowDidMove:(NSNotification *)n {
+    if (n.object != self.window) return;
+    [NSUserDefaults.standardUserDefaults setObject:NSStringFromPoint(self.window.frame.origin) forKey:@"OVWindowOrigin"];
+}
+
 - (void)buildWindow {
     self.sidebar = [OVSidebar new];
     self.content = [OVContent new];
@@ -483,18 +518,11 @@ static void OVRedrawTree(NSView *v) {
     self.window.toolbar = tb;
     self.window.toolbarStyle = NSWindowToolbarStyleUnifiedCompact;
     self.window.delegate = self;
-    [self.window setContentSize:NSMakeSize(980, 680)];
-    self.window.contentMinSize = NSMakeSize(820, 560);
-    [self.window center];
-    self.window.frameAutosaveName = @"MainWindow";
-    // never taller or wider than the screen (small MacBook Air displays, Stage Manager, …)
-    NSRect vis = (self.window.screen ?: NSScreen.mainScreen).visibleFrame;
-    NSRect f = self.window.frame;
-    f.size.width = MIN(f.size.width, vis.size.width);
-    f.size.height = MIN(f.size.height, vis.size.height);
-    f.origin.x = MAX(vis.origin.x, MIN(f.origin.x, NSMaxX(vis) - f.size.width));
-    f.origin.y = MAX(vis.origin.y, MIN(f.origin.y, NSMaxY(vis) - f.size.height));
-    [self.window setFrame:f display:NO];
+    // Opens at a size derived from the screen on every launch; only the position is remembered.
+    NSRect frame = OVInitialWindowFrame();
+    NSRect vis = OVScreenForFrame(frame).visibleFrame;
+    self.window.contentMinSize = NSMakeSize(MIN(820, vis.size.width - 16), MIN(560, vis.size.height - 16));
+    [self.window setFrame:frame display:NO];
     [self.window makeKeyAndOrderFront:nil];
     [split.splitView setPosition:208 ofDividerAtIndex:0];
 }

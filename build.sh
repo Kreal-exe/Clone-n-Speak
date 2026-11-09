@@ -4,10 +4,12 @@
 #   ./build.sh          build, install into /Applications and open the app
 #   ./build.sh --test   run the Python tests first
 #   ./build.sh --zip    also write dist/CloneNSpeak-v<version>.zip for a release
+#   ./build.sh --dmg    also write dist/CloneNSpeak-v<version>.dmg (app, Applications link and an
+#                       "Allow Clone'n'Speak to open" script that clears the quarantine flag)
 #
 # INSTALL_DIR=~/Applications ./build.sh installs somewhere else.
 # SIGN_IDENTITY="Developer ID Application: …" signs for distribution (default: ad-hoc);
-# with NOTARY_PROFILE=<notarytool keychain profile> the --zip is notarized and stapled too.
+# with NOTARY_PROFILE=<notarytool keychain profile> the --zip and --dmg are notarized and stapled too.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 NAME="Clone'n'Speak"
@@ -15,11 +17,12 @@ BUNDLE_ID="com.clonenspeak.mac"
 VERSION="$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" "$ROOT/Sources/Info.plist")"
 DEST="${INSTALL_DIR:-/Applications}"
 SIGN="${SIGN_IDENTITY:--}"
-TEST=0; ZIP=0
+TEST=0; ZIP=0; DMG=0
 for arg in "$@"; do
   case "$arg" in
     --test) TEST=1 ;;
     --zip)  ZIP=1 ;;
+    --dmg)  DMG=1 ;;
     *) echo "Unknown option: $arg" >&2; exit 1 ;;
   esac
 done
@@ -87,6 +90,40 @@ if [ "$ZIP" = 1 ]; then
     ditto -c -k --norsrc --keepParent "$APP" "$ZIPFILE"
   fi
   echo "Release zip: $ZIPFILE"
+fi
+
+if [ "$DMG" = 1 ]; then
+  # The app next to a link to Applications: open the image, drag one onto the other. The script next to them clears
+  # the quarantine flag a download puts on an unnotarized app (copying it to Applications first if needed) and opens it.
+  STAGE="$OUT/dmg"
+  mkdir -p "$STAGE" "$ROOT/dist"
+  ditto "$APP" "$STAGE/$NAME.app"
+  ln -s /Applications "$STAGE/Applications"
+  ALLOW="$STAGE/Allow $NAME to open.command"
+  cat > "$ALLOW" <<'SCRIPT'
+#!/bin/bash
+# Clears the quarantine flag from Clone'n'Speak in Applications so it opens with a double-click.
+# Copies it there from this disk image first when it is not installed yet.
+APP="/Applications/Clone'n'Speak.app"
+HERE="$(cd "$(dirname "$0")" && pwd)"
+if [ ! -d "$APP" ]; then
+  echo "Copying Clone'n'Speak to Applications..."
+  ditto "$HERE/Clone'n'Speak.app" "$APP" || { echo "Could not copy it. Drag Clone'n'Speak onto Applications, then run this again."; exit 1; }
+fi
+xattr -dr com.apple.quarantine "$APP" 2>/dev/null || sudo xattr -dr com.apple.quarantine "$APP"
+echo "Done: Clone'n'Speak is allowed to open."
+open "$APP"
+SCRIPT
+  chmod +x "$ALLOW"
+  DMGFILE="$ROOT/dist/CloneNSpeak-v$VERSION.dmg"
+  rm -f "$DMGFILE"
+  hdiutil create -volname "$NAME" -srcfolder "$STAGE" -fs HFS+ -format UDZO -ov "$DMGFILE" >/dev/null
+  if [ "$SIGN" != "-" ] && [ -n "${NOTARY_PROFILE:-}" ]; then
+    codesign --force --timestamp --sign "$SIGN" "$DMGFILE"
+    xcrun notarytool submit "$DMGFILE" --keychain-profile "$NOTARY_PROFILE" --wait
+    xcrun stapler staple "$DMGFILE"
+  fi
+  echo "Release disk image: $DMGFILE"
 fi
 
 # Quit a running copy first (the app may ask to finish a generation; if it stays open, stop).

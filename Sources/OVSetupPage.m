@@ -182,11 +182,8 @@ BOOL OVEverythingReady(void) {
     OVFillWidth(@[sub, card, logCard], page);
     [logCard setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationVertical];
 
-    NSView *root = [NSView new];
-    [root addSubview:page];
-    OVPin(page, root, NSEdgeInsetsZero);
-    [page.widthAnchor constraintLessThanOrEqualToConstant:860].active = YES;
-    self.view = root;
+    // Scrolls when the window is shorter than the page (small displays): the page never forces the window taller.
+    self.view = OVScrollPage(page);
 
     NSNotificationCenter *nc = NSNotificationCenter.defaultCenter;
     [nc addObserver:self selector:@selector(refresh) name:OVRuntimeDidChangeNotification object:nil];

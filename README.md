@@ -117,9 +117,10 @@ The app shows the engine's memory and the free memory live, and on Macs with les
 
 ## Install
 
-Download `CloneNSpeak-x.y.z.dmg` from [Releases](../../releases), open it and drag the app to *Applications*.
+Download `CloneNSpeak-vx.y.z.dmg` from [Releases](../../releases), open it and drag the app to *Applications*.
 
-The build is not notarized yet, so macOS says it “could not verify” the app. Remove the quarantine flag and launch it:
+The build is not notarized, so macOS says it “could not verify” the app. Double-click **Allow Clone'n'Speak to open**
+in the disk image (it clears the quarantine flag and opens the app), or do the same by hand:
 
 ```bash
 xattr -dr com.apple.quarantine "/Applications/Clone'n'Speak.app"
@@ -137,6 +138,7 @@ temporary folder (nothing is written into the project), signs ad hoc, installs i
 ./build.sh          # build, install /Applications/Clone'n'Speak.app and open it (~10 s)
 ./build.sh --test   # run the Python tests first
 ./build.sh --zip    # + dist/CloneNSpeak-v<version>.zip for a release
+./build.sh --dmg    # + dist/CloneNSpeak-v<version>.dmg (app, Applications link, “Allow Clone'n'Speak to open” script)
 INSTALL_DIR=~/Applications ./build.sh   # install somewhere else
 ```
 
@@ -144,9 +146,9 @@ INSTALL_DIR=~/Applications ./build.sh   # install somewhere else
   `--test` uses the app's own Python runtime when it is installed)
 - Translations: `python3 tools/strings.py check`
 - Xcode project: `python3 tools/gen_xcodeproj.py`
-- Signed & notarized zip: `SIGN_IDENTITY="Developer ID Application: …" NOTARY_PROFILE=notary ./build.sh --zip`.
+- Signed & notarized dmg and zip: `SIGN_IDENTITY="Developer ID Application: …" NOTARY_PROFILE=notary ./build.sh --dmg --zip`.
 - Releasing: bump `CFBundleShortVersionString` in `Sources/Info.plist`, add a `## x.y.z` section to `CHANGELOG.md`
-  and push to `main`. GitHub Actions runs the tests, builds the zip, tags `vx.y.z` and publishes the release with
+  and push to `main`. GitHub Actions runs the tests, builds the dmg and zip, tags `vx.y.z` and publishes the release with
   that section as its notes (`tools/release_notes.py x.y.z` shows them). Nothing is built or uploaded by hand.
 
 ### How it works
@@ -366,9 +368,10 @@ Clone'n'Speak — небольшое нативное macOS-приложение
 ## Требования и установка
 
 Mac на Apple Silicon (M1 и новее), macOS 13+, 8 ГБ памяти достаточно, ~3 ГБ на диске, интернет при первом запуске.
-Скачайте `CloneNSpeak-x.y.z.dmg` в [Releases](../../releases) и перетащите приложение в «Программы».
+Скачайте `CloneNSpeak-vx.y.z.dmg` в [Releases](../../releases) и перетащите приложение в «Программы».
 
-Сборка пока не нотаризована, поэтому macOS пишет, что «не удалось подтвердить» файл. Снимите карантинную пометку и запустите:
+Сборка не нотаризована, поэтому macOS пишет, что «не удалось подтвердить» файл. Дважды щёлкните **Allow Clone'n'Speak to open**
+в образе диска (скрипт снимает карантинную пометку и открывает приложение) или сделайте то же вручную:
 
 ```bash
 xattr -dr com.apple.quarantine "/Applications/Clone'n'Speak.app"
@@ -376,7 +379,7 @@ open "/Applications/Clone'n'Speak.app"
 ```
 
 Или: «Системные настройки» → «Конфиденциальность и безопасность» → **«Всё равно открыть»** (в macOS 15 «правый клик → Открыть» больше не работает).
-Сборка из исходников — `./build.sh`: собирает приложение, устанавливает его в `/Applications` и открывает (`--test` — с тестами, `--zip` — ещё и архив в `dist/`).
+Сборка из исходников — `./build.sh`: собирает приложение, устанавливает его в `/Applications` и открывает (`--test` — с тестами, `--zip` — ещё и архив в `dist/`, `--dmg` — ещё и образ диска со скриптом снятия карантина).
 
 ## Лицензия
 
