@@ -1,119 +1,60 @@
-// Batch speech synthesis as an OVJobs kind. Foundation only: the app classes it talks to (OVWorker, OVSettings,
-// OVVoices, OVHistory) are looked up at run time, so the runner is testable with OVJobs + OVJobStore alone.
+// Batch speech synthesis as an OVJobs kind. Foundation only: everything from the app (model, voices, history, the
+// worker) comes through OVBatchEnvironment, so the runner is testable with OVJobs + OVJobStore + OVExport alone.
 #import "OVBatch.h"
 #import "OVExport.h"
 #import "OVLocale.h"
-#import <objc/message.h>
+
+static id<OVBatchEnvironment> gEnv;
 
 #pragma mark - Request
 
-NSDictionary *OVBatchRequest(NSArray<NSDictionary *> *items, OVVoice *voice, NSString *language, OVPreset *presetObject, NSString *outDir) {
-    id v = voice, preset = presetObject;   // the classes live in other files (OVStore, OVPresets): read through KVC
+NSDictionary *OVBatchRequest(NSArray<NSDictionary *> *items, OVVoice *voice, NSString *language, OVPreset *preset, NSString *outDir) {
     NSMutableArray *list = [NSMutableArray array];
     for (NSDictionary *it in items)
         [list addObject:@{@"index": it[@"index"] ?: @0, @"text": it[@"text"] ?: @"", @"name": it[@"name"] ?: @""}];
-    NSString *voiceId = v ? [v valueForKey:@"identifier"] : nil;
+    NSString *voiceId = voice ? [gEnv identifierOfVoice:voice] : nil;
     NSMutableDictionary *r = [@{@"items": list, @"voice": voiceId ?: NSNull.null, @"language": language.length ? language : @"auto",
-                                @"style": @{}, @"preset": NSNull.null, @"format": @"wav", @"quality": @(-1),
+                                @"style": @{}, @"preset": NSNull.null, @"quality": @(-1),
                                 @"outDir": outDir ?: @"", @"skipExisting": @NO} mutableCopy];
     if (preset) {
-        r[@"preset"] = [preset valueForKey:@"identifier"] ?: NSNull.null;
-        NSDictionary *style = [preset valueForKey:@"style"];
-        if ([style isKindOfClass:NSDictionary.class]) r[@"style"] = style;
-        NSString *fmt = [preset valueForKey:@"formatId"];
-        if ([fmt isKindOfClass:NSString.class] && fmt.length) r[@"format"] = fmt;
-        r[@"quality"] = [preset valueForKey:@"quality"] ?: @(-1);
-        NSArray *chain = [preset valueForKey:@"chain"];
-        if ([chain isKindOfClass:NSArray.class] && chain.count) r[@"chain"] = chain;
+        NSDictionary *p = [gEnv presetFields:preset];
+        if ([p[@"identifier"] isKindOfClass:NSString.class]) r[@"preset"] = p[@"identifier"];
+        if ([p[@"style"] isKindOfClass:NSDictionary.class]) r[@"style"] = p[@"style"];
+        NSString *fmt = [p[@"formatId"] isKindOfClass:NSString.class] ? p[@"formatId"] : nil;
+        if (fmt.length) {
+            r[@"format"] = fmt;
+            NSInteger q = [p[@"quality"] respondsToSelector:@selector(integerValue)] ? [p[@"quality"] integerValue] : -1;
+            // 0 is "unset" in a preset; for the kbps formats OVExport treats it as the default too
+            r[@"quality"] = @(q <= 0 ? -1 : q);
+        }
+        if ([p[@"chain"] isKindOfClass:NSArray.class] && [p[@"chain"] count]) r[@"chain"] = p[@"chain"];
     }
     return r;
-}
-
-#pragma mark - Default synth (OVWorker)
-
-static id Call0(id target, NSString *sel) {
-    SEL s = NSSelectorFromString(sel);
-    return [target respondsToSelector:s] ? ((id (*)(id, SEL))objc_msgSend)(target, s) : nil;
-}
-static id Call1(id target, NSString *sel, id arg) {
-    SEL s = NSSelectorFromString(sel);
-    return [target respondsToSelector:s] ? ((id (*)(id, SEL, id))objc_msgSend)(target, s, arg) : nil;
-}
-
-@interface OVBatchWorkerSynth : NSObject <OVBatchSynth>
-@end
-@implementation OVBatchWorkerSynth {
-    BOOL _stopped;
-}
-- (void)synthesize:(NSDictionary *)req progress:(void (^)(double))progress done:(void (^)(NSDictionary *, NSString *))done {
-    id worker = Call0(NSClassFromString(@"OVWorker"), @"shared");
-    if (!worker) { done(nil, L(@"The speech engine is not available. Restart the app.")); return; }
-    if (_stopped) { done(nil, @"Stopped"); return; }
-    if ([[worker valueForKey:@"busy"] boolValue]) {   // a direct call of a page is running: wait for it
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            [self synthesize:req progress:progress done:done];
-        });
-        return;
-    }
-    ((void (*)(id, SEL, id, id, id, id))objc_msgSend)(worker, NSSelectorFromString(@"request:status:progress:done:"),
-                                                      req, nil, progress, done);
-}
-- (void)stop {
-    _stopped = YES;
-    Call0(Call0(NSClassFromString(@"OVWorker"), @"shared"), @"stop");
-}
-@end
-
-/// The worker request for one item: model, voice and generation settings come from the app.
-static NSDictionary *WorkerRequest(NSDictionary *batch, NSDictionary *item, NSString *out) {
-    NSString *language = [batch[@"language"] isKindOfClass:NSString.class] ? batch[@"language"] : @"auto";
-    NSMutableDictionary *params = [NSMutableDictionary dictionary];
-    NSDictionary *gp = Call0(NSClassFromString(@"OVSettings"), @"generationParams");
-    if ([gp isKindOfClass:NSDictionary.class]) [params addEntriesFromDictionary:gp];
-    if ([batch[@"style"] isKindOfClass:NSDictionary.class] && [batch[@"style"] count]) params[@"style"] = batch[@"style"];
-    NSMutableDictionary *req = [@{@"cmd": @"synth", @"text": item[@"text"] ?: @"", @"out": out,
-                                  @"language": language, @"params": params} mutableCopy];
-    id spec = Call0(NSClassFromString(@"OVSettings"), @"modelSpec");
-    if (spec) req[@"model"] = spec;
-    if ([batch[@"voice"] isKindOfClass:NSString.class]) {
-        id voice = Call1(Call0(NSClassFromString(@"OVVoices"), @"shared"), @"voiceWithId:", batch[@"voice"]);
-        id workerSpec = Call1(voice, @"workerSpecForLanguage:", [language isEqualToString:@"auto"] ? nil : language);
-        if (workerSpec) req[@"voice"] = workerSpec;
-    }
-    if ([batch[@"chain"] isKindOfClass:NSArray.class]) req[@"chain"] = batch[@"chain"];
-    return req;
-}
-
-/// Every finished item goes into the Speech history at once (when the app is there).
-static void RecordHistory(NSDictionary *batch, NSDictionary *item, NSString *path, NSDictionary *data) {
-    id history = Call0(NSClassFromString(@"OVHistory"), @"shared");
-    SEL rec = NSSelectorFromString(@"record:text:voice:result:");
-    if (!history || ![history respondsToSelector:rec]) return;
-    id voice = nil;
-    if ([batch[@"voice"] isKindOfClass:NSString.class])
-        voice = Call1(Call0(NSClassFromString(@"OVVoices"), @"shared"), @"voiceWithId:", batch[@"voice"]);
-    ((void (*)(id, SEL, id, id, id, id))objc_msgSend)(history, rec, path, item[@"text"] ?: @"", voice, data ?: @{});
 }
 
 #pragma mark - Runner
 
 @interface OVBatchRunner : NSObject <OVJobRunner>
-- (instancetype)initWithSynth:(id<OVBatchSynth>)synth;
+- (instancetype)initWithEnvironment:(id<OVBatchEnvironment>)env;
 @end
 
 @implementation OVBatchRunner {
+    id<OVBatchEnvironment> _env;
     id<OVBatchSynth> _synth;
     OVJobContext *_ctx;
-    NSDictionary *_req;
+    NSDictionary *_req, *_voiceSpec;
     NSArray *_items;
     NSString *_outDir, *_ext;
     OVExportFormat _format;
     NSInteger _quality, _next, _failed, _skipped;
-    NSMutableArray *_outputs, *_errors;
-    BOOL _finished, _skip;
+    NSMutableArray *_outputs, *_errors, *_history;
+    BOOL _finished, _skip, _inFlight, _recordHistory;
 }
 
-- (instancetype)initWithSynth:(id<OVBatchSynth>)synth { if ((self = [super init])) _synth = synth; return self; }
+- (instancetype)initWithEnvironment:(id<OVBatchEnvironment>)env {
+    if ((self = [super init])) { _env = env; _synth = [env makeSynth]; }
+    return self;
+}
 
 - (void)start:(OVJob *)job context:(OVJobContext *)ctx {
     _ctx = ctx;
@@ -121,50 +62,90 @@ static void RecordHistory(NSDictionary *batch, NSDictionary *item, NSString *pat
     _items = [_req[@"items"] isKindOfClass:NSArray.class] ? _req[@"items"] : @[];
     _outDir = [_req[@"outDir"] isKindOfClass:NSString.class] ? _req[@"outDir"] : @"";
     _skip = [_req[@"skipExisting"] boolValue];
-    _format = [OVExport formatForIdentifier:[_req[@"format"] isKindOfClass:NSString.class] ? _req[@"format"] : @"wav"];
-    _ext = @[@"wav", @"m4a", @"flac", @"m4a", @"mp3", @"ogg"][_format];
+    NSString *fmt = [_req[@"format"] isKindOfClass:NSString.class] ? _req[@"format"] : @"wav";
+    _format = [OVExport formatForIdentifier:fmt];
+    _ext = [OVExport formats][_format][@"ext"];
     _quality = [_req[@"quality"] respondsToSelector:@selector(integerValue)] ? [_req[@"quality"] integerValue] : -1;
     _outputs = [NSMutableArray array];
     _errors = [NSMutableArray array];
+    _history = [NSMutableArray array];
     if (!_items.count) { [self fail:L(@"There is nothing to speak. Add text or a file and start again.")]; return; }
     if (!_outDir.length) { [self fail:L(@"Choose a folder for the audio files and start again.")]; return; }
+    NSString *voiceId = [_req[@"voice"] isKindOfClass:NSString.class] ? _req[@"voice"] : nil;
+    if (voiceId) {
+        NSString *lang = [_req[@"language"] isKindOfClass:NSString.class] && ![_req[@"language"] isEqualToString:@"auto"] ? _req[@"language"] : nil;
+        _voiceSpec = [_env voiceSpecForId:voiceId language:lang];
+        if (!_voiceSpec) { [self fail:L(@"The voice is no longer available. Choose another voice and start again.")]; return; }
+    }
     NSError *e = nil;
     if (![NSFileManager.defaultManager createDirectoryAtPath:_outDir withIntermediateDirectories:YES attributes:nil error:&e]) {
         [self fail:[NSString stringWithFormat:L(@"The folder could not be created (%@). Choose another folder."), e.localizedDescription]];
         return;
     }
+    NSString *hist = _env.historyFolder;
+    _recordHistory = hist.length && [_ext isEqualToString:@"wav"] &&
+        [_outDir.stringByStandardizingPath isEqualToString:hist.stringByStandardizingPath];
     [NSFileManager.defaultManager createDirectoryAtPath:ctx.workDirectory withIntermediateDirectories:YES attributes:nil error:nil];
     [self runNext];
+}
+
+/// One exit for every outcome: the Speech history gets the finished files first (one pass, not one reload per item).
+- (void)flushHistory {
+    NSArray *entries = _history;
+    _history = nil;
+    for (NSDictionary *h in entries) [_env recordHistoryPath:h[@"path"] text:h[@"text"] voiceId:h[@"voice"] == NSNull.null ? nil : h[@"voice"] result:h[@"result"]];
 }
 
 - (void)fail:(NSString *)m {
     if (_finished) return;
     _finished = YES;
+    [self flushHistory];
     [_ctx failWithError:m];
 }
 
+- (NSDictionary *)workerRequestFor:(NSDictionary *)item out:(NSString *)out {
+    NSString *language = [_req[@"language"] isKindOfClass:NSString.class] ? _req[@"language"] : @"auto";
+    NSMutableDictionary *params = [[_env generationParams] mutableCopy] ?: [NSMutableDictionary dictionary];
+    if ([_req[@"style"] isKindOfClass:NSDictionary.class] && [_req[@"style"] count]) params[@"style"] = _req[@"style"];
+    NSMutableDictionary *r = [@{@"cmd": @"synth", @"text": item[@"text"] ?: @"", @"out": out,
+                                @"language": language, @"params": params} mutableCopy];
+    NSDictionary *model = [_env modelSpec];
+    if (model) r[@"model"] = model;
+    if (_voiceSpec) r[@"voice"] = _voiceSpec;
+    if ([_req[@"chain"] isKindOfClass:NSArray.class]) r[@"chain"] = _req[@"chain"];
+    return r;
+}
+
 - (void)runNext {
-    if (_finished) return;
-    if (_ctx.stopRequested) { [self fail:@"Stopped"]; return; }
-    if (_next >= (NSInteger)_items.count) { [self finish]; return; }
-    NSInteger i = _next++, n = _items.count;
-    NSDictionary *item = [_items[i] isKindOfClass:NSDictionary.class] ? _items[i] : @{};
-    NSString *base = [([item[@"name"] isKindOfClass:NSString.class] ? item[@"name"] : @"") stringByDeletingPathExtension].lastPathComponent;
-    if (!base.length) base = [NSString stringWithFormat:@"%03ld", (long)[item[@"index"] integerValue]];
-    NSString *dst = [_outDir stringByAppendingPathComponent:[base stringByAppendingPathExtension:_ext]];
-    if (_skip && [NSFileManager.defaultManager fileExistsAtPath:dst]) {
-        _skipped++;
-        [_ctx log:[NSString stringWithFormat:@"Item %@ skipped: %@ exists", item[@"index"], dst.lastPathComponent]];
-        [_ctx setProgress:(double)(i + 1) / n];
-        [self runNext];
+    // skipped items are passed in a loop, not by recursion
+    while (!_finished) {
+        if (_ctx.stopRequested) { [self fail:@"Stopped"]; return; }
+        if (_next >= (NSInteger)_items.count) { [self finish]; return; }
+        NSInteger i = _next++, n = _items.count;
+        NSDictionary *item = [_items[i] isKindOfClass:NSDictionary.class] ? _items[i] : @{};
+        NSString *base = [([item[@"name"] isKindOfClass:NSString.class] ? item[@"name"] : @"") stringByDeletingPathExtension].lastPathComponent;
+        if (!base.length) base = [NSString stringWithFormat:@"%03ld", (long)[item[@"index"] integerValue]];
+        NSString *dst = [_outDir stringByAppendingPathComponent:[base stringByAppendingPathExtension:_ext]];
+        if (_skip && [NSFileManager.defaultManager fileExistsAtPath:dst]) {
+            _skipped++;
+            [_ctx log:[NSString stringWithFormat:@"Item %@ skipped: %@ exists", item[@"index"], dst.lastPathComponent]];
+            [_ctx setProgress:(double)(i + 1) / n];
+            continue;
+        }
+        [self synthesizeItem:item at:i of:n to:dst];
         return;
     }
+}
+
+- (void)synthesizeItem:(NSDictionary *)item at:(NSInteger)i of:(NSInteger)n to:(NSString *)dst {
     [_ctx setStatus:[NSString stringWithFormat:L(@"Item %ld of %ld"), (long)i + 1, (long)n]];
     NSString *master = [_ctx.workDirectory stringByAppendingPathComponent:[NSString stringWithFormat:@"item-%ld.wav", (long)i + 1]];
     OVJobContext *ctx = _ctx;
-    [_synth synthesize:WorkerRequest(_req, item, master) progress:^(double p) {
+    _inFlight = YES;
+    [_synth synthesize:[self workerRequestFor:item out:master] progress:^(double p) {
         [ctx setProgress:(i + MIN(1, MAX(0, p))) / n];
     } done:^(NSDictionary *data, NSString *error) {
+        self->_inFlight = NO;
         if (self->_finished) return;
         if (self->_ctx.stopRequested) { [self fail:@"Stopped"]; return; }
         if (error) { [self itemFailed:item error:error]; return; }
@@ -179,7 +160,10 @@ static void RecordHistory(NSDictionary *batch, NSDictionary *item, NSString *pat
                 if (!final) { [self itemFailed:item error:ee.localizedDescription ?: L(@"The file could not be saved.")]; return; }
                 [self->_outputs addObject:final];
                 [ctx setProgress:(double)(i + 1) / n];
-                RecordHistory(self->_req, item, final, data);
+                if (self->_recordHistory)
+                    [self->_history addObject:@{@"path": final, @"text": item[@"text"] ?: @"",
+                                                @"voice": [self->_req[@"voice"] isKindOfClass:NSString.class] ? self->_req[@"voice"] : NSNull.null,
+                                                @"result": data ?: @{}}];
                 [self runNext];
             });
         });
@@ -201,25 +185,25 @@ static void RecordHistory(NSDictionary *batch, NSDictionary *item, NSString *pat
         return;
     }
     _finished = YES;
+    [self flushHistory];
     [_ctx succeedWithResult:@{@"done": @(_outputs.count), @"failed": @(_failed), @"skipped": @(_skipped),
                               @"outputs": _outputs, @"errors": _errors} outputs:_outputs];
 }
 
-/// Kills a synthesis in progress; between items (or while a file is exported) the loop sees stopRequested.
-- (void)stop:(OVJob *)job { [_synth stop]; }
+/// Only a synthesis of this batch is stopped; between items (or while a file is exported) the loop sees stopRequested,
+/// and the worker, which may belong to the Speech page, is left alone.
+- (void)stop:(OVJob *)job { if (_inFlight) [_synth stop]; }
 @end
 
 #pragma mark - Registration
 
-void OVBatchRegisterOn(OVJobs *jobs, id<OVBatchSynth> (^synthFactory)(void)) {
+void OVBatchRegisterOn(OVJobs *jobs, id<OVBatchEnvironment> env) {
+    gEnv = env;
     [jobs registerKind:OVJobKindBatch lane:OVJobLaneCompute retryable:YES
                  title:^NSString *(NSDictionary *r) {
         NSUInteger n = [r[@"items"] isKindOfClass:NSArray.class] ? [r[@"items"] count] : 0;
         return [NSString stringWithFormat:L(@"Batch speech: %lu items"), (unsigned long)n];
     } factory:^id<OVJobRunner>(OVJob *job) {
-        id<OVBatchSynth> s = synthFactory ? synthFactory() : nil;
-        return [[OVBatchRunner alloc] initWithSynth:s ?: [OVBatchWorkerSynth new]];
+        return [[OVBatchRunner alloc] initWithEnvironment:env];
     } onSuccess:nil];
 }
-
-void OVBatchRegister(void) { OVBatchRegisterOn(OVJobs.shared, nil); }

@@ -1,5 +1,6 @@
 #import "OVBatchSheet.h"
 #import "OVBatch.h"
+#import "OVBatchEnv.h"
 #import "OVJobs.h"
 #import "OVExport.h"
 #import "OVStore.h"
@@ -52,10 +53,12 @@ static OVBatchSheet *shown;  // the sheet keeps its controller alive
     self.fileField = OVField(L(@"Text, Markdown or SRT file (or paste text below)"));
     self.fileField.accessibilityLabel = L(@"Text file");
     NSButton *choose = OVButton(L(@"Choose…"), self, @selector(chooseFile:));
+    choose.accessibilityLabel = L(@"Choose a text file");
     NSScrollView *ts = NSTextView.scrollableTextView;
     ts.hasVerticalScroller = YES;
     self.textScroll = ts;
     ((NSTextView *)ts.documentView).font = [NSFont systemFontOfSize:13];
+    ((NSTextView *)ts.documentView).accessibilityLabel = L(@"Text to speak");
     NSView *area = OVTextArea(ts, 110);
     self.modePopup = [OVPopup popup];
     for (NSArray *m in @[@[L(@"Each line"), @"lines"], @[L(@"Each paragraph"), @"paragraphs"], @[L(@"Each subtitle (SRT)"), @"srt"],
@@ -86,10 +89,9 @@ static OVBatchSheet *shown;  // the sheet keeps its controller alive
     }
     self.presetPopup = [OVPopup popup];
     [self.presetPopup addItemWithTitle:L(@"No preset")];
-    id presets = [NSClassFromString(@"OVPresets") respondsToSelector:@selector(shared)] ? [NSClassFromString(@"OVPresets") performSelector:@selector(shared)] : nil;
-    for (id p in [presets valueForKey:@"all"] ?: @[]) {
-        [self.presetPopup addItemWithTitle:[p valueForKey:@"name"]];
-        self.presetPopup.lastItem.representedObject = p;
+    for (NSDictionary *c in [[OVBatchAppEnvironment new] presetChoices]) {
+        [self.presetPopup addItemWithTitle:c[@"title"]];
+        self.presetPopup.lastItem.representedObject = c[@"preset"];
     }
     self.formatPopup = [OVPopup popup];
     for (NSDictionary *f in [OVExport formats]) {
@@ -103,6 +105,10 @@ static OVBatchSheet *shown;  // the sheet keeps its controller alive
     self.outField.stringValue = dir;
     self.outField.accessibilityLabel = L(@"Output folder");
     NSButton *chooseOut = OVButton(L(@"Choose…"), self, @selector(chooseFolder:));
+    chooseOut.accessibilityLabel = L(@"Choose the output folder");
+    self.voicePopup.accessibilityLabel = L(@"Voice");
+    self.languagePopup.accessibilityLabel = L(@"Language");
+    self.presetPopup.accessibilityLabel = L(@"Preset");
     self.skipBox = OVCheckbox(L(@"Skip files that already exist"), @"batchSkipExisting");
     NSStackView *voice = OVVStack(@[OVColumns(@[OVFieldBlock(L(@"Voice"), nil, self.voicePopup),
                                                 OVFieldBlock(L(@"Language"), nil, self.languagePopup)], 16),
@@ -114,6 +120,7 @@ static OVBatchSheet *shown;  // the sheet keeps its controller alive
     // 3. Progress
     self.bar = OVProgressBar();
     self.bar.hidden = YES;
+    self.bar.accessibilityLabel = L(@"Batch progress");
     self.status = OVWrapLabel(@"", 13, OVColor(OVRoleMuted));
     NSStackView *progress = OVVStack(@[self.bar, self.status], 10);
     OVFillWidth(@[self.bar, self.status], progress);
@@ -177,6 +184,7 @@ static OVBatchSheet *shown;  // the sheet keeps its controller alive
 - (void)setRunning:(BOOL)running {
     self.startButton.enabled = !running;
     self.stopButton.hidden = !running;
+    self.stopButton.enabled = running && self.job != nil;   // nothing to stop while the text is being split
     self.bar.hidden = !running;
 }
 
@@ -192,7 +200,9 @@ static OVBatchSheet *shown;  // the sheet keeps its controller alive
     if (!outDir.length) { self.status.stringValue = L(@"Choose a folder for the audio files."); return; }
     if (OVWorker.shared.busy) { self.status.stringValue = L(@"The engine is busy. Wait for the current task and press Start again."); return; }
     id preset = self.presetPopup.selectedItem.representedObject;
-    NSString *ext = preset ? [[preset valueForKey:@"formatId"] description] : self.formatPopup.selectedItem.representedObject;
+    NSString *ext = self.formatPopup.selectedItem.representedObject;
+    NSString *presetExt = preset ? [OVBatchAppEnvironment.new presetFields:preset][@"formatId"] : nil;
+    if (presetExt.length) ext = presetExt;
     NSMutableDictionary *plan = [@{@"cmd": @"batch_plan", @"mode": self.modePopup.selectedItem.representedObject ?: @"lines",
                                    @"ext": ext.length ? ([ext isEqualToString:@"alac"] ? @"m4a" : ext) : @"wav"} mutableCopy];
     if (file.length) plan[@"path"] = file; else plan[@"text"] = text;
@@ -215,14 +225,14 @@ static OVBatchSheet *shown;  // the sheet keeps its controller alive
     OVVoice *voice = vid ? [[OVVoices shared] voiceWithId:vid] : nil;
     NSString *language = self.languagePopup.selectedItem.representedObject ?: @"auto";
     NSMutableDictionary *req = [OVBatchRequest(items, voice, language, (OVPreset *)preset, outDir) mutableCopy];
-    if (!preset) req[@"format"] = self.formatPopup.selectedItem.representedObject ?: @"wav";
+    if (!req[@"format"]) req[@"format"] = self.formatPopup.selectedItem.representedObject ?: @"wav";   // a preset without a format keeps the chosen one
     req[@"skipExisting"] = @(self.skipBox.state == NSControlStateValueOn);
-    if (vid) req[@"_voiceId"] = vid;
     [NSUserDefaults.standardUserDefaults setObject:outDir forKey:kOutDirKey];
     NSString *err = nil;
     self.job = [OVJobs.shared submitKind:OVJobKindBatch request:req origin:@"app" onFinish:nil error:&err];
     if (!self.job) { self.status.stringValue = err ?: L(@"The batch could not start."); [self setRunning:NO]; return; }
     self.bar.doubleValue = 0;
+    self.stopButton.enabled = YES;
     [self jobChanged:nil];
 }
 

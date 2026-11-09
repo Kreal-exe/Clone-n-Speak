@@ -40,21 +40,49 @@ static void WriteWav(NSString *path) {
 @property NSSet<NSNumber *> *failing;
 @property (copy) void (^afterItem)(NSInteger count);
 @property NSInteger count, stops;
+@property BOOL stopped;
+@property BOOL hold;                       // keep `done` until -release
+@property (copy) void (^pending)(void);
 @property NSMutableArray *requests;
 @end
 @implementation StubSynth
 - (void)synthesize:(NSDictionary *)req progress:(void (^)(double))progress done:(void (^)(NSDictionary *, NSString *))done {
     [self.requests addObject:req];
     NSInteger n = ++self.count;
-    dispatch_async(dispatch_get_main_queue(), ^{
+    void (^go)(void) = ^{
         progress(0.5);
+        if (self.stopped) { done(nil, @"Stopped"); return; }
         if ([self.failing containsObject:@(n)]) { done(nil, @"synthesis failed"); }
         else { WriteWav(req[@"out"]); done(@{@"path": req[@"out"], @"seconds": @0.1}, nil); }
         if (self.afterItem) self.afterItem(n);
-    });
+    };
+    if (self.hold) { self.pending = go; return; }
+    dispatch_async(dispatch_get_main_queue(), go);
 }
-- (void)stop { self.stops++; }
+- (void)stop {
+    self.stops++; self.stopped = YES;
+    if (self.pending) { void (^g)(void) = self.pending; self.pending = nil; dispatch_async(dispatch_get_main_queue(), g); }
+}
 @end
+
+@interface StubEnv : NSObject <OVBatchEnvironment>
+@property StubSynth *synth;
+@property (copy) NSString *history;
+@property BOOL voiceMissing;
+@property NSMutableArray *recorded;
+@end
+@implementation StubEnv
+- (NSDictionary *)modelSpec { return @{@"path": @"m"}; }
+- (NSDictionary *)generationParams { return @{}; }
+- (NSDictionary *)voiceSpecForId:(NSString *)v language:(NSString *)l { return self.voiceMissing ? nil : @{@"audio": v}; }
+- (NSString *)identifierOfVoice:(OVVoice *)v { return @"v1"; }
+- (NSDictionary *)presetFields:(OVPreset *)p { return @{@"identifier": @"p1", @"formatId": @"ogg", @"quality": @0}; }
+- (NSString *)historyFolder { return self.history; }
+- (void)recordHistoryPath:(NSString *)p text:(NSString *)t voiceId:(NSString *)v result:(NSDictionary *)r { [self.recorded addObject:p]; }
+- (id<OVBatchSynth>)makeSynth { return self.synth; }
+@end
+
+static StubEnv *gEnv;
 
 static NSArray *items(NSInteger n) {
     NSMutableArray *a = [NSMutableArray array];
@@ -71,7 +99,10 @@ static OVJob *run(OVJobs *jobs, NSDictionary *req, BOOL wait) {
 static NSDictionary *request(NSInteger n, NSString *out) { return OVBatchRequest(items(n), nil, @"auto", nil, out); }
 static OVJobs *makeJobs(StubSynth *stub) {
     OVJobs *jobs = [OVJobs jobsWithRoot:tempDir()];
-    OVBatchRegisterOn(jobs, ^id<OVBatchSynth>{ return stub; });
+    gEnv = [StubEnv new];
+    gEnv.synth = stub;
+    gEnv.recorded = [NSMutableArray array];
+    OVBatchRegisterOn(jobs, gEnv);
     return jobs;
 }
 static StubSynth *newStub(void) { StubSynth *s = [StubSynth new]; s.requests = [NSMutableArray array]; return s; }
@@ -100,7 +131,7 @@ static void testStopBetweenItems(void) {
     ASSERT([files containsObject:@"001-a.wav"] && files.count == 1, "%@", files);
     for (NSString *f in files) ASSERT(![f hasSuffix:@".part"]);
     ASSERT(!exists(job.workDirectory), "work directory remains");
-    ASSERT(stub.stops >= 1);
+    ASSERT(stub.stops == 0, "the worker must not be stopped while idle: %ld", (long)stub.stops);
     ASSERT(stub.count == 1);
 }
 
@@ -168,6 +199,69 @@ static void testNameCollisionWithExistingFile(void) {
     ASSERT([[NSString stringWithContentsOfFile:mine encoding:NSUTF8StringEncoding error:nil] isEqualToString:@"mine"]);
 }
 
+static void testStopWhileSynthesizing(void) {
+    StubSynth *stub = newStub(); stub.hold = YES; OVJobs *jobs = makeJobs(stub);
+    NSString *out = [tempDir() stringByAppendingPathComponent:@"o"];
+    OVJob *job = run(jobs, request(2, out), NO);
+    waitUntil(5, ^BOOL{ return stub.pending != nil; });
+    [jobs stop:job];
+    waitUntil(20, ^BOOL{ return !job.active; });
+    ASSERT(job.state == OVJobStopped, "state %ld", (long)job.state);
+    ASSERT(stub.stops == 1 && stub.count == 1);
+}
+
+static void testMissingVoiceFails(void) {
+    StubSynth *stub = newStub(); OVJobs *jobs = makeJobs(stub);
+    gEnv.voiceMissing = YES;
+    NSMutableDictionary *req = [request(2, [tempDir() stringByAppendingPathComponent:@"o"]) mutableCopy];
+    req[@"voice"] = @"gone";
+    OVJob *job = run(jobs, req, YES);
+    ASSERT(job.state == OVJobFailed && [job.error containsString:@"no longer available"], "%@", job.error);
+    ASSERT(stub.count == 0);
+}
+
+static void testVoiceSpecPassed(void) {
+    StubSynth *stub = newStub(); OVJobs *jobs = makeJobs(stub);
+    NSMutableDictionary *req = [request(1, [tempDir() stringByAppendingPathComponent:@"o"]) mutableCopy];
+    req[@"voice"] = @"v1";
+    OVJob *job = run(jobs, req, YES);
+    ASSERT(job.state == OVJobSucceeded);
+    ASSERT([stub.requests.firstObject[@"voice"][@"audio"] isEqualToString:@"v1"]);
+}
+
+static void testHistoryOnlyInOutputsFolder(void) {
+    StubSynth *stub = newStub(); OVJobs *jobs = makeJobs(stub);
+    NSString *outputs = [tempDir() stringByAppendingPathComponent:@"outputs"];
+    gEnv.history = outputs;
+    run(jobs, request(2, outputs), YES);
+    ASSERT(gEnv.recorded.count == 2, "%lu", (unsigned long)gEnv.recorded.count);
+    [gEnv.recorded removeAllObjects];
+    run(jobs, request(2, [tempDir() stringByAppendingPathComponent:@"elsewhere"]), YES);
+    ASSERT(gEnv.recorded.count == 0);
+    NSMutableDictionary *req = [request(1, [tempDir() stringByAppendingPathComponent:@"outputs"]) mutableCopy];
+    req[@"outDir"] = outputs; req[@"format"] = @"m4a";
+    run(jobs, req, YES);
+    ASSERT(gEnv.recorded.count == 0, "only WAV files are recorded");
+}
+
+static void testManySkippedNoRecursion(void) {
+    StubSynth *stub = newStub(); OVJobs *jobs = makeJobs(stub);
+    NSString *out = tempDir();
+    NSArray *its = items(3000);
+    for (NSDictionary *it in its) [@"x" writeToFile:[out stringByAppendingPathComponent:it[@"name"]] atomically:NO encoding:NSUTF8StringEncoding error:nil];
+    NSMutableDictionary *req = [OVBatchRequest(its, nil, @"auto", nil, out) mutableCopy];
+    req[@"skipExisting"] = @YES;
+    OVJob *job = run(jobs, req, YES);
+    ASSERT(job.state == OVJobSucceeded && [job.result[@"skipped"] integerValue] == 3000);
+}
+
+static void testPresetFormatAndQuality(void) {
+    StubSynth *stub = newStub(); makeJobs(stub);
+    NSDictionary *r = OVBatchRequest(items(1), nil, @"auto", (OVPreset *)@"p", @"/x");
+    ASSERT([r[@"format"] isEqualToString:@"ogg"] && [r[@"quality"] integerValue] == -1 && [r[@"preset"] isEqualToString:@"p1"]);
+    ASSERT(OVBatchRequest(items(1), nil, @"auto", nil, @"/x")[@"format"] == nil);
+}
+
 int main(void) {
     @autoreleasepool {
         testAllItemsWritten();
@@ -178,6 +272,12 @@ int main(void) {
         testOutDirCreated();
         testRetryRebuildsRequest();
         testNameCollisionWithExistingFile();
+        testStopWhileSynthesizing();
+        testMissingVoiceFails();
+        testVoiceSpecPassed();
+        testHistoryOnlyInOutputsFolder();
+        testManySkippedNoRecursion();
+        testPresetFormatAndQuality();
     }
     if (gFailures) { fprintf(stderr, "%d failure(s)\n", gFailures); return 1; }
     printf("batch_test: all passed\n");

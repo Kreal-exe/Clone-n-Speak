@@ -40,3 +40,8 @@
 "There is nothing to speak. Add text or a file and start again." = "Озвучивать нечего. Добавьте текст или файл и запустите снова.";
 "Turn a text file or pasted text into many audio files at once: one file per line, paragraph or subtitle, all in the same voice." = "Превратите текстовый файл или вставленный текст в много аудиофайлов сразу: по файлу на строку, абзац или субтитр, одним голосом.";
 "Voice & result" = "Голос и результат";
+"The voice is no longer available. Choose another voice and start again." = "Этого голоса больше нет. Выберите другой голос и запустите снова.";
+"Choose a text file" = "Выбрать текстовый файл";
+"Text to speak" = "Текст для озвучки";
+"Choose the output folder" = "Выбрать папку вывода";
+"Batch progress" = "Прогресс пакетной озвучки";
