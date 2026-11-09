@@ -56,7 +56,11 @@ def lowpassed_noise(seconds, sr=44100, cutoff=8000, seed=3, channels=2, amp=0.4)
         spec = np.fft.rfft(rng.standard_normal(n))
         spec[int(cutoff * n / sr):] = 0
         x = np.fft.irfft(spec, n)
-        out.append(x / np.abs(x).max() * amp)
+        x = x / np.abs(x).max() * amp
+        f = int(0.05 * sr)  # fades: an abrupt start has content above the network's band, which it drops
+        x[:f] *= np.linspace(0, 1, f)
+        x[-f:] *= np.linspace(1, 0, f)
+        out.append(x)
     return np.stack(out).astype(np.float32)
 
 
@@ -122,9 +126,9 @@ class SeparateTests(unittest.TestCase):
             stems[stem], _ = core.read_audio(r["path"], mono=False)
         ref, _ = core.read_audio(src, mono=False)
         # compensate 1.009 of the catalog lifts the voice to 0.5045 of the mix, the music is the rest
-        gain = np.abs(stems["vocals"]).max() / np.abs(ref).max()
-        self.assertAlmostEqual(gain, 0.5, delta=0.005)
-        self.assertAlmostEqual(np.abs(stems["music"]).max() / np.abs(ref).max(), 0.5, delta=0.005)
+        k = sep.CATALOG[0]["params"]["compensate"] * 0.5
+        self.assertLess(np.abs(stems["vocals"] - k * ref).max(), 0.002)
+        self.assertLess(np.abs(stems["music"] - (1 - k) * ref).max(), 0.002)
         self.assertLess(np.abs(stems["vocals"] + stems["music"] - ref).max(), 1e-4)
 
     def test_rate_and_channels_restored(self):
@@ -139,6 +143,8 @@ class SeparateTests(unittest.TestCase):
                 self.assertEqual(yr, rate)
                 self.assertEqual(y.ndim, 1 if ch == 1 else 2)
                 self.assertEqual(len(y), x.shape[1])
+                ref, _ = core.read_audio(src, mono=False)  # content survives the rate round trip
+                self.assertGreaterEqual(snr_db(sep.CATALOG[0]["params"]["compensate"] * 0.5 * ref, y), 30)
 
     def test_loud_stem_is_scaled_not_clipped(self):
         self.fake_engine(3.0)
@@ -263,6 +269,60 @@ class SeparateTests(unittest.TestCase):
                 sep._download(e, self.dir)
         self.assertIn("internet", str(cm.exception))
         self.assertEqual(os.listdir(self.dir), [])
+
+    def test_download_stops_when_larger_than_entry(self):
+        payload = os.urandom(300000)
+        e = dict(self.entry(payload), size=1000)
+        reads = []
+
+        class Counting(io.BytesIO):
+            def read(self, n=-1):
+                reads.append(n)
+                return super().read(n)
+        with mock.patch.object(sep, "_open_url", lambda url: Counting(payload)):
+            with self.assertRaises(sep.ModelDownloadError):
+                sep._download(e, self.dir)
+        self.assertEqual(os.listdir(self.dir), [])
+        self.assertEqual(len(reads), 1)
+
+    def test_redirect_to_http_is_refused(self):
+        import urllib.error
+        import urllib.request
+        h = sep._HttpsOnlyRedirect()
+        req = urllib.request.Request("https://example.invalid/a")
+        with self.assertRaises(urllib.error.URLError):
+            h.redirect_request(req, None, 302, "Found", {}, "http://example.invalid/b")
+        self.assertIsNotNone(h.redirect_request(req, io.BytesIO(b""), 302, "Found", {}, "https://cdn.invalid/b"))
+
+    def test_model_is_hashed_once_per_process_and_again_after_change(self):
+        payload = os.urandom(5000)
+        e = self.entry(payload)
+        path = os.path.join(self.dir, e["file"])
+        with open(path, "wb") as f:
+            f.write(payload)
+        sep._VERIFIED.clear()
+        with mock.patch.object(sep.hashlib, "sha256", wraps=hashlib.sha256) as h:
+            sep._verify_model(e, path)
+            sep._verify_model(e, path)
+            self.assertEqual(h.call_count, 1)
+        bad = bytearray(payload)
+        bad[0] ^= 1
+        with open(path, "wb") as f:
+            f.write(bytes(bad))
+        os.utime(path, (1, 1))
+        with self.assertRaises(sep.EngineMissing) as cm:
+            sep._verify_model(e, path)
+        self.assertIn("checksum", str(cm.exception))
+        self.assertFalse(os.path.exists(path))
+
+    def test_nan_output_is_an_input_error(self):
+        self.fake_engine(float("nan"))
+        src = self.path("a.wav")
+        write_wav(src, lowpassed_noise(2).T, 44100)
+        with self.assertRaises(core.AudioInputError) as cm:
+            sep.sep_vocals({"audio": src, "out": self.path("b.wav")})
+        self.assertIn("Try another recording", str(cm.exception))
+        self.assertFalse(os.path.exists(self.path("b.wav")))
 
     def test_plain_http_is_refused(self):
         e = dict(self.entry(b"abc"), url="http://example.invalid/m.onnx")

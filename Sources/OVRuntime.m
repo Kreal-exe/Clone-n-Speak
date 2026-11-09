@@ -73,6 +73,7 @@ NSTask *OVRunTask(NSString *path, NSArray<NSString *> *args, NSDictionary *env,
 @property (readwrite, nullable, copy) NSString *errorText;
 @property (readwrite) NSArray<NSDictionary *> *candidates;
 @property (nullable) NSTask *currentTask;
+@property (nullable) NSTask *optionalTask;   // installOptionalPackages: one at a time
 @property (nullable) OVDownloader *currentDownload;
 @property BOOL cancelled;
 @property NSFileHandle *logFile;
@@ -361,14 +362,34 @@ NSTask *OVRunTask(NSString *path, NSArray<NSString *> *args, NSDictionary *env,
     }];
 }
 
+/// Only pinned "name==version" specs may reach uv: anything else (a leading "-", a URL, a path) could be an option or
+/// a package from somewhere else.
+BOOL OVIsValidPackageSpec(NSString *spec) {
+    static NSRegularExpression *re;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        re = [NSRegularExpression regularExpressionWithPattern:@"^[A-Za-z0-9][A-Za-z0-9._-]*==[0-9][0-9A-Za-z.+!-]*$"
+                                                       options:0 error:nil];
+    });
+    if (![spec isKindOfClass:NSString.class] || !spec.length || spec.length > 100) return NO;
+    return [re numberOfMatchesInString:spec options:0 range:NSMakeRange(0, spec.length)] == 1;
+}
+
 /// On-demand packages for optional features (music removal: onnxruntime, ~76 MB). They are not part of kRequirements:
 /// only people who use the feature download them. Installed into the app's own environment, like the extras.
 - (void)installOptionalPackages:(NSArray<NSString *> *)pkgs title:(NSString *)t
                        progress:(void (^)(double, NSString *))p
                            done:(void (^)(NSString *_Nullable error))done {
+    if (self.optionalTask || self.state == OVRuntimeInstalling) {
+        done(L(@"Another installation is already running. Wait for it to finish."));
+        return;
+    }
+    if (!pkgs.count) { done(L(@"Nothing to install.")); return; }
+    for (NSString *spec in pkgs) {
+        if (!OVIsValidPackageSpec(spec)) { done(L(@"This package can’t be installed from here.")); return; }
+    }
     NSString *uv = [self findUV];
     NSString *py = [OVPaths ownPython];
-    if (!pkgs.count) { done(L(@"Nothing to install.")); return; }
     if (!uv) { done(L(@"The uv package manager wasn’t found — reinstall the engine on the Setup page.")); return; }
     if (![NSFileManager.defaultManager isExecutableFileAtPath:py]) {
         done(L(@"The engine isn’t installed yet — install it on the Setup page first."));
@@ -376,14 +397,28 @@ NSTask *OVRunTask(NSString *path, NSArray<NSString *> *args, NSDictionary *env,
     }
     [self log:t];
     if (p) p(-1, t);
-    NSMutableArray *args = [@[@"pip", @"install", @"--python", py] mutableCopy];
+    NSMutableArray *args = [@[@"pip", @"install", @"--only-binary", @":all:", @"--python", py, @"--"] mutableCopy];
     [args addObjectsFromArray:pkgs];
     __weak typeof(self) w = self;
-    OVRunTask(uv, args, [self uvEnv], ^(NSString *l) {
+    self.optionalTask = OVRunTask(uv, args, [self uvEnv], ^(NSString *l) {
         [w log:l];
         if (p) p(-1, l);
     }, ^(int st) {
-        done(st == 0 ? nil : L(@"Couldn’t install packages (see the log for details)"));
+        if (st != 0) {
+            w.optionalTask = nil;
+            done(L(@"Couldn’t install packages (see the log for details)"));
+            return;
+        }
+        // uv succeeded: make sure every package really imports in this environment
+        NSMutableArray<NSString *> *mods = [NSMutableArray array];
+        for (NSString *spec in pkgs)
+            [mods addObject:[[[spec componentsSeparatedByString:@"=="].firstObject lowercaseString]
+                             stringByReplacingOccurrencesOfString:@"-" withString:@"_"]];
+        NSString *code = [@"import " stringByAppendingString:[mods componentsJoinedByString:@", "]];
+        w.optionalTask = OVRunTask(py, @[@"-c", code], nil, ^(NSString *l) { [w log:l]; }, ^(int st2) {
+            w.optionalTask = nil;
+            done(st2 == 0 ? nil : L(@"The packages were installed but can’t be imported (see the log for details)"));
+        });
     });
 }
 

@@ -19,6 +19,9 @@ NSTask *_Nullable OVRunTask(NSString *path, NSArray<NSString *> *args, NSDiction
                             void (^_Nullable onLine)(NSString *line),
                             void (^_Nullable done)(int status));
 
+/// YES only for a pinned "name==version" package spec (what installOptionalPackages accepts).
+BOOL OVIsValidPackageSpec(NSString *_Nullable spec);
+
 /// Finds a Python environment with OmniVoice (own or VoiceStudio's) or installs one.
 @interface OVRuntime : NSObject
 + (instancetype)shared;

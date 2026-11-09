@@ -18,6 +18,8 @@ import importlib.util
 import os
 import sys
 import time
+import urllib.error
+import urllib.request
 
 import cns_core as core
 
@@ -191,11 +193,34 @@ def _onnxruntime_present():
         return False
 
 
+_VERIFIED = {}  # path -> (mtime_ns, size) of a file whose SHA-256 was checked in this process
+
+
+def _verify_model(entry, path):
+    """Re-checks the SHA-256 the first time a model file is used in this process (or after it changed on disk)."""
+    st = os.stat(path)
+    sig = (st.st_mtime_ns, st.st_size)
+    if _VERIFIED.get(path) == sig:
+        return
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            digest.update(block)
+    if digest.hexdigest() != entry["sha256"]:
+        _VERIFIED.pop(path, None)
+        _silent_remove(path)
+        raise EngineMissing("The voice extractor file failed its checksum test and was deleted. "
+                            + ENGINE_HINT + " again.")
+    _VERIFIED[path] = sig
+
+
 def _prepare(entry, directory):
     """Checks that the engine and the model are there; returns the model path. Raises EngineMissing."""
     if not _onnxruntime_present() or not _model_ready(entry, directory):
         raise EngineMissing()
-    return _model_path(entry, directory)
+    path = _model_path(entry, directory)
+    _verify_model(entry, path)
+    return path
 
 
 def _open_session(path):
@@ -205,16 +230,24 @@ def _open_session(path):
     return ort.InferenceSession(path, sess_options=opts, providers=["CPUExecutionProvider"])
 
 
+class _HttpsOnlyRedirect(urllib.request.HTTPRedirectHandler):
+    """Follows redirects (Hugging Face sends the file to a CDN) but never from https down to anything else."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not newurl.lower().startswith("https://"):
+            raise urllib.error.URLError("redirect to a non-HTTPS address refused")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
 def _open_url(url):
     import ssl
-    import urllib.request
     try:
         import certifi
         ctx = ssl.create_default_context(cafile=certifi.where())
     except Exception:
         ctx = ssl.create_default_context()
-    req = urllib.request.Request(url, headers={"User-Agent": "Clone-n-Speak"})
-    return urllib.request.urlopen(req, timeout=60, context=ctx)
+    opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=ctx), _HttpsOnlyRedirect())
+    return opener.open(urllib.request.Request(url, headers={"User-Agent": "Clone-n-Speak"}), timeout=60)
 
 
 def _download(entry, directory, progress=None):
@@ -234,9 +267,12 @@ def _download(entry, directory, progress=None):
                 block = resp.read(1 << 20)
                 if not block:
                     break
+                done += len(block)
+                if done > entry["size"]:  # more than the catalog promises: stop before filling the disk
+                    raise ModelDownloadError("The download is larger than expected, so it was stopped and deleted "
+                                             "(checksum cannot match). Try again later.")
                 f.write(block)
                 digest.update(block)
-                done += len(block)
                 if progress is not None:
                     progress(min(1.0, done / float(entry["size"])))
         if done != entry["size"] or digest.hexdigest() != entry["sha256"]:
@@ -306,6 +342,13 @@ def _from_stereo_44k(y, rate, channels, length):
     return np.ascontiguousarray(x[:length])
 
 
+def _check_finite(x):
+    import numpy as np
+    if not np.isfinite(x).all():
+        raise core.AudioInputError("unsupported", "The separation produced invalid audio for this file. "
+                                                  "Try another recording or cut it into shorter parts.")
+
+
 def _limit(x):
     """A stem that overshoots full scale is scaled down as a whole instead of being clipped."""
     import numpy as np
@@ -314,8 +357,8 @@ def _limit(x):
 
 
 def sep_vocals(req):
-    """req: audio, out, stem ("vocals" | "music"), id?, dir?. Writes the stem in the rate and channel count of the
-    input. -> {"path", "seconds", "stem"}."""
+    """req: audio, out, stem ("vocals" | "music"), id?, dir?. Writes the stem at the rate of the input: mono stays
+    mono, everything else (stereo and multichannel, which is mixed down first) comes out as stereo. -> {"path", "seconds", "stem"}."""
     stem = req.get("stem", "vocals")
     if stem not in ("vocals", "music"):
         raise core.AudioInputError("bad_param", 'Choose what to keep: "vocals" or "music".')
@@ -327,6 +370,7 @@ def sep_vocals(req):
     mix44 = _to_stereo_44k(wav, rate)
     vocals = _run_model(model_path, mix44, entry, core.emit_progress)
     result = vocals if stem == "vocals" else mix44 - vocals  # the music is whatever the voice leaves, at 44.1 kHz
+    _check_finite(result)
     out = _limit(_from_stereo_44k(result, rate, channels, length))
     seconds = core.write_audio(req["out"], out, rate, subtype="pcm24")
     return {"path": req["out"], "seconds": seconds, "stem": stem}
@@ -365,6 +409,7 @@ def _pre_enhance(req, wav, sr):
     model_path = _prepare(entry, _models_dir(req))
     mix44 = _to_stereo_44k(wav, sr)
     vocals = _run_model(model_path, mix44, entry, core.emit_progress)
+    _check_finite(vocals)
     return _from_stereo_44k(vocals, sr, 1, len(wav))
 
 
