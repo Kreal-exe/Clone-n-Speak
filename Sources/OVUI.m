@@ -293,7 +293,7 @@ NSImageView *OVSymbol(NSString *name, CGFloat size, NSColor *tint) {
 - (BOOL)isFlipped { return YES; }
 - (void)syncTimer {
     BOOL still = NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion;
-    BOOL need = self.running && self.indeterminate && self.window && !still;
+    BOOL need = self.running && self.indeterminate && self.window && !self.hiddenOrHasHiddenAncestor && !still;
     if (need && !self.timer) {
         __weak OVFlatProgress *w = self;
         self.timer = [NSTimer scheduledTimerWithTimeInterval:1.0 / 30 repeats:YES block:^(NSTimer *t) {
@@ -312,6 +312,8 @@ NSImageView *OVSymbol(NSString *name, CGFloat size, NSColor *tint) {
 - (void)setIndeterminate:(BOOL)i { [super setIndeterminate:i]; [self syncTimer]; self.needsDisplay = YES; }
 - (void)setDoubleValue:(double)v { [super setDoubleValue:v]; self.needsDisplay = YES; }
 - (void)viewDidMoveToWindow { [super viewDidMoveToWindow]; [self syncTimer]; }
+- (void)viewDidHide { [super viewDidHide]; [self syncTimer]; }
+- (void)viewDidUnhide { [super viewDidUnhide]; [self syncTimer]; }
 - (void)drawRect:(NSRect)dirty {
     NSRect b = self.bounds;
     NSRect track = NSMakeRect(NSMinX(b), round(NSMidY(b) - 3), NSWidth(b), 6);

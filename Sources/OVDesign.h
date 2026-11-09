@@ -16,11 +16,19 @@ NSView *OVCardHeader(NSInteger step, NSString *_Nullable symbol, NSString *title
 /// A card with a header, an optional muted subtitle and `content`.
 NSView *OVStepCard(NSInteger step, NSString *_Nullable symbol, NSString *title, NSString *_Nullable subtitle, NSView *content);
 
+/// Like OVStepCard, with an accessory (badge or ghost button) on the right of the header and no subtitle. Content spacing 16.
+NSView *OVStepCardWithAccessory(NSInteger step, NSString *_Nullable symbol, NSString *title, NSView *_Nullable accessory, NSView *content);
+/// A vertical stack (spacing `spacing`) whose arranged views all fill its width.
+NSStackView *OVFillStack(NSArray<NSView *> *views, CGFloat spacing);
+/// A popup is a button to OVFieldBlock/OVColumns, which keep it at its natural width: this wraps it in a stack that fills.
+NSView *OVFillPopup(NSView *popup);
+
 /// "Advanced"-style block that folds its content (height animation 0.3 s, instant under Reduce Motion).
 @interface OVDisclosure : NSView
 + (instancetype)disclosureWithTitle:(NSString *)t subtitle:(nullable NSString *)s symbol:(nullable NSString *)sym content:(NSView *)c;
 @property (nonatomic) BOOL expanded;
 @property (nonatomic, copy, nullable) NSString *subtitle;   // muted line under the title; can change while the page is shown
+@property (nonatomic, copy, nullable) void (^onToggle)(BOOL expanded);   // after the user folded or unfolded it (not for setExpanded:)
 - (void)setExpanded:(BOOL)expanded animated:(BOOL)animated;
 @end
 
@@ -42,6 +50,10 @@ NSView *OVStepCard(NSInteger step, NSString *_Nullable symbol, NSString *title, 
 /// Flat pill button: CTA fill (ghost = transparent with a 1px border). OVPrimaryButton and OVGhostButton build on it.
 NSButton *OVPillButtonMake(NSString *title, NSString *_Nullable symbol, id _Nullable target, SEL _Nullable action, BOOL ghost);
 NSButton *OVGhostButton(NSString *title, NSString *_Nullable symbol, id _Nullable target, SEL _Nullable action);
+/// Sets the height of a pill button (default 36; with or without an icon the height is the same). Other buttons get a constraint.
+NSButton *OVButtonHeight(NSButton *b, CGFloat height);
+/// Compact pill for list rows: 13 pt semibold text, 30 pt high.
+NSButton *OVSmallPill(NSButton *b);
 NSView *OVBadge(NSString *text, OVRole tone);   // OVRoleMuted | OVRoleAccent | OVRoleOK | OVRoleWarn | OVRoleErr
 NSView *OVCompactBadge(NSString *text, OVRole tone);  // smaller OVBadge for dense rows
 NSView *OVProBadgeCompact(void);                // same, smaller: sidebar rows
@@ -69,6 +81,10 @@ void OVRepaintAll(void);
 
 /// Page title (28 bold, tracking -0.025em), optional muted 14 pt subtitle, optional accessory (button/badge) on the right; 4 pt below.
 NSView *OVPageHeader(NSString *title, NSString *_Nullable subtitle, NSView *_Nullable accessory);
+/// Same, with `wrapSubtitle` = the subtitle wraps over several lines inside the column instead of staying on one.
+NSView *OVPageHeaderWrapped(NSString *title, NSString *_Nullable subtitle, NSView *_Nullable accessory, BOOL wrapSubtitle);
+/// Changes the title of a header made by OVPageHeader (keeps the 28 bold look and tracking; the tooltip shows the full title).
+void OVPageHeaderSetTitle(NSView *header, NSString *title);
 /// The standard page: OVVStack spacing 16, insets (24, 28, 28, 28), every view fills the width, inside OVScrollPage.
 NSScrollView *OVPageScroll(NSArray<NSView *> *views);
 /// Field label (14 semibold), the control (fills the width unless it is a button/switch/segmented), muted 13 pt hint below.
@@ -82,6 +98,21 @@ NSView *OVColumns(NSArray<NSView *> *cols, CGFloat gap);
 NSButton *OVRadioButton(NSString *title, id _Nullable target, SEL _Nullable action);
 /// Wraps NSScrollView.scrollableTextView in a field-colored box (text, caret and typing color come from OVRoleText) (1px border, radius 10, OVRoleFocus border while the text view has focus).
 NSView *OVTextArea(NSScrollView *textScroll, CGFloat minHeight);
+
+/// Buttons (or any views) in a row that wraps onto further lines when it is too narrow. Height follows the wrapping.
+@interface OVFlowRow : NSView
+@property (nonatomic, readonly) NSArray<NSView *> *items;
+@property (nonatomic) BOOL centered;   // every line centered instead of left-aligned
+- (void)setItems:(NSArray<NSView *> *)items;
+@end
+
+/// Quality bar: 6 pt track (field color), fill turns from error to warning to OK at 45 and 70. Resolves colors while drawing.
+@interface OVMeterBar : NSView
+@property (nonatomic) double doubleValue;   // 0...100
+@end
+
+/// Secure text field in the look of OVField (field fill, 1px border, radius 10, OVRoleFocus border while editing), 34 pt high.
+NSSecureTextField *OVSecureField(NSString *_Nullable placeholder);
 
 /// 36 x 20 switch: on = OVRoleCTA track with an OVRoleCTAText knob. Space/Return toggle it and send the action.
 @interface OVSwitch : NSControl

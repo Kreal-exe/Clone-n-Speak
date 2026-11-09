@@ -30,8 +30,6 @@ static const NSTimeInterval kMaxRecord = 15;
 }
 @end
 
-@class OVMeterBar;
-
 @interface OVVoicesPage () <NSTableViewDataSource, NSTableViewDelegate, AVAudioRecorderDelegate, NSTextFieldDelegate, NSTextViewDelegate>
 @property NSTableView *table;
 @property NSTextField *nameField, *refInfo, *status;
@@ -54,60 +52,30 @@ static const NSTimeInterval kMaxRecord = 15;
 @property (nullable) NSTimer *recTimer;
 @end
 
-/// Quality bar: a 6 pt track (field color) with a fill that turns from error to warning to OK at the same thresholds the
-/// NSLevelIndicator used (45 and 70). Colors are resolved while drawing, so a palette change repaints it.
-@interface OVMeterBar : NSView
-@property (nonatomic) double doubleValue;   // 0...100
+/// The page's wrapping status line: every new text goes back to the muted color (a warning sets its color after its text).
+@interface OVVoiceStatus : NSTextField
 @end
-@implementation OVMeterBar
+@implementation OVVoiceStatus
 - (instancetype)initWithFrame:(NSRect)f {
-    if ((self = [super initWithFrame:f])) self.accessibilityRole = NSAccessibilityLevelIndicatorRole;
+    if ((self = [super initWithFrame:f])) {
+        self.editable = NO;
+        self.bezeled = NO;
+        self.drawsBackground = NO;
+        self.lineBreakMode = NSLineBreakByWordWrapping;
+        self.usesSingleLineMode = NO;
+        self.maximumNumberOfLines = 0;
+        self.cell.wraps = YES;
+    }
     return self;
 }
-- (NSSize)intrinsicContentSize { return NSMakeSize(120, 6); }
-- (void)setDoubleValue:(double)v {
-    _doubleValue = MAX(0, MIN(100, v));
-    self.accessibilityValue = @((NSInteger)round(_doubleValue));
-    self.needsDisplay = YES;
-}
-- (void)drawRect:(NSRect)dirty {
-    NSRect b = self.bounds;
-    [OVColor(OVRoleField) setFill];
-    [[NSBezierPath bezierPathWithRoundedRect:b xRadius:3 yRadius:3] fill];
-    if (_doubleValue <= 0) return;
-    OVRole role = _doubleValue >= 70 ? OVRoleOK : _doubleValue >= 45 ? OVRoleWarn : OVRoleErr;
-    NSRect fill = b;
-    fill.size.width = MAX(6, round(NSWidth(b) * _doubleValue / 100));
-    [OVColor(role) setFill];
-    [[NSBezierPath bezierPathWithRoundedRect:fill xRadius:3 yRadius:3] fill];
-}
+- (void)setStringValue:(NSString *)v { [super setStringValue:v]; self.textColor = OVColor(OVRoleMuted); }
 @end
-
-/// A numbered step card whose header can carry an accessory (OVStepCard has none).
-static NSView *VoiceStepCard(NSInteger step, NSString *symbol, NSString *title, NSView *accessory, NSView *content) {
-    NSView *header = OVCardHeader(step, symbol, title, accessory);
-    NSStackView *s = OVVStack(@[header, content], 16);
-    OVFillWidth(@[header, content], s);
-    return OVCard(s, 20);
-}
-
-/// The heading field inside an OVPageHeader (found by its accessibility role).
-static NSTextField *HeaderTitle(NSView *v) {
-    if ([v isKindOfClass:NSTextField.class] && [[(NSTextField *)v accessibilityRole] isEqual:@"AXHeading"]) return (NSTextField *)v;
-    for (NSView *sub in v.subviews) { NSTextField *t = HeaderTitle(sub); if (t) return t; }
-    return nil;
-}
 
 @implementation OVVoicesPage
 
-/// Sets the page title again with the helper's attributes (28 bold, tracking), which a plain stringValue would lose.
+/// The page title: the voice name, or "New voice".
 - (void)setHeadingText:(NSString *)text {
-    NSTextField *t = HeaderTitle(self.headerView);
-    if (!t) return;
-    NSString *s = text.length ? text : L(@"New voice");
-    NSMutableDictionary *attrs = [[t.attributedStringValue attributesAtIndex:0 effectiveRange:NULL] mutableCopy];
-    t.attributedStringValue = [[NSAttributedString alloc] initWithString:s attributes:attrs];
-    t.toolTip = s;
+    OVPageHeaderSetTitle(self.headerView, text.length ? text : L(@"New voice"));
 }
 
 - (void)loadView {
@@ -175,7 +143,7 @@ static NSTextField *HeaderTitle(NSView *v) {
     NSStackView *audioBox = OVVStack(@[zone, playRow, qualityRow, self.qualityLabel, fixRow], 12);
     OVFillWidth(@[zone, playRow, qualityRow, self.qualityLabel, fixRow], audioBox);
     self.sampleBadge = OVHStack(@[], 0);
-    NSView *audioCard = VoiceStepCard(2, @"waveform", L(@"Voice sample"), self.sampleBadge, audioBox);
+    NSView *audioCard = OVStepCardWithAccessory(2, @"waveform", L(@"Voice sample"), self.sampleBadge, audioBox);
 
     NSScrollView *ts = [NSTextView scrollableTextView];
     NSView *textArea = OVTextArea(ts, 100);
@@ -195,12 +163,16 @@ static NSTextField *HeaderTitle(NSView *v) {
     NSStackView *textBox = OVVStack(@[textArea, transcribeRow, textHint], 12);
     [textBox setCustomSpacing:8 afterView:transcribeRow];
     OVFillWidth(@[textArea, transcribeRow, textHint], textBox);
-    NSView *textCard = VoiceStepCard(3, @"text.quote", L(@"What the sample says"), nil, textBox);
+    NSView *textCard = OVStepCardWithAccessory(3, @"text.quote", L(@"What the sample says"), nil, textBox);
 
     self.cloneButton = OVPrimaryButton(L(@"Clone voice"), self, @selector(clone:));
     self.cloneButton.image = [NSImage imageWithSystemSymbolName:@"person.wave.2.fill" accessibilityDescription:nil];
     self.spinner = OVSpinner();
-    self.status = OVWrapLabel(@"", 13, OVColor(OVRoleMuted));
+    self.status = [OVVoiceStatus new];
+    self.status.font = [NSFont systemFontOfSize:13];
+    self.status.textColor = OVColor(OVRoleMuted);
+    self.status.selectable = NO;
+    [self.status setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
     self.deleteButton = OVGhostButton(L(@"Delete voice"), @"trash", self, @selector(deleteVoice:));
     self.deleteButton.contentTintColor = OVColor(OVRoleErr);
     self.previewButton = OVGhostButton(L(@"Hear the clone"), @"play.fill", self, @selector(playPreview:));
@@ -237,9 +209,9 @@ static NSTextField *HeaderTitle(NSView *v) {
     self.sampleLangPopup.action = @selector(sampleLanguagePicked:);
     NSView *voiceColumns = OVColumns(@[OVFieldBlock(L(@"Name"), nil, self.nameField),
                                        OVFieldBlock(L(@"Language of the sample"), nil, self.sampleLangPopup)], 16);
-    NSView *voiceCard = VoiceStepCard(1, @"person.crop.circle", L(@"Voice"), nil, voiceColumns);
+    NSView *voiceCard = OVStepCardWithAccessory(1, @"person.crop.circle", L(@"Voice"), nil, voiceColumns);
 
-    self.headerView = OVPageHeader(L(@"New voice"), L(@"Clone a voice from 3–10 seconds of speech."), self.deleteButton);
+    self.headerView = OVPageHeaderWrapped(L(@"New voice"), L(@"Clone a voice from 3–10 seconds of speech."), self.deleteButton, YES);
     NSScrollView *rightScroll = OVPageScroll(@[self.headerView, voiceCard, audioCard, textCard, actions, self.status, self.adaptedRow]);
 
     OVAudioDropView *root = [OVAudioDropView stackViewWithViews:@[left, rightScroll]];
@@ -479,9 +451,9 @@ static NSTextField *HeaderTitle(NSView *v) {
 /// A file from the drop zone or a drop on the page: ignored with an explanation while a job or a recording runs.
 - (void)importDropped:(NSString *)path {
     if ([OVWorker shared].busy || self.recorder.recording) {
-        self.status.textColor = OVColor(OVRoleWarn);
         self.status.stringValue = self.recorder.recording ? L(@"Stop the recording first — the file was not added.")
                                                           : L(@"The engine is busy — the file was not added. Try again in a moment.");
+        self.status.textColor = OVColor(OVRoleWarn);   // after the text: a new text goes back to muted
         return;
     }
     [self importAudio:path];
