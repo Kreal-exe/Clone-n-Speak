@@ -4,6 +4,7 @@ centroid curve, all computed here so the app only draws. Python 3.9 compatible; 
 The spectrogram is not a full STFT: only `cols` windows are taken, centred on the column centres, so the cost
 hardly depends on the file length. Everything is computed on a mono signal of at most 16 kHz.
 """
+import math
 import os
 
 import cns_core as core
@@ -24,7 +25,8 @@ def _bad(msg):
 
 def _int_param(req, key, default, lo, hi):
     v = req.get(key, default)
-    if isinstance(v, bool) or not isinstance(v, (int, float)) or v != int(v) or not lo <= v <= hi:
+    if (isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v != int(v)
+            or not lo <= v <= hi):
         _bad("%s must be a whole number from %d to %d." % (key, lo, hi))
     return int(v)
 
@@ -117,8 +119,12 @@ def _analyze(req, path):
     channels = 1 if wav.ndim == 1 else wav.shape[1]
     mono = wav if wav.ndim == 1 else wav.mean(axis=1).astype(np.float32)
     seconds = len(mono) / float(rate)
-    peak = float(np.abs(wav).max())
-    rms_db = float(20 * np.log10(np.sqrt(float((mono.astype(np.float64) ** 2).mean()) + 1e-12)))
+    peak = max(abs(float(wav.min())), abs(float(wav.max()))) if wav.size else 0.0
+    sq = 0.0  # chunked float64 sum of squares: no full-length float64 temporary
+    for i in range(0, len(mono), 1 << 20):
+        c = mono[i:i + (1 << 20)].astype(np.float64)
+        sq += float(np.dot(c, c))
+    rms_db = float(20 * np.log10(np.sqrt(sq / max(len(mono), 1) + 1e-12)))
     peaks = _peaks(mono, MAX_PEAKS)
     del wav
     core.emit_progress(0.2)
@@ -198,14 +204,12 @@ def _tool_request(in_path, out_path):
     return {"cmd": "analyze_audio", "audio": in_path, "out_dir": os.path.join(os.path.dirname(out_path), "analysis")}
 
 
-def _tool_setup(tmpdir):
-    # The analyzer writes no audio. The shared input matrix expects an output WAV, so the cleanup hands it the input.
-    def finish():
-        import shutil
-        src, dst = os.path.join(tmpdir, "in.wav"), os.path.join(tmpdir, "out.wav")
-        if os.path.exists(src) and not os.path.exists(dst):
-            shutil.copyfile(src, dst)
-    return finish
+def _tool_verify(result):
+    sp = result["spectrogram"]
+    size = os.path.getsize(sp["path"])
+    if size != sp["cols"] * sp["rows"]:
+        raise AssertionError("spectrogram.u8 is %d bytes, expected %d" % (size, sp["cols"] * sp["rows"]))
 
 
-core.TOOLS["analyze_audio"] = {"request": _tool_request, "setup": _tool_setup, "streams": False}
+core.TOOLS["analyze_audio"] = {"request": _tool_request, "setup": None, "streams": False, "no_output": True,
+                                "verify": _tool_verify}

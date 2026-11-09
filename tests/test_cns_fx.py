@@ -84,7 +84,7 @@ class FxTests(unittest.TestCase):
 
     def test_distortion(self):
         x = tone(440, 1.0, amp=0.3)
-        y = run("distortion", x, drive_db=20, tone=0.5, mix=1)
+        y = run("distortion", x, drive_db=24, tone=0.5, mix=1)  # unity gain at 0 dB: a little more drive
         spec = np.abs(np.fft.rfft(y[:SR])) ** 2  # 1 s: bin k is k Hz
         harmonics = sum(spec[440 * k] for k in range(2, 6))
         self.assertGreaterEqual(harmonics / spec[440], 0.1)
@@ -98,6 +98,23 @@ class FxTests(unittest.TestCase):
         i = np.arange(len(y))
         self.assertTrue(np.array_equal(y, y[4 * (i // 4)]))
         self.assertLess(float(np.abs(run("bitcrush", x, bits=16, downsample=1, mix=1) - x).max()), 1e-4)
+
+    def test_bitcrush_symmetric(self):
+        x = tone(440, 1.0, amp=0.3)
+        for bits in (1, 2, 3):
+            y = run("bitcrush", x, bits=bits, downsample=1, mix=1)
+            self.assertGreater(float(np.abs(y).max()), 0.1, bits)
+            self.assertLess(abs(float(y.mean())), 0.01, bits)
+
+    def test_distortion_unity_gain(self):
+        x = tone(200, 1.0, amp=0.01)
+        y = run("distortion", x, drive_db=0, tone=1.0, mix=1)
+        self.assertAlmostEqual(rms_db(y[SR // 4:]), rms_db(x[SR // 4:]), delta=0.5)
+
+    def test_fx_apply_needs_audio(self):
+        with self.assertRaises(core.AudioInputError) as c:
+            fx.fx_apply({"out": "/tmp/x.wav", "chain": []})
+        self.assertEqual(c.exception.code, "bad_param")
 
     def test_delay_exact(self):
         x = np.zeros(SR, dtype=np.float32)

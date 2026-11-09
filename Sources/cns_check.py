@@ -14,6 +14,7 @@ PAUSE_REGION_S = 0.7    # a voiceless stretch this long between voiced parts is 
 LONG_PAUSE_S = 1.5      # ... and this long is worth advice
 EDGE_ADVICE_S = 0.35    # silence at an edge this long: advise trimming
 CLIP_LEVEL = 0.985
+EDGE_DEBOUNCE = 3       # voiced frames in a row that end the silence at an edge
 
 
 def _runs(mask):
@@ -140,14 +141,14 @@ def check(wav):
 
     lead = tail = 0.0
     longest = None
+    solid = [(a, b) for a, b in _runs(voiced) if b - a >= EDGE_DEBOUNCE]  # a lone click does not end the silence
     if voiced.any():
-        first = int(np.argmax(voiced))
-        last = nfr - int(np.argmax(voiced[::-1]))
+        first, last = (solid[0][0], solid[-1][1]) if solid else (int(np.argmax(voiced)), nfr - int(np.argmax(voiced[::-1])))
         lead, tail = first * FRAME, max(0.0, dur - last * FRAME)
         for a, b in _runs(~voiced[first:last]):
             a, b = a + first, b + first
             sec = (b - a) * FRAME
-            if longest is None or sec > longest["seconds"]:
+            if sec >= PAUSE_REGION_S and (longest is None or sec > longest["seconds"]):
                 longest = {"start": round(a * FRAME, 3), "end": round(b * FRAME, 3), "seconds": round(sec, 2)}
             if sec >= PAUSE_REGION_S:
                 regions.append(_region(a * FRAME, b * FRAME, "pause", sec / 3.0))
@@ -183,9 +184,6 @@ def check(wav):
 
 def cmd_sample_check(req):
     wav, _ = core.read_audio(req["audio"], sr=SR, mono=True)
-    out = req.get("out")
-    if out:  # optional: keep a copy of the audio that was analysed (24 kHz mono)
-        core.write_audio(out, wav, SR)
     return check(wav)
 
 
@@ -267,7 +265,8 @@ def cmd_compare_samples(req):
 COMMANDS = {"sample_check": cmd_sample_check, "compare_samples": cmd_compare_samples}
 
 core.TOOLS["sample_check"] = {
-    "request": lambda in_path, out_path: {"cmd": "sample_check", "audio": in_path, "out": out_path},
+    "request": lambda in_path, out_path: {"cmd": "sample_check", "audio": in_path},
     "setup": None,
     "streams": False,
+    "no_output": True,
 }
