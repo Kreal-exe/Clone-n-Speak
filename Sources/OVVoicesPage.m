@@ -7,6 +7,9 @@
 #import "OVRuntime.h"
 #import "OVWorker.h"
 #import "OVPaths.h"
+#import "OVWaveformView.h"
+#import "OVPlayerBar.h"
+#import "OVVoiceCheck.h"
 #import <AVFAudio/AVFAudio.h>
 #import <AVFoundation/AVFoundation.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
@@ -45,6 +48,15 @@ static const NSTimeInterval kMaxRecord = 15;
 @property OVPopup *sampleLangPopup;
 @property NSMutableDictionary<NSString *, NSDictionary *> *analysis; // path|mtime → report
 @property NSProgressIndicator *spinner;
+// extended check, comparison and Improve modes
+@property NSButton *checkButton, *compareButton, *downloadButton;
+@property OVWaveformView *waveform;
+@property NSTextField *strengthValue;
+@property NSStackView *adviceStack, *compareStack, *strengthRow;
+@property OVSegmented *modeSeg;
+@property OVSlider *strengthSlider;
+@property OVPlayerBar *playerBar;
+@property BOOL dfnReady, musicReady, engineStatusAsked;
 
 @property (nullable) OVVoice *voice;          // nil = drafting a new voice
 @property (nullable) AVAudioRecorder *recorder;
@@ -140,8 +152,55 @@ static const NSTimeInterval kMaxRecord = 15;
     NSStackView *qualityRow = OVHStack(@[OVLabel(L(@"Quality"), 13, NSFontWeightMedium, OVColor(OVRoleMuted)), self.qualityMeter, OVSpacer()], 10);
     qualityRow.alignment = NSLayoutAttributeCenterY;
     NSStackView *fixRow = OVHStack(@[self.enhanceButton, self.revertButton, OVSpacer()], 10);
-    NSStackView *audioBox = OVVStack(@[zone, playRow, qualityRow, self.qualityLabel, fixRow], 12);
-    OVFillWidth(@[zone, playRow, qualityRow, self.qualityLabel, fixRow], audioBox);
+
+    // extended check: waveform with problem regions, advice with action buttons
+    self.checkButton = OVGhostButton(L(@"Check sample"), @"waveform.badge.magnifyingglass", self, @selector(checkSample:));
+    self.compareButton = OVGhostButton(L(@"Compare samples…"), @"rectangle.on.rectangle", self, @selector(compareSamples:));
+    self.compareButton.toolTip = L(@"Choose several recordings of this voice to see which is the best: levels, noise and duplicates.");
+    NSStackView *checkRow = OVHStack(@[self.checkButton, self.compareButton, OVSpacer()], 10);
+    self.waveform = [OVWaveformView new];
+    self.waveform.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.waveform.heightAnchor constraintEqualToConstant:72].active = YES;
+    self.waveform.accessibilityLabel = L(@"Waveform of the sample");
+    self.waveform.onRegionHover = ^(NSDictionary *region) {
+        weakSelf.waveform.toolTip = region ? OVRegionTooltip(region) : nil;
+    };
+    self.waveform.onSeek = ^(NSTimeInterval t) {
+        NSString *a = [weakSelf currentAudio];
+        if (!a) return;
+        if (![[OVPlayer shared].currentPath isEqualToString:a]) [[OVPlayer shared] play:a];
+        [[OVPlayer shared] seek:t];
+    };
+    self.adviceStack = OVVStack(@[], 8);
+    self.compareStack = OVVStack(@[], 4);
+    self.waveform.hidden = YES;
+
+    // Improve modes
+    self.modeSeg = [OVSegmented segmentedWithItems:@[@[L(@"Light cleanup"), @"wand.and.stars"], @[L(@"DeepFilterNet"), @"waveform.path"],
+                                                     @[L(@"Remove music"), @"music.note"]]];
+    self.modeSeg.target = self;
+    self.modeSeg.action = @selector(modePicked:);
+    self.modeSeg.accessibilityLabel = L(@"How to improve the sample");
+    self.strengthSlider = [OVSlider new];
+    self.strengthSlider.minValue = 1;
+    self.strengthSlider.maxValue = 30;
+    self.strengthSlider.doubleValue = 18;
+    self.strengthSlider.target = self;
+    self.strengthSlider.action = @selector(strengthChanged:);
+    self.strengthSlider.accessibilityLabel = L(@"Noise reduction strength");
+    self.strengthValue = OVLabel(@"18 dB", 13, NSFontWeightMedium, OVColor(OVRoleMuted));
+    [self.strengthSlider.widthAnchor constraintGreaterThanOrEqualToConstant:140].active = YES;
+    self.downloadButton = OVGhostButton(L(@"Download"), @"arrow.down.circle", self, @selector(downloadEngine:));
+    self.strengthRow = OVHStack(@[OVLabel(L(@"Strength"), 13, NSFontWeightMedium, OVColor(OVRoleMuted)), self.strengthSlider, self.strengthValue,
+                                  self.downloadButton], 10);
+    self.strengthRow.alignment = NSLayoutAttributeCenterY;
+    self.playerBar = [OVPlayerBar new];
+    self.playerBar.translatesAutoresizingMaskIntoConstraints = NO;
+    self.playerBar.hidden = YES;
+    NSArray *audioViews = @[zone, playRow, qualityRow, self.qualityLabel, checkRow, self.waveform, self.adviceStack,
+                            self.compareStack, self.modeSeg, self.strengthRow, fixRow, self.playerBar];
+    NSStackView *audioBox = OVVStack(audioViews, 12);
+    OVFillWidth(audioViews, audioBox);
     self.sampleBadge = OVHStack(@[], 0);
     NSView *audioCard = OVStepCardWithAccessory(2, @"waveform", L(@"Voice sample"), self.sampleBadge, audioBox);
 
@@ -430,6 +489,9 @@ static const NSTimeInterval kMaxRecord = 15;
     if (busy) [self.spinner startAnimation:nil]; else [self.spinner stopAnimation:nil];
     if (!engine && !busy) self.status.stringValue = L(@"Finish setup first: the OmniVoice engine and model.");
     self.enhanceButton.enabled = audio && engine && !busy && !recording;
+    self.checkButton.enabled = audio && engine && !busy && !recording;
+    self.compareButton.enabled = audio && engine && !busy && !recording;
+    [self refreshImproveControls:audio busy:busy];
     self.revertButton.hidden = !(self.voice && [NSFileManager.defaultManager fileExistsAtPath:[self originalPath]]);
     self.revertButton.enabled = !busy && !recording;
     self.previewButton.hidden = !(self.voice.ready && [NSFileManager.defaultManager fileExistsAtPath:[self previewPath]]);
@@ -607,56 +669,279 @@ static const NSTimeInterval kMaxRecord = 15;
     return [NSString stringWithFormat:@"%@|%f", path, m.timeIntervalSince1970];
 }
 
-/// Asks the engine for a quick quality report of the current sample (no model is loaded for this).
-- (void)analyzeIfNeeded:(NSString *)audio {
-    if (!audio) { self.qualityMeter.doubleValue = 0; self.qualityLabel.stringValue = @""; return; }
-    NSDictionary *r = self.analysis[[self analysisKey:audio]];
-    if (r) { [self showAnalysis:r]; return; }
-    if ([OVWorker shared].busy || [OVRuntime shared].state != OVRuntimeReady || self.recorder.recording) return;
+/// Asks the engine for the extended report of the current sample (no model is loaded for this).
+- (void)analyzeIfNeeded:(NSString *)audio { [self analyze:audio force:NO]; }
+
+/// `force`: check again even when a report is cached.
+- (void)analyze:(NSString *)audio force:(BOOL)force {
+    if (!audio) {
+        self.qualityMeter.doubleValue = 0; self.qualityLabel.stringValue = @"";
+        [self clearCheckDetails];
+        return;
+    }
     NSString *key = [self analysisKey:audio];
+    if (force) [self.analysis removeObjectForKey:key];
+    NSDictionary *r = self.analysis[key];
+    if (r) { [self showAnalysis:r forAudio:audio]; return; }
+    if ([OVWorker shared].busy || [OVRuntime shared].state != OVRuntimeReady || self.recorder.recording) return;
     self.qualityLabel.stringValue = L(@"Checking the sample…");
     __weak typeof(self) w = self;
-    [[OVWorker shared] request:@{@"cmd": @"analyze", @"audio": audio} status:nil progress:nil done:^(NSDictionary *data, NSString *error) {
-        if (error || !data) { w.qualityLabel.stringValue = @""; return; }
+    [[OVWorker shared] request:@{@"cmd": @"sample_check", @"audio": audio} status:nil progress:nil done:^(NSDictionary *data, NSString *error) {
+        if (error || !data) { w.qualityLabel.stringValue = (error && force) ? error : @""; return; }
         w.analysis[key] = data;
-        if ([[w currentAudio] isEqualToString:audio]) [w showAnalysis:data];
+        if ([[w currentAudio] isEqualToString:audio]) [w showAnalysis:data forAudio:audio];
     }];
 }
 
-- (void)showAnalysis:(NSDictionary *)r {
+- (void)checkSample:(id)s { [self analyze:[self currentAudio] force:YES]; }
+
+- (void)clearAdvice {
+    for (NSView *v in [self.adviceStack.arrangedSubviews copy]) { [self.adviceStack removeView:v]; [v removeFromSuperview]; }
+}
+
+- (void)clearCheckDetails {
+    self.waveform.hidden = YES;
+    self.waveform.regions = @[];
+    [self clearAdvice];
+}
+
+/// A line of advice with its action button.
+- (NSView *)adviceRow:(NSDictionary *)info {
+    NSTextField *t = OVWrapLabel(info[@"text"], 13, OVColor(OVRoleWarn));
+    if (!info[@"button"]) return t;
+    NSButton *b = OVSmallPill(OVGhostButton(info[@"button"], nil, self, @selector(adviceAction:)));
+    b.identifier = info[@"action"];
+    NSStackView *row = OVHStack(@[t, OVSpacer(), b], 10);
+    row.alignment = NSLayoutAttributeCenterY;
+    return row;
+}
+
+/// "Trim silence" / "Denoise": picks the Improve mode and runs it (an engine that is not installed offers its download).
+- (void)adviceAction:(NSButton *)b {
+    self.modeSeg.selectedIndex = [b.identifier isEqualToString:@"dfn"] ? 1 : 0;
+    [self modePicked:self.modeSeg];
+    if (self.enhanceButton.enabled) [self enhance:nil];
+}
+
+- (void)showAnalysis:(NSDictionary *)r forAudio:(NSString *)audio {
     self.qualityMeter.doubleValue = [r[@"score"] doubleValue];
-    NSDictionary *tips = @{
-        @"short": L(@"Too short — the model needs 3–10 seconds of speech."),
-        @"long": L(@"Longer than 15 s — trim it to the best 5–10 seconds."),
-        @"clipping": L(@"Distorted (clipping) — speak a little further from the microphone."),
-        @"noisy": L(@"Background noise — press “Improve sample” or record in a quieter room."),
-        @"quiet": L(@"Very quiet — speak closer to the microphone."),
-        @"pauses": L(@"Lots of silence — “Improve sample” shortens the pauses."),
-    };
+    NSArray *issues = r[@"issues"];
     NSMutableArray *lines = [NSMutableArray array];
-    for (NSString *i in r[@"issues"]) if (tips[i]) [lines addObject:tips[i]];
+    if ([issues containsObject:@"short"]) [lines addObject:L(@"Too short — the model needs 3–10 seconds of speech.")];
+    if ([issues containsObject:@"long"]) [lines addObject:L(@"Longer than 15 s — trim it to the best 5–10 seconds.")];
     NSString *head = [NSString stringWithFormat:L(@"%d/100 · noise margin %.0f dB · %@"), [r[@"score"] intValue], [r[@"snr_db"] doubleValue],
                       OVFormatDuration([r[@"seconds"] doubleValue])];
+    if (r[@"lead_silence_s"]) {
+        NSDictionary *lp = [r[@"longest_pause"] isKindOfClass:NSDictionary.class] ? r[@"longest_pause"] : nil;
+        NSString *pause = lp ? [NSString stringWithFormat:L(@"Longest pause: %.1f s"), [lp[@"seconds"] doubleValue]] : L(@"No long pauses");
+        head = [head stringByAppendingFormat:@"\n%@ · %@",
+                [NSString stringWithFormat:L(@"Silence at start/end: %.1f s / %.1f s"), [r[@"lead_silence_s"] doubleValue], [r[@"tail_silence_s"] doubleValue]],
+                pause];
+    }
+    NSArray *advice = r[@"advice"];
+    BOOL clean = !lines.count && !advice.count;
     self.qualityLabel.stringValue = lines.count ? [NSString stringWithFormat:@"%@\n%@", head, [lines componentsJoinedByString:@"\n"]]
-                                                : [NSString stringWithFormat:@"%@ · %@", head, L(@"Great sample for cloning.")];
+                                                : clean ? [NSString stringWithFormat:@"%@\n%@", head, L(@"Great sample for cloning.")] : head;
     self.qualityLabel.textColor = lines.count ? OVColor(OVRoleWarn) : OVColor(OVRoleMuted);
+
+    // waveform with problem regions, then the advice
+    NSArray *regions = r[@"regions"];
+    NSArray *peaks = OVWaveformPeaksForFile(audio, 400);
+    self.waveform.hidden = peaks == nil;
+    if (peaks) {
+        self.waveform.peaks = peaks;
+        self.waveform.regions = regions ?: @[];
+        self.waveform.duration = [r[@"seconds"] doubleValue];
+        self.waveform.position = 0;
+        self.waveform.accessibilityValue = regions.count ? [NSString stringWithFormat:L(@"%lu problem areas"), (unsigned long)regions.count]
+                                                         : L(@"No problems found");
+    }
+    [self clearAdvice];
+    for (NSString *code in advice) {
+        NSDictionary *info = OVAdviceInfo(code);
+        if (!info) continue;
+        NSView *row = [self adviceRow:info];
+        [self.adviceStack addArrangedSubview:row];
+        row.translatesAutoresizingMaskIntoConstraints = NO;
+        [row.widthAnchor constraintEqualToAnchor:self.adviceStack.widthAnchor].active = YES;
+    }
+}
+
+#pragma mark Compare samples
+
+- (void)compareSamples:(id)s {
+    NSString *audio = [self currentAudio];
+    if (!audio) return;
+    NSOpenPanel *op = [NSOpenPanel openPanel];
+    op.allowsMultipleSelection = YES;
+    op.message = L(@"Choose recordings to compare with the current sample.");
+    op.allowedContentTypes = @[UTTypeAudio, UTTypeMovie];
+    if ([op runModal] != NSModalResponseOK || !op.URLs.count) return;
+    NSMutableArray<NSString *> *paths = [NSMutableArray arrayWithObject:audio];
+    NSMutableArray<NSString *> *names = [NSMutableArray arrayWithObject:L(@"Current sample")];
+    NSMutableArray<NSString *> *temps = [NSMutableArray array];
+    for (NSURL *u in op.URLs) {
+        NSString *path = u.path;
+        if (![u.pathExtension.lowercaseString isEqualToString:@"wav"]) {   // the engine reads WAV: the app decodes the rest
+            NSString *dst = [self draftPath:[NSUUID.UUID.UUIDString stringByAppendingPathExtension:@"wav"]];
+            NSError *err = nil;
+            if (!OVConvertToWav(path, dst, NULL, &err)) {
+                self.status.stringValue = [NSString stringWithFormat:L(@"Couldn’t read the audio: %@"), err.localizedDescription ?: @"?"];
+                return;
+            }
+            path = dst;
+            [temps addObject:dst];
+        }
+        [paths addObject:path];
+        [names addObject:u.lastPathComponent];
+    }
+    self.status.stringValue = L(@"Comparing the samples…");
+    __weak typeof(self) w = self;
+    [[OVWorker shared] request:@{@"cmd": @"compare_samples", @"audios": paths} status:nil progress:nil done:^(NSDictionary *data, NSString *error) {
+        for (NSString *t in temps) [NSFileManager.defaultManager removeItemAtPath:t error:nil];
+        if (error || !data) { w.status.stringValue = error ?: L(@"Error"); return; }
+        w.status.stringValue = @"";
+        [w showComparison:data names:names];
+        [w refreshButtons];
+    }];
+}
+
+/// One row per sample: level, noise margin and the flags "Duplicate", "Much quieter", "Noisier".
+- (void)showComparison:(NSDictionary *)res names:(NSArray<NSString *> *)names {
+    for (NSView *v in [self.compareStack.arrangedSubviews copy]) { [self.compareStack removeView:v]; [v removeFromSuperview]; }
+    NSArray *samples = res[@"samples"];
+    NSMutableArray *rows = [NSMutableArray arrayWithObject:OVLabel(L(@"Comparison"), 13, NSFontWeightSemibold, nil)];
+    for (NSUInteger i = 0; i < samples.count; i++) {
+        NSDictionary *x = samples[i];
+        NSString *name = i < names.count ? names[i] : [x[@"path"] lastPathComponent];
+        NSString *line = [NSString stringWithFormat:L(@"%@ · %@ · level %.0f dB · noise margin %.0f dB"), name,
+                          OVFormatDuration([x[@"seconds"] doubleValue]), [x[@"rms_db"] doubleValue], [x[@"snr_db"] doubleValue]];
+        NSMutableArray *rowViews = [NSMutableArray arrayWithObject:OVWrapLabel(line, 13, OVColor(OVRoleMuted))];
+        for (NSString *flag in OVCompareFlags(res, i)) [rowViews addObject:OVCompactBadge(flag, OVRoleWarn)];
+        [rowViews addObject:OVSpacer()];
+        NSStackView *row = OVHStack(rowViews, 8);
+        row.alignment = NSLayoutAttributeCenterY;
+        [rows addObject:row];
+    }
+    for (NSView *v in rows) {
+        [self.compareStack addArrangedSubview:v];
+        v.translatesAutoresizingMaskIntoConstraints = NO;
+        [v.widthAnchor constraintEqualToAnchor:self.compareStack.widthAnchor].active = YES;
+    }
+}
+
+#pragma mark Improve sample
+
+- (NSString *)improveMode { return @[@"light", @"dfn", @"music"][MAX(0, MIN(2, self.modeSeg.selectedIndex))]; }
+
+- (void)modePicked:(id)s {
+    [self askEngineStatus];
+    [self refreshButtons];
+}
+
+- (void)strengthChanged:(OVSlider *)sl {
+    self.strengthValue.stringValue = [NSString stringWithFormat:L(@"%d dB"), (int)round(sl.doubleValue)];
+    self.strengthSlider.accessibilityValue = self.strengthValue.stringValue;
+}
+
+/// Whether DeepFilterNet / the music-removal engine are installed (cheap worker calls, asked when a mode is picked).
+- (void)askEngineStatus {
+    NSString *mode = [self improveMode];
+    if ([mode isEqualToString:@"light"] || [OVWorker shared].busy || [OVRuntime shared].state != OVRuntimeReady) return;
+    __weak typeof(self) w = self;
+    if ([mode isEqualToString:@"dfn"]) {
+        [[OVWorker shared] request:@{@"cmd": @"dfn_status"} status:nil progress:nil done:^(NSDictionary *d, NSString *e) {
+            w.dfnReady = !e && [d[@"installed"] boolValue];
+            [w refreshButtons];
+        }];
+    } else {
+        [[OVWorker shared] request:@{@"cmd": @"sep_status"} status:nil progress:nil done:^(NSDictionary *d, NSString *e) {
+            w.musicReady = !e && [d[@"onnxruntime"] boolValue] && [d[@"model_ready"] boolValue];
+            [w refreshButtons];
+        }];
+    }
+}
+
+- (BOOL)modeEngineReady {
+    NSString *mode = [self improveMode];
+    return [mode isEqualToString:@"light"] ? YES : [mode isEqualToString:@"dfn"] ? self.dfnReady : self.musicReady;
+}
+
+- (void)refreshImproveControls:(NSString *)audio busy:(BOOL)busy {
+    NSString *mode = [self improveMode];
+    BOOL ready = [self modeEngineReady];
+    BOOL dfn = [mode isEqualToString:@"dfn"], music = [mode isEqualToString:@"music"];
+    // strength (DeepFilterNet only) and the download button (a mode whose engine is missing)
+    for (NSView *v in self.strengthRow.arrangedSubviews) v.hidden = v == self.downloadButton ? ready : !dfn;
+    self.strengthRow.hidden = !(dfn || (music && !ready));
+    NSString *what = dfn ? L(@"Download DeepFilterNet (~27 MB)") : L(@"Download the music-removal engine (~140 MB)");
+    self.downloadButton.toolTip = what;
+    self.downloadButton.accessibilityLabel = what;
+    self.downloadButton.enabled = !busy;
+    self.enhanceButton.enabled = audio && OVEverythingReady() && !busy && !self.recorder.recording && ready;
+    BOOL hasOrig = self.voice && [NSFileManager.defaultManager fileExistsAtPath:[self originalPath]];
+    self.playerBar.hidden = !(audio && hasOrig);
+    if (!self.playerBar.hidden) {
+        self.playerBar.originalPath = [self originalPath];
+        self.playerBar.path = audio;
+    }
+}
+
+/// "Download" next to the mode: DeepFilterNet, or onnxruntime + the vocal-separation model.
+- (void)downloadEngine:(id)s {
+    NSString *mode = [self improveMode];
+    __weak typeof(self) w = self;
+    void (^finish)(NSString *) = ^(NSString *error) {
+        w.status.stringValue = error ?: L(@"Downloaded.");
+        [w askEngineStatus];
+        [w refreshButtons];
+    };
+    if ([mode isEqualToString:@"dfn"]) {
+        self.status.stringValue = L(@"Downloading DeepFilterNet…");
+        [[OVWorker shared] request:@{@"cmd": @"dfn_install"} status:^(NSString *m) { w.status.stringValue = m; } progress:nil
+                              done:^(NSDictionary *d, NSString *e) { finish(e); }];
+        return;
+    }
+    void (^model)(void) = ^{
+        w.status.stringValue = L(@"Downloading the music-removal engine…");
+        [[OVWorker shared] request:@{@"cmd": @"sep_install_model"} status:^(NSString *m) { w.status.stringValue = m; } progress:nil
+                              done:^(NSDictionary *d, NSString *e) { finish(e); }];
+    };
+    [[OVWorker shared] request:@{@"cmd": @"sep_status"} status:nil progress:nil done:^(NSDictionary *d, NSString *e) {
+        if (!e && ![d[@"onnxruntime"] boolValue]) {
+            w.status.stringValue = L(@"Installing onnxruntime…");
+            [[OVRuntime shared] installOptionalPackages:@[@"onnxruntime==1.31.1"] title:L(@"Installing onnxruntime…")
+                                               progress:nil
+                                                   done:^(NSString *err) { if (err) finish(err); else model(); }];
+        } else model();
+    }];
 }
 
 - (void)enhance:(id)s {
     NSString *audio = [self currentAudio];
     if (!audio || !self.voice) return;
     NSFileManager *fm = NSFileManager.defaultManager;
-    if (![fm fileExistsAtPath:[self originalPath]]) [fm copyItemAtPath:audio toPath:[self originalPath] error:nil];
     NSString *tmp = [self draftPath:[NSUUID.UUID.UUIDString stringByAppendingPathExtension:@"wav"]];
+    NSString *action = nil;
+    NSDictionary *req = OVEnhanceRequest([self improveMode], self.strengthSlider.doubleValue, audio, tmp, [self modeEngineReady], &action);
+    if (!req) { if ([action isEqualToString:@"download"]) [self downloadEngine:nil]; return; }
+    if (![fm fileExistsAtPath:[self originalPath]]) [fm copyItemAtPath:audio toPath:[self originalPath] error:nil];
     NSString *vid = self.voice.identifier;
-    self.status.stringValue = L(@"Cleaning the sample…");
+    BOOL music = [req[@"mode"] isEqualToString:@"music"];
+    self.status.stringValue = music ? L(@"Removing the music…") : L(@"Cleaning the sample…");
     __weak typeof(self) w = self;
-    [[OVWorker shared] request:@{@"cmd": @"enhance", @"audio": audio, @"out": tmp} status:nil progress:nil done:^(NSDictionary *data, NSString *error) {
+    [[OVWorker shared] request:req status:^(NSString *m) { w.status.stringValue = m; } progress:nil done:^(NSDictionary *data, NSString *error) {
         // Another voice was opened meanwhile: the cleaned sample belongs to the old one, drop it.
         if (![w.voice.identifier isEqualToString:vid]) { [NSFileManager.defaultManager removeItemAtPath:tmp error:nil]; return; }
-        if (error) { w.status.stringValue = error; return; }
+        if (error) {   // the message names the action (e.g. download the engine)
+            [NSFileManager.defaultManager removeItemAtPath:tmp error:nil];
+            w.status.stringValue = error;
+            w.status.textColor = OVColor(OVRoleWarn);
+            if (![req[@"mode"] isEqualToString:@"light"]) [w askEngineStatus];
+            [w refreshButtons];
+            return;
+        }
         if ([w keepSample:tmp]) {
-            w.analysis[[w analysisKey:[w currentAudio]]] = data;
             w.status.stringValue = w.voice.ready ? L(@"Sample improved. Re-clone the voice to use it.") : L(@"Sample improved.");
         }
         [NSFileManager.defaultManager removeItemAtPath:tmp error:nil];
