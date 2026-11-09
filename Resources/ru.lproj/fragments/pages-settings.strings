@@ -32,3 +32,6 @@
 "Warning" = "Предупреждение";
 "What the app and the engine report while they work." = "Что сообщают приложение и движок во время работы.";
 "“System” follows macOS." = "«Как в системе» повторяет настройку macOS.";
+"%ld of %ld" = "%ld из %ld";
+"OK" = "Подходит";
+"Not checked" = "Не проверялась";

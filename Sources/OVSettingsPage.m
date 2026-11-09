@@ -29,7 +29,7 @@
     return self;
 }
 - (NSSize)intrinsicContentSize { return NSMakeSize(132, 84); }
-- (BOOL)acceptsFirstResponder { return YES; }
+- (BOOL)acceptsFirstResponder { return self.selected; }   // the group is one Tab stop: the selected tile
 - (BOOL)isFlipped { return NO; }
 - (void)setSelected:(BOOL)s { _selected = s; self.needsDisplay = YES; }
 - (BOOL)becomeFirstResponder { self.needsDisplay = YES; return [super becomeFirstResponder]; }
@@ -37,13 +37,15 @@
 - (NSRect)focusRingMaskBounds { return self.bounds; }
 - (void)drawFocusRingMask { [[NSBezierPath bezierPathWithRoundedRect:self.bounds xRadius:12 yRadius:12] fill]; }
 - (void)mouseDown:(NSEvent *)e {
-    [self.window makeFirstResponder:self];
     [self sendAction:self.action to:self.target];
+    [self.window makeFirstResponder:self];
 }
 - (void)keyDown:(NSEvent *)e {
     if (e.keyCode == 49 || e.keyCode == 36 || e.keyCode == 76) [self sendAction:self.action to:self.target];
-    else if (e.keyCode == 123 || e.keyCode == 126) { if (self.moveBy) self.moveBy(-1); }
-    else if (e.keyCode == 124 || e.keyCode == 125) { if (self.moveBy) self.moveBy(1); }
+    else if (e.keyCode == 123) { if (self.moveBy) self.moveBy(-1); }
+    else if (e.keyCode == 124) { if (self.moveBy) self.moveBy(1); }
+    else if (e.keyCode == 126) { if (self.moveBy) self.moveBy(-4); }
+    else if (e.keyCode == 125) { if (self.moveBy) self.moveBy(4); }
     else [super keyDown:e];
 }
 - (void)drawRect:(NSRect)dirty {
@@ -105,7 +107,7 @@
 - (NSAccessibilityRole)accessibilityRole { return NSAccessibilityRadioButtonRole; }
 - (NSString *)accessibilityLabel { return self.paletteTitle; }
 - (id)accessibilityValue { return @(self.selected); }
-- (NSString *)accessibilityHelp { return [NSString stringWithFormat:@"%ld / %ld", (long)self.position, (long)self.count]; }
+- (NSString *)accessibilityHelp { return [NSString stringWithFormat:L(@"%ld of %ld"), (long)self.position, (long)self.count]; }
 - (BOOL)accessibilityPerformPress { [self sendAction:self.action to:self.target]; return YES; }
 @end
 
@@ -139,7 +141,9 @@ static NSStackView *Rows(NSArray<NSView *> *rows, CGFloat gap) {
 @property NSArray<NSView *> *tabViews;
 @property NSArray<NSString *> *tabIds;
 @property NSMutableArray<OVPaletteTile *> *tiles;
-@property OVSliderRow *previewSlider;
+@property NSString *pendingPalette;
+@property NSTextField *previewValue;
+@property NSStackView *engineEnvs;
 @end
 
 @implementation OVSettingsPage
@@ -172,7 +176,7 @@ static NSStackView *Rows(NSArray<NSView *> *rows, CGFloat gap) {
     [self refreshEngine];
 }
 
-- (void)dealloc { [NSNotificationCenter.defaultCenter removeObserver:self]; }
+- (void)dealloc { [NSNotificationCenter.defaultCenter removeObserver:self]; [NSObject cancelPreviousPerformRequestsWithTarget:self]; }
 
 - (void)showTab:(NSInteger)i {
     self.tabs.selectedIndex = i;
@@ -256,14 +260,19 @@ static NSStackView *Rows(NSArray<NSView *> *rows, CGFloat gap) {
     NSView *palette = OVStepCard(0, @"paintpalette", L(@"Color palette"), L(@"Applies to the whole app at once."), grid);
 
     // live sample: not bound to any setting
-    self.previewSlider = [OVSliderRow rowWithTitle:L(@"Sample slider") hint:nil key:@"previewSample" min:0 max:1 format:@"%.2f" integer:NO];
+    OVSlider *sl = [OVSlider new];
+    sl.minValue = 0; sl.maxValue = 1; sl.doubleValue = 0.4;
+    sl.target = self; sl.action = @selector(previewSlid:);
+    sl.accessibilityLabel = L(@"Sample slider");
+    self.previewValue = OVLabel(@"0.40", 13, NSFontWeightSemibold, nil);
+    NSView *sliderRow = OVHStack(@[OVLabel(L(@"Sample slider"), 14, NSFontWeightSemibold, nil), sl, self.previewValue], 12);
     OVSegmented *sample = [OVSegmented segmentedWithItems:@[@[L(@"First"), @""], @[L(@"Second"), @""], @[L(@"Third"), @""]]];
     sample.selectedIndex = 0;
     NSView *sampleHeader = OVCardHeader(0, @"waveform", L(@"Sample card"), OVBadge(L(@"Ready"), OVRoleOK));
     NSView *buttons = OVHStack(@[OVPrimaryButton(L(@"Primary action"), nil, nil), OVGhostButton(L(@"Secondary"), nil, nil, nil), OVSpacer()], 8);
     NSView *badges = OVHStack(@[OVBadge(L(@"Accent"), OVRoleAccent), OVBadge(L(@"Warning"), OVRoleWarn), OVBadge(L(@"Error"), OVRoleErr), OVSpacer()], 8);
     NSView *preview = OVStepCard(0, @"eye", L(@"Preview"), L(@"A live sample of the colors, so you can see a palette before you leave this page."),
-        Rows(@[sampleHeader, buttons, badges, self.previewSlider, OVHStack(@[sample, OVSpacer()], 0)], 16));
+        Rows(@[sampleHeader, buttons, badges, sliderRow, OVHStack(@[sample, OVSpacer()], 0)], 16));
     return CardColumn(@[mode, palette, preview]);
 }
 
@@ -352,27 +361,41 @@ static NSStackView *Rows(NSArray<NSView *> *rows, CGFloat gap) {
     self.engineInfo.selectable = YES;
     self.engineStatus = OVHStack(@[], 8);
     self.engineButtons = OVHStack(@[], 8);
-    NSView *engine = OVStepCard(0, @"cpu", L(@"Python engine"), nil, Rows(@[self.engineStatus, self.engineInfo, self.engineButtons], 16));
+    self.engineEnvs = OVVStack(@[], 6);
+    NSView *engine = OVStepCard(0, @"cpu", L(@"Python engine"), nil, Rows(@[self.engineStatus, self.engineInfo, self.engineEnvs, self.engineButtons], 16));
     return CardColumn(@[engine]);
 }
 
 #pragma mark Palette
 
 - (void)syncTiles {
-    NSString *cur = [OVTheme paletteId];
+    NSString *cur = self.pendingPalette ?: [OVTheme paletteId];
     for (OVPaletteTile *t in self.tiles) t.selected = [t.paletteId isEqualToString:cur];
 }
 
+- (void)previewSlid:(NSSlider *)s { self.previewValue.stringValue = [NSString stringWithFormat:@"%.2f", s.doubleValue]; }
+
 - (void)palettePicked:(OVPaletteTile *)t {
+    if ([t.paletteId isEqualToString:[OVTheme paletteId]]) return;
     [OVTheme setPaletteId:t.paletteId];
     [self syncTiles];
 }
 
+/// Arrow keys: the tile selection follows at once, the app-wide repaint waits for the key-repeat burst to end.
+- (void)applyPendingPalette {
+    NSString *pid = self.pendingPalette;
+    self.pendingPalette = nil;
+    if (pid && ![pid isEqualToString:[OVTheme paletteId]]) [OVTheme setPaletteId:pid];
+}
+
 - (void)moveTile:(OVPaletteTile *)t by:(NSInteger)delta {
     NSInteger i = (NSInteger)[self.tiles indexOfObject:t] + delta;
-    if (i < 0 || i >= (NSInteger)self.tiles.count) return;
+    if (i < 0 || i >= (NSInteger)self.tiles.count || i == (NSInteger)[self.tiles indexOfObject:t]) return;
     OVPaletteTile *n = self.tiles[i];
-    [self palettePicked:n];
+    for (OVPaletteTile *o in self.tiles) o.selected = o == n;
+    self.pendingPalette = n.paletteId;
+    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(applyPendingPalette) object:nil];
+    [self performSelector:@selector(applyPendingPalette) withObject:nil afterDelay:0.08];
     [n.window makeFirstResponder:n];
 }
 
@@ -381,7 +404,6 @@ static NSStackView *Rows(NSArray<NSView *> *rows, CGFloat gap) {
 /// Speed, quality and accent removal can also be changed on the Speech page.
 - (void)viewWillAppear {
     [super viewWillAppear];
-    [NSUserDefaults.standardUserDefaults removeObjectForKey:@"previewSample"];   // the preview slider is only a sample
     [self refreshControls];
     [self syncTiles];
 }
@@ -389,7 +411,6 @@ static NSStackView *Rows(NSArray<NSView *> *rows, CGFloat gap) {
 - (void)refreshControls {
     NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
     for (OVSliderRow *r in self.sliders) [r refresh];
-    [self.previewSlider refresh];
     [self.checks enumerateKeysAndObjectsUsingBlock:^(NSString *key, NSButton *b, BOOL *stop) {
         b.state = [d boolForKey:key] ? NSControlStateValueOn : NSControlStateValueOff;
     }];
@@ -413,14 +434,21 @@ static NSStackView *Rows(NSArray<NSView *> *rows, CGFloat gap) {
         case OVRuntimeFailed: [s appendString:rt.errorText ?: L(@"OmniVoice not found.")]; badge = L(@"Failed"); tone = OVRoleErr; break;
         default: [s appendString:rt.errorText ?: L(@"OmniVoice not found.")]; badge = L(@"Missing"); tone = OVRoleWarn; break;
     }
-    if (rt.candidates.count) {
-        [s appendString:L(@"\n\nChecked environments:")];
-        for (NSDictionary *c in rt.candidates)
-            [s appendFormat:@"\n%@ %@ — %@", [c[@"ok"] boolValue] ? @"ok  " : [c[@"checked"] boolValue] ? @"fail" : @"—   ",
-             c[@"source"], [c[@"path"] stringByAbbreviatingWithTildeInPath]];
-    }
     if (rt.customPython.length) [s appendFormat:L(@"\n\nChosen manually: %@"), rt.customPython];
     self.engineInfo.stringValue = s;
+    for (NSView *v in self.engineEnvs.arrangedSubviews.copy) [v removeFromSuperview];
+    if (rt.candidates.count) {
+        [self.engineEnvs addArrangedSubview:OVLabel([L(@"\n\nChecked environments:") stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet],
+                                                    14, NSFontWeightSemibold, nil)];
+        for (NSDictionary *c in rt.candidates) {
+            BOOL ok = [c[@"ok"] boolValue], checked = [c[@"checked"] boolValue];
+            NSTextField *l = OVWrapLabel([NSString stringWithFormat:@"%@ — %@", c[@"source"], [c[@"path"] stringByAbbreviatingWithTildeInPath]], 12, nil);
+            l.font = [NSFont monospacedSystemFontOfSize:12 weight:NSFontWeightRegular];
+            l.selectable = YES;
+            NSView *row = OVHStack(@[OVCompactBadge(ok ? L(@"OK") : checked ? L(@"Failed") : L(@"Not checked"), ok ? OVRoleOK : checked ? OVRoleErr : OVRoleMuted), l], 8);
+            [self.engineEnvs addArrangedSubview:row];
+        }
+    }
 
     for (NSView *v in self.engineStatus.arrangedSubviews.copy) [v removeFromSuperview];
     [self.engineStatus addArrangedSubview:OVBadge(badge, tone)];
