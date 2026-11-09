@@ -34,6 +34,7 @@ static BOOL OVJobStateFromName(NSString *n, OVJobState *out) {
 
 @implementation OVJob
 - (BOOL)active { return self.state == OVJobQueued || self.state == OVJobRunning; }
+- (NSDictionary *)runnerRequest { return self.rawRequest ?: self.request; }
 - (NSString *)logPath { return [self.folder stringByAppendingPathComponent:@"log.txt"]; }
 - (NSString *)workDirectory { return [self.folder stringByAppendingPathComponent:@"work"]; }
 
@@ -65,8 +66,8 @@ static BOOL OVJobStateFromName(NSString *n, OVJobState *out) {
     d[@"progress"] = @(self.progress);
     d[@"status"] = self.status ?: @"";
     if (self.error) d[@"error"] = self.error;
-    d[@"request"] = [OVJobStore redact:self.request ?: @{}];
-    if (self.result) d[@"result"] = [OVJobStore redact:self.result];
+    d[@"request"] = [OVJobStore jsonSafe:[OVJobStore redact:self.request ?: @{}]];
+    if (self.result) d[@"result"] = [OVJobStore jsonSafe:[OVJobStore redact:self.result]];
     d[@"outputs"] = self.outputs ?: @[];
     if (self.retryOf) d[@"retryOf"] = self.retryOf;
     return d;
@@ -118,6 +119,7 @@ static NSArray<NSString *> *gRoots;
     NSMutableDictionary<NSString *, OVJob *> *_pending;
     NSMutableDictionary<NSString *, NSFileHandle *> *_logs;
     NSMutableDictionary<NSString *, NSNumber *> *_logSizes;
+    NSMutableDictionary<NSString *, NSNumber *> *_requestWritten;
 }
 
 + (NSArray<NSString *> *)appDataRoots { @synchronized (self) { return gRoots ?: @[NSTemporaryDirectory()]; } }
@@ -131,6 +133,7 @@ static NSArray<NSString *> *gRoots;
         _pending = [NSMutableDictionary dictionary];
         _logs = [NSMutableDictionary dictionary];
         _logSizes = [NSMutableDictionary dictionary];
+        _requestWritten = [NSMutableDictionary dictionary];
         [self makeDirectory:root];
     }
     return self;
@@ -181,8 +184,15 @@ static NSArray<NSString *> *gRoots;
 - (void)writeJob:(OVJob *)job {   // call inside @synchronized(self)
     if (![OVJobStore isValidIdentifier:job.identifier]) return;
     [self makeDirectory:job.folder];
-    NSData *data = [NSJSONSerialization dataWithJSONObject:job.dictionary options:NSJSONWritingPrettyPrinted | NSJSONWritingSortedKeys error:nil];
+    NSMutableDictionary *rec = [job.dictionary mutableCopy];
+    NSDictionary *request = rec[@"request"];
+    [rec removeObjectForKey:@"request"];   // written once, in its own file: progress saves stay small
+    NSData *data = [NSJSONSerialization dataWithJSONObject:rec options:NSJSONWritingPrettyPrinted | NSJSONWritingSortedKeys error:nil];
     if (!data) return;
+    if (!_requestWritten[job.identifier]) {
+        NSData *rd = [NSJSONSerialization dataWithJSONObject:request ?: @{} options:NSJSONWritingSortedKeys error:nil];
+        if (rd && [self writeData:rd toPath:[job.folder stringByAppendingPathComponent:@"request.json"]]) _requestWritten[job.identifier] = @YES;
+    }
     [self writeData:data toPath:[job.folder stringByAppendingPathComponent:@"job.json"]];
     _lastWrite[job.identifier] = NSDate.date;
     [_pending removeObjectForKey:job.identifier];
@@ -274,6 +284,13 @@ static NSArray<NSString *> *gRoots;
         NSData *data = [NSData dataWithContentsOfFile:[folder stringByAppendingPathComponent:@"job.json"]];
         if (!data) continue;
         id obj = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+        NSData *rd = [NSData dataWithContentsOfFile:[folder stringByAppendingPathComponent:@"request.json"]];
+        id req = rd ? [NSJSONSerialization JSONObjectWithData:rd options:0 error:nil] : nil;
+        if ([obj isKindOfClass:NSDictionary.class] && [req isKindOfClass:NSDictionary.class]) {
+            NSMutableDictionary *m = [obj mutableCopy];
+            m[@"request"] = req;
+            obj = m;
+        }
         OVJob *j = [OVJob jobFromDictionary:obj folder:folder];
         if (!j || ![j.identifier isEqualToString:name]) continue;   // corrupt, or a record copied under another name
         if (j.active) {
@@ -305,6 +322,7 @@ static NSArray<NSString *> *gRoots;
         [_lastWrite removeObjectForKey:job.identifier];
         [_logs removeObjectForKey:job.identifier];
         [_logSizes removeObjectForKey:job.identifier];
+        [_requestWritten removeObjectForKey:job.identifier];
     }
     [NSFileManager.defaultManager removeItemAtPath:job.folder error:nil];
 }
@@ -342,14 +360,29 @@ static BOOL OVSecretKey(NSString *key) {
     if ([v isKindOfClass:NSDictionary.class]) {
         NSMutableDictionary *out = [NSMutableDictionary dictionary];
         [v enumerateKeysAndObjectsUsingBlock:^(id k, id val, BOOL *stop) {
-            NSString *key = [k isKindOfClass:NSString.class] ? k : [k description];
-            out[key] = OVSecretKey(key) ? @"***" : [self redact:val];
+            out[k] = ([k isKindOfClass:NSString.class] && OVSecretKey(k)) ? @"***" : [self redact:val];
         }];
         return out;
     }
     if ([v isKindOfClass:NSArray.class]) {
         NSMutableArray *out = [NSMutableArray array];
         for (id x in v) [out addObject:[self redact:x]];
+        return out;
+    }
+    return v;   // numbers, strings, dates, URLs, data: untouched (jsonSafe: makes them writable)
+}
+
++ (id)jsonSafe:(id)v {
+    if ([v isKindOfClass:NSDictionary.class]) {
+        NSMutableDictionary *out = [NSMutableDictionary dictionary];
+        [v enumerateKeysAndObjectsUsingBlock:^(id k, id val, BOOL *stop) {
+            out[[k isKindOfClass:NSString.class] ? k : [k description]] = [self jsonSafe:val];
+        }];
+        return out;
+    }
+    if ([v isKindOfClass:NSArray.class]) {
+        NSMutableArray *out = [NSMutableArray array];
+        for (id x in v) [out addObject:[self jsonSafe:x]];
         return out;
     }
     if ([v isKindOfClass:NSString.class]) return v;
@@ -362,6 +395,12 @@ static BOOL OVSecretKey(NSString *key) {
     if ([v isKindOfClass:NSURL.class]) return [(NSURL *)v isFileURL] ? [(NSURL *)v path] : [(NSURL *)v absoluteString];
     if ([v isKindOfClass:NSData.class]) return [NSString stringWithFormat:@"<%lu bytes>", (unsigned long)[(NSData *)v length]];
     return [v description];
+}
+
++ (BOOL)hasRedactedValues:(id)v {
+    if ([v isKindOfClass:NSDictionary.class]) { for (id x in [v allValues]) if ([self hasRedactedValues:x]) return YES; return NO; }
+    if ([v isKindOfClass:NSArray.class]) { for (id x in v) if ([self hasRedactedValues:x]) return YES; return NO; }
+    return [v isKindOfClass:NSString.class] && [v isEqualToString:@"***"];
 }
 
 #pragma mark Paths
@@ -394,5 +433,34 @@ static NSString *OVRealPathLoose(NSString *path) {
         if (real.length > prefix.length && [real hasPrefix:prefix]) return YES;   // the root itself is not deletable
     }
     return NO;
+}
+static NSArray<NSString *> *gProtected;
++ (NSArray<NSString *> *)protectedRoots { @synchronized (self) { return gProtected ?: @[]; } }
++ (void)setProtectedRoots:(NSArray<NSString *> *)roots { @synchronized (self) { gProtected = [roots copy]; } }
+
+static BOOL OVInsideAny(NSString *real, NSArray<NSString *> *roots) {
+    for (NSString *root in roots) {
+        NSString *r = OVRealPathLoose(root);
+        if (!r || r.length < 2) continue;
+        NSString *prefix = [r hasSuffix:@"/"] ? r : [r stringByAppendingString:@"/"];
+        if (real.length > prefix.length && [real hasPrefix:prefix]) return YES;
+    }
+    return NO;
+}
+
++ (BOOL)isDeletablePartial:(NSString *)path roots:(NSArray<NSString *> *)roots exceptRoots:(NSArray<NSString *> *)exceptRoots {
+    NSString *real = OVRealPathLoose(path);
+    if (!real) return NO;
+    BOOL ok = OVInsideAny(real, exceptRoots) || (OVInsideAny(real, roots) && !OVInsideAny(real, self.protectedRoots));
+    if (!ok) return NO;
+    struct stat st;
+    if (lstat(real.fileSystemRepresentation, &st) != 0) return YES;   // not there (yet): nothing to refuse
+    return S_ISREG(st.st_mode);                                       // never a folder, a link or a device
+}
+
++ (BOOL)removePartial:(NSString *)path roots:(NSArray<NSString *> *)roots exceptRoots:(NSArray<NSString *> *)exceptRoots {
+    if (![self isDeletablePartial:path roots:roots exceptRoots:exceptRoots]) return NO;
+    NSString *real = OVRealPathLoose(path);
+    return unlink(real.fileSystemRepresentation) == 0;
 }
 @end

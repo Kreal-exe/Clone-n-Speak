@@ -17,7 +17,7 @@
 - (void)start:(OVJob *)job context:(OVJobContext *)ctx {
     _ctx = ctx;
     NSMutableDictionary *req = [NSMutableDictionary dictionary];
-    [job.request enumerateKeysAndObjectsUsingBlock:^(NSString *k, id v, BOOL *stop) {
+    [job.runnerRequest enumerateKeysAndObjectsUsingBlock:^(NSString *k, id v, BOOL *stop) {
         if (![k hasPrefix:@"_"]) req[k] = v;   // underscore keys are notes for the app (for instance _voiceId)
     }];
     _request = req;

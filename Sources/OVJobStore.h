@@ -14,6 +14,8 @@ NS_ASSUME_NONNULL_BEGIN
 @property (readwrite, nullable, copy) NSDictionary *result;
 @property (readwrite, copy) NSArray<NSString *> *outputs;
 @property (readwrite) BOOL retryable;
+/// The unredacted request: memory only, never written.
+@property (readwrite, copy, nullable) NSDictionary *rawRequest;
 + (nullable OVJob *)jobFromDictionary:(NSDictionary *)d folder:(NSString *)folder;
 - (NSDictionary *)dictionary;
 @end
@@ -44,6 +46,17 @@ NSString *OVJobStateName(OVJobState s);
 - (void)removeWorkOfJob:(OVJob *)job;
 /// Secrets (keys named token, key, password, secret, authorization, hf_token…) replaced by ***; the result is JSON-safe.
 + (id)redact:(id)value;
+/// Makes a value JSON-safe: NSDate -> seconds, NSURL -> string, NSData -> "<N bytes>", unknown objects -> description.
++ (id)jsonSafe:(id)value;
+/// True if the value still holds a *** placeholder, i.e. a secret that is gone.
++ (BOOL)hasRedactedValues:(id)value;
+/// Folders a partial file must never be deleted in (jobs/, voices/). Set by OVJobs from OVPaths.
+@property (class, copy) NSArray<NSString *> *protectedRoots;
+/// A partial file may be deleted if it is a regular file (not a link, not a folder) whose real path is inside one of
+/// `roots` and not inside a protected root. Files under `exceptRoots` skip the protected check (the job's own work/).
++ (BOOL)isDeletablePartial:(NSString *)path roots:(NSArray<NSString *> *)roots exceptRoots:(NSArray<NSString *> *)exceptRoots;
+/// Deletes it if isDeletablePartial passes. Returns whether a file was removed.
++ (BOOL)removePartial:(NSString *)path roots:(NSArray<NSString *> *)roots exceptRoots:(NSArray<NSString *> *)exceptRoots;
 /// The folders the app may delete in: Support, Outputs, the temporary directory. Set by OVJobs from OVPaths.
 @property (class, copy) NSArray<NSString *> *appDataRoots;
 /// True if the real path (symlinks resolved, even for a file that does not exist yet) is inside one of appDataRoots.

@@ -3,6 +3,7 @@
 #import <signal.h>
 #import "OVJobs.h"
 #import "OVJobStore.h"
+#import "OVPaths.h"
 
 static int gFailures = 0;
 #define ASSERT(cond, ...) do { if (!(cond)) { gFailures++; fprintf(stderr, "FAIL %s:%d  %s  ", __func__, __LINE__, #cond); \
@@ -22,6 +23,10 @@ static NSString *tempDir(void) {
     NSString *d = [NSTemporaryDirectory() stringByAppendingPathComponent:[NSString stringWithFormat:@"jobs-test-%u", arc4random()]];
     [NSFileManager.defaultManager createDirectoryAtPath:d withIntermediateDirectories:YES attributes:nil error:nil];
     return d;
+}
+static NSString *outputsPath(NSString *name) {
+    [NSFileManager.defaultManager createDirectoryAtPath:[OVPaths outputs] withIntermediateDirectories:YES attributes:nil error:nil];
+    return [[OVPaths outputs] stringByAppendingPathComponent:name];
 }
 static BOOL exists(NSString *p) { return [NSFileManager.defaultManager fileExistsAtPath:p]; }
 
@@ -121,7 +126,7 @@ static void testRemoteQueueLimit(void) {
 }
 
 static void testStopProcessMidWork(void) {
-    NSString *dir = tempDir(), *pidFile = [dir stringByAppendingPathComponent:@"pid"], *out = [dir stringByAppendingPathComponent:@"partial.wav"];
+    NSString *dir = tempDir(), *pidFile = [dir stringByAppendingPathComponent:@"pid"], *out = outputsPath(@"partial.wav");
     OVJobs *jobs = [OVJobs jobsWithRoot:[dir stringByAppendingPathComponent:@"jobs"]];
     [jobs registerKind:@"p" lane:OVJobLaneCompute retryable:NO title:^NSString *(NSDictionary *r) { return @"p"; }
                factory:shellFactory(@"touch \"$WORK/a.tmp\"; echo partial > \"$OUT\"; sleep 30 & echo $! > \"$PIDF\"; wait",
@@ -326,21 +331,39 @@ static void testCleanupRefusesPathsOutsideAppData(void) {
     NSString *link = [dir stringByAppendingPathComponent:@"homelink"];
     symlink(NSHomeDirectory().fileSystemRepresentation, link.fileSystemRepresentation);
     ASSERT(![OVJobStore isInsideAppData:link] && ![OVJobStore isInsideAppData:[link stringByAppendingPathComponent:@"Documents"]]);
-    NSString *mine = [dir stringByAppendingPathComponent:@"mine.wav"];
+    NSString *mine = outputsPath(@"mine.wav"), *folderPartial = outputsPath(@"a-folder");
     [@"x" writeToFile:mine atomically:YES encoding:NSUTF8StringEncoding error:nil];
-    ASSERT([OVJobStore isInsideAppData:mine] && [OVJobStore isInsideAppData:[dir stringByAppendingPathComponent:@"not-yet/there.wav"]]);
+    [NSFileManager.defaultManager createDirectoryAtPath:folderPartial withIntermediateDirectories:YES attributes:nil error:nil];
+    [@"keep" writeToFile:[folderPartial stringByAppendingPathComponent:@"inside.wav"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    NSString *voices = [OVPaths voices], *voiceFile = [voices stringByAppendingPathComponent:@"v1/reference.wav"];
+    [NSFileManager.defaultManager createDirectoryAtPath:voiceFile.stringByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:nil];
+    [@"voice" writeToFile:voiceFile atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    NSString *stray = [dir stringByAppendingPathComponent:@"stray.wav"];   // tmp, but not the job's own tmp folder
+    [@"x" writeToFile:stray atomically:YES encoding:NSUTF8StringEncoding error:nil];
 
-    OVJob *j = [jobs submitKind:@"c" request:@{} origin:@"app" onFinish:nil error:nil];
+    OVJob *other = [jobs submitKind:@"c" request:@{} origin:@"app" onFinish:nil error:nil];   // runs
+    OVJob *j = [jobs submitKind:@"c" request:@{} origin:@"app" onFinish:nil error:nil];   // queued behind it
+    [gRunners[other.identifier].ctx succeedWithResult:nil outputs:@[]];
+    ASSERT(waitUntil(2, ^BOOL{ return j.state == OVJobRunning; }));
+    NSString *otherJobFile = [other.folder stringByAppendingPathComponent:@"job.json"];
     OVJobContext *ctx = gRunners[j.identifier].ctx;
-    [ctx registerPartialPath:@"/etc/hosts"];
-    [ctx registerPartialPath:link];
-    [ctx registerPartialPath:mine];
+    NSString *ownTmp = [NSTemporaryDirectory() stringByAppendingPathComponent:[@"clonenspeak-" stringByAppendingString:j.identifier]];
+    [NSFileManager.defaultManager createDirectoryAtPath:ownTmp withIntermediateDirectories:YES attributes:nil error:nil];
+    NSString *ownTmpFile = [ownTmp stringByAppendingPathComponent:@"p.wav"];
+    [@"x" writeToFile:ownTmpFile atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    for (NSString *p in @[@"/etc/hosts", link, folderPartial, voiceFile, otherJobFile, stray, mine, ownTmpFile]) [ctx registerPartialPath:p];
     spin(0.1);
     [ctx failWithError:@"x"];
     ASSERT(waitUntil(2, ^BOOL{ return j.state == OVJobFailed; }));
     ASSERT(exists(@"/etc/hosts"), "outside the app folders: untouched");
     ASSERT(exists(link) && exists(NSHomeDirectory()), "a symlink to the home folder is refused");
-    ASSERT(!exists(mine), "an allowed partial file is deleted");
+    ASSERT(exists(folderPartial) && exists([folderPartial stringByAppendingPathComponent:@"inside.wav"]), "a folder is never deleted");
+    ASSERT(exists(voiceFile), "voices/ is protected");
+    ASSERT(exists(otherJobFile), "other jobs' files are protected");
+    ASSERT(exists(stray), "tmp outside the job's own folder is refused");
+    ASSERT(!exists(mine), "a plain file in Outputs is deleted");
+    ASSERT(!exists(ownTmpFile), "a plain file in the job's own tmp folder is deleted");
+    ASSERT([j.logText containsString:@"Ignored a partial file"]);
 }
 
 static void testRequestSecretsAreRedacted(void) {
@@ -351,7 +374,8 @@ static void testRequestSecretsAreRedacted(void) {
     ASSERT([red[@"hf_token"] isEqual:@"***"] && [red[@"Authorization"] isEqual:@"***"] && [red[@"hfToken"] isEqual:@"***"] && [red[@"X-Api-Key"] isEqual:@"***"]);
     ASSERT([red[@"nested"][@"api_key"] isEqual:@"***"] && [red[@"nested"][@"deeper"][0][@"password"] isEqual:@"***"]);
     ASSERT([red[@"nested"][@"fine"] isEqual:@1] && [red[@"max_new_tokens"] isEqual:@128] && [red[@"keyboard"] isEqual:@"ok"] && [red[@"text"] isEqual:@"hello"]);
-    ASSERT([NSJSONSerialization isValidJSONObject:red]);
+    ASSERT([red[@"when"] isKindOfClass:NSDate.class], "redact does not rewrite other values");
+    ASSERT([NSJSONSerialization isValidJSONObject:[OVJobStore jsonSafe:red]]);
 
     NSString *root = tempDir();
     OVJobs *jobs = [OVJobs jobsWithRoot:root];
@@ -361,7 +385,11 @@ static void testRequestSecretsAreRedacted(void) {
     [gRunners[j.identifier].ctx succeedWithResult:@{@"token": @"SECRET7", @"seconds": @1} outputs:@[]];
     ASSERT(waitUntil(2, ^BOOL{ return !j.active; }));
     NSString *disk = [NSString stringWithContentsOfFile:[j.folder stringByAppendingPathComponent:@"job.json"] encoding:NSUTF8StringEncoding error:nil];
+    NSString *reqDisk = [NSString stringWithContentsOfFile:[j.folder stringByAppendingPathComponent:@"request.json"] encoding:NSUTF8StringEncoding error:nil];
     ASSERT(disk.length && ![disk containsString:@"SECRET"], "job.json holds no secrets");
+    ASSERT(reqDisk.length && ![reqDisk containsString:@"SECRET"] && [reqDisk containsString:@"hello"], "request.json holds no secrets");
+    ASSERT(![disk containsString:@"hello"], "the request is written once, in its own file");
+    ASSERT([j.runnerRequest[@"hf_token"] isEqual:@"hf_SECRET1"], "the runner gets the original request");
     NSString *mem = [NSString stringWithFormat:@"%@%@", j.request, j.result];
     ASSERT(![mem containsString:@"SECRET"]);
     ASSERT([j.result[@"seconds"] isEqual:@1]);
@@ -452,13 +480,126 @@ static void testRemoveAndClearFinished(void) {
     ASSERT([jobs jobWithId:b.identifier] != nil);
 }
 
+static void testRetryUsesRawRequestInSessionAndRefusesAfterRelaunch(void) {
+    NSString *root = tempDir();
+    OVJobs *jobs = [OVJobs jobsWithRoot:root];
+    gRunners = [NSMutableDictionary dictionary];
+    registerManual(jobs, @"r", OVJobLaneCompute, YES);
+    OVJob *a = [jobs submitKind:@"r" request:@{@"text": @"hi", @"hf_token": @"hf_SECRET"} origin:@"app" onFinish:nil error:nil];
+    [gRunners[a.identifier].ctx failWithError:@"bad"];
+    ASSERT(waitUntil(2, ^BOOL{ return a.state == OVJobFailed; }));
+    OVJob *b = [jobs retry:a];
+    ASSERT(b && [b.runnerRequest[@"hf_token"] isEqual:@"hf_SECRET"], "in the session the retry keeps the secret");
+    ASSERT([b.request[@"hf_token"] isEqual:@"***"]);
+    OVJobs *again = [OVJobs jobsWithRoot:root];
+    registerManual(again, @"r", OVJobLaneCompute, YES);
+    OVJob *old = [again jobWithId:a.identifier];
+    ASSERT(old && old.retryable);
+    NSString *err = nil;
+    ASSERT([again retry:old error:&err] == nil && err.length, "after a relaunch the secret is gone: refuse with a message");
+    ASSERT([old.runnerRequest[@"hf_token"] isEqual:@"***"]);
+    // a request without secrets still retries
+    OVJob *c = [jobs submitKind:@"r" request:@{@"text": @"plain"} origin:@"app" onFinish:nil error:nil];
+    [gRunners[b.identifier].ctx failWithError:@"x"];
+    ASSERT(waitUntil(2, ^BOOL{ return b.state == OVJobFailed && c.state == OVJobRunning; }));
+    [gRunners[c.identifier].ctx failWithError:@"x"];
+    ASSERT(waitUntil(2, ^BOOL{ return c.state == OVJobFailed; }));
+    OVJobs *third = [OVJobs jobsWithRoot:root];
+    registerManual(third, @"r", OVJobLaneCompute, YES);
+    ASSERT([third retry:[third jobWithId:c.identifier] error:nil] != nil);
+}
+
+static void testStopBeforeLaunchEndsAtOnce(void) {
+    OVJobs *jobs = [OVJobs jobsWithRoot:tempDir()];
+    __block void (^pendingProceed)(BOOL, NSString *) = nil;
+    [jobs registerKind:@"p" lane:OVJobLaneCompute retryable:NO title:^NSString *(NSDictionary *r) { return @"p"; }
+               factory:OVProcessRunnerFactory(^OVProcessSpec *(OVJob *job) {
+                   OVProcessSpec *s = [OVProcessSpec new];
+                   s.executable = @"/bin/sh"; s.arguments = @[@"-c", @"echo '{\"event\":\"result\",\"data\":{}}'"];
+                   s.beforeStart = ^(void (^proceed)(BOOL, NSString *)) { pendingProceed = [proceed copy]; };   // never answers (yet)
+                   return s;
+               }) onSuccess:nil];
+    OVJob *j = [jobs submitKind:@"p" request:@{} origin:@"app" onFinish:nil error:nil];
+    spin(0.1);
+    [jobs stop:j];
+    ASSERT(waitUntil(1, ^BOOL{ return j.state == OVJobStopped; }), "Stopped without waiting for beforeStart");
+    if (pendingProceed) pendingProceed(YES, nil);   // a late answer is ignored
+    spin(0.3);
+    ASSERT(j.state == OVJobStopped);
+}
+
+static void testBeforeStartTimesOut(void) {
+    OVJobs *jobs = [OVJobs jobsWithRoot:tempDir()];
+    [jobs registerKind:@"p" lane:OVJobLaneCompute retryable:NO title:^NSString *(NSDictionary *r) { return @"p"; }
+               factory:OVProcessRunnerFactory(^OVProcessSpec *(OVJob *job) {
+                   OVProcessSpec *s = [OVProcessSpec new];
+                   s.executable = @"/bin/sh"; s.arguments = @[@"-c", @"exit 0"];
+                   s.beforeStartTimeout = 0.3;
+                   s.beforeStart = ^(void (^proceed)(BOOL, NSString *)) {};
+                   return s;
+               }) onSuccess:nil];
+    OVJob *j = [jobs submitKind:@"p" request:@{} origin:@"app" onFinish:nil error:nil];
+    ASSERT(waitUntil(3, ^BOOL{ return !j.active; }));
+    ASSERT(j.state == OVJobFailed && j.error.length, "a hanging check fails the job with a message");
+}
+
+static void testForcedStopKillsAtOnce(void) {
+    NSString *dir = tempDir(), *pidFile = [dir stringByAppendingPathComponent:@"pid"];
+    OVJobs *jobs = [OVJobs jobsWithRoot:[dir stringByAppendingPathComponent:@"jobs"]];
+    [jobs registerKind:@"p" lane:OVJobLaneCompute retryable:NO title:^NSString *(NSDictionary *r) { return @"p"; }
+               factory:shellFactory(@"trap '' TERM; echo $$ > \"$PIDF\"; while :; do sleep 1; done", @{@"PIDF": pidFile}, nil, 30)
+             onSuccess:nil];
+    OVJob *j = [jobs submitKind:@"p" request:@{} origin:@"app" onFinish:nil error:nil];
+    ASSERT(waitUntil(5, ^BOOL{ return [[NSString stringWithContentsOfFile:pidFile encoding:NSUTF8StringEncoding error:nil] intValue] > 0; }));
+    int pid = [[NSString stringWithContentsOfFile:pidFile encoding:NSUTF8StringEncoding error:nil] intValue];
+    spin(0.2);
+    [jobs stopAllAndWait:0.4];
+    ASSERT(j.state == OVJobStopped);
+    ASSERT(waitUntil(1.5, ^BOOL{ return kill(pid, 0) != 0; }), "killed long before the 30 s grace");
+}
+
+static void testNilRunnerFailsJob(void) {
+    OVJobs *jobs = [OVJobs jobsWithRoot:tempDir()];
+    [jobs registerKind:@"n" lane:OVJobLaneCompute retryable:NO title:^NSString *(NSDictionary *r) { return @"n"; }
+               factory:^id<OVJobRunner>(OVJob *job) { return nil; } onSuccess:nil];
+    OVJob *j = [jobs submitKind:@"n" request:@{} origin:@"app" onFinish:nil error:nil];
+    ASSERT(j.state == OVJobFailed && j.error.length, "no runner: Failed, and the lane is free");
+    ASSERT(jobs.activeCount == 0);
+}
+
+static void testStderrCrlfAndInvalidBytesAreKept(void) {
+    OVJobs *jobs = [OVJobs jobsWithRoot:tempDir()];
+    [jobs registerKind:@"p" lane:OVJobLaneCompute retryable:NO title:^NSString *(NSDictionary *r) { return @"p"; }
+               factory:shellFactory(@"printf 'crlf line\\r\\n' >&2; printf 'bad \\377\\376 bytes\\n' >&2; printf 'bar 10%%\\rbar 50%%\\rbar 100%%\\n' >&2; exit 0", @{}, nil, 0)
+             onSuccess:nil];
+    OVJob *j = [jobs submitKind:@"p" request:@{} origin:@"app" onFinish:nil error:nil];
+    ASSERT(waitUntil(5, ^BOOL{ return !j.active; }));
+    NSString *log = j.logText;
+    ASSERT([log containsString:@"crlf line\n"] && ![log containsString:@"\r"], "CRLF line kept: %s", log.UTF8String);
+    ASSERT([log containsString:@"bad "] && [log containsString:@" bytes"], "invalid bytes do not drop the line");
+    ASSERT([log containsString:@"bar 100%"] && ![log containsString:@"bar 10%\n"], "a redrawn bar keeps its last frame");
+}
+
+static void testRegisterAgainReplaces(void) {
+    OVJobs *jobs = [OVJobs jobsWithRoot:tempDir()];
+    gRunners = [NSMutableDictionary dictionary];
+    registerManual(jobs, @"c", OVJobLaneCompute, NO);
+    [jobs registerKind:@"c" lane:OVJobLaneCompute retryable:YES title:^NSString *(NSDictionary *r) { return @"second"; }
+               factory:manualFactory(NO) onSuccess:nil];
+    OVJob *j = [jobs submitKind:@"c" request:@{} origin:@"app" onFinish:nil error:nil];
+    ASSERT([j.title isEqual:@"second"]);
+}
+
 int main(void) {
     @autoreleasepool {
+        setenv("OV_DATA_DIR", tempDir().fileSystemRepresentation, 1);   // Support/Outputs/voices of the test live here
         void (*tests[])(void) = {
             testSubmitRunsFifoPerLane, testOnSuccessAndOnFinishRunOnMain, testRemoteQueueLimit, testStopProcessMidWork,
             testStopEscalatesToKill, testProcessEventsAndResult, testEnvironmentIsNotInherited, testCrashedProcessFails,
             testBeforeStartCanRefuse, testStopQueuedJob, testRetryCopiesRequestAndLinks, testRelaunchMarksRunningAsInterrupted,
             testCorruptRecordIsSkipped, testPruneKeepsActive, testCleanupRefusesPathsOutsideAppData, testRequestSecretsAreRedacted,
+            testRetryUsesRawRequestInSessionAndRefusesAfterRelaunch, testStopBeforeLaunchEndsAtOnce, testBeforeStartTimesOut,
+            testForcedStopKillsAtOnce, testNilRunnerFailsJob, testStderrCrlfAndInvalidBytesAreKept, testRegisterAgainReplaces,
             testFilesAreOwnerOnly, testLogIsCapped, testProgressIsThrottled, testStopAllAndWait, testRemoveAndClearFinished,
         };
         for (size_t i = 0; i < sizeof tests / sizeof *tests; i++) tests[i]();

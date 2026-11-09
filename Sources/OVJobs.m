@@ -112,6 +112,7 @@ static const NSTimeInterval kNotifyInterval = 0.25;
     if ((self = [super init])) {
         OVJobStore.appDataRoots = @[[OVPaths support], [OVPaths outputs], NSTemporaryDirectory()];
         _store = [[OVJobStore alloc] initWithRoot:root];
+        OVJobStore.protectedRoots = @[root, [OVPaths voices]];
         _store.interruptedMessage = L(@"The app closed while this task was running. Start it again.");
         _kinds = [NSMutableDictionary dictionary];
         _runners = [NSMutableDictionary dictionary];
@@ -173,6 +174,7 @@ static const NSTimeInterval kNotifyInterval = 0.25;
 - (void)registerKind:(NSString *)kind lane:(OVJobLane)lane retryable:(BOOL)retryable
                title:(NSString *(^)(NSDictionary *))title factory:(OVJobRunnerFactory)factory
            onSuccess:(void (^)(OVJob *))onSuccess {
+    if (_kinds[kind]) NSLog(@"OVJobs: kind '%@' is registered again; the new registration replaces the old one", kind);
     OVKindEntry *e = [OVKindEntry new];
     e.lane = lane; e.retryable = retryable; e.title = title; e.factory = factory; e.onSuccess = onSuccess;
     _kinds[kind] = e;
@@ -210,7 +212,8 @@ static const NSTimeInterval kNotifyInterval = 0.25;
     job.created = NSDate.date;
     job.progress = -1;
     job.status = @"";
-    job.request = [OVJobStore redact:request ?: @{}];
+    job.rawRequest = request ?: @{};
+    job.request = [OVJobStore jsonSafe:[OVJobStore redact:request ?: @{}]];
     job.title = e.title ? (e.title(job.request) ?: kind) : kind;
     job.retryOf = retryOf;
     job.outputs = @[];
@@ -250,6 +253,11 @@ static const NSTimeInterval kNotifyInterval = 0.25;
     id<OVJobRunner> runner = nil;
     @try {
         runner = e.factory(job);
+        if (!runner) {
+            [self finish:job state:OVJobFailed error:L(@"The task could not start: no runner for this kind of task. Update the app or the plugin.")
+                  result:nil outputs:@[]];
+            return;
+        }
         _runners[job.identifier] = runner;
         [runner start:job context:ctx];
     } @catch (NSException *ex) {
@@ -276,10 +284,15 @@ static const NSTimeInterval kNotifyInterval = 0.25;
     [self postChange:c.job immediate:NO];
 }
 
+/// Where a job may have partial files: its own work/, the Outputs folder, <tmp>/clonenspeak-<id>/.
+- (NSArray<NSString *> *)partialRootsFor:(OVJob *)job {
+    return @[[OVPaths outputs], [NSTemporaryDirectory() stringByAppendingPathComponent:[@"clonenspeak-" stringByAppendingString:job.identifier]]];
+}
+
 - (void)contextPartial:(OVJobContext *)c path:(NSString *)path {
     if (![self isCurrent:c]) return;
-    if (![OVJobStore isInsideAppData:path]) {
-        [_store appendLog:[NSString stringWithFormat:@"Ignored a partial file outside the app folders: %@", path] toJob:c.job];
+    if (![OVJobStore isDeletablePartial:path roots:[self partialRootsFor:c.job] exceptRoots:@[c.job.workDirectory]]) {
+        [_store appendLog:[NSString stringWithFormat:@"Ignored a partial file that is not a plain file in this task's own folders: %@", path] toJob:c.job];
         return;
     }
     NSMutableArray *a = _partials[c.job.identifier];
@@ -311,9 +324,8 @@ static const NSTimeInterval kNotifyInterval = 0.25;
     [_partials removeObjectForKey:ident];
 
     if (state != OVJobSucceeded) {
-        for (NSString *p in partials) {
-            if ([OVJobStore isInsideAppData:p]) [NSFileManager.defaultManager removeItemAtPath:p error:nil];
-        }
+        for (NSString *p in partials)
+            [OVJobStore removePartial:p roots:[self partialRootsFor:job] exceptRoots:@[job.workDirectory]];
     }
     BOOL keepWork = NO;
     if (state == OVJobSucceeded) {
@@ -365,9 +377,16 @@ static const NSTimeInterval kNotifyInterval = 0.25;
     [_runners[job.identifier] stop:job];
 }
 
-- (OVJob *)retry:(OVJob *)job {
-    if (!job.retryable) return nil;
-    return [self submitKind:job.kind request:job.request origin:job.origin retryOf:job.identifier onFinish:nil error:nil];
+- (OVJob *)retry:(OVJob *)job { return [self retry:job error:nil]; }
+
+- (OVJob *)retry:(OVJob *)job error:(NSString **)error {
+    if (!job.retryable) { if (error) *error = L(@"This task cannot be started again."); return nil; }
+    if (!job.rawRequest && [OVJobStore hasRedactedValues:job.request]) {
+        // after a relaunch the secrets of the first run are gone; sending *** would only fail later and confusingly
+        if (error) *error = L(@"This task used a key or password that is not stored. Enter it again and start a new task.");
+        return nil;
+    }
+    return [self submitKind:job.kind request:job.runnerRequest origin:job.origin retryOf:job.identifier onFinish:nil error:error];
 }
 
 - (void)remove:(OVJob *)job {
@@ -390,6 +409,8 @@ static const NSTimeInterval kNotifyInterval = 0.25;
     for (OVJob *j in [_jobs copy]) {   // a runner that never answered
         if (!j.active) continue;
         [_queues[j.lane] removeObject:j];
+        id<OVJobRunner> r = _runners[j.identifier];
+        if ([r respondsToSelector:@selector(kill:)]) [r kill:j];   // the app is about to exit: no waiting for SIGKILL timers
         [self finish:j state:OVJobStopped error:nil result:nil outputs:@[]];
     }
 }
@@ -398,7 +419,7 @@ static const NSTimeInterval kNotifyInterval = 0.25;
 #pragma mark - Process runner
 
 @implementation OVProcessSpec
-- (instancetype)init { if ((self = [super init])) { _killGrace = 3; _arguments = @[]; _environment = @{}; } return self; }
+- (instancetype)init { if ((self = [super init])) { _killGrace = 3; _beforeStartTimeout = 120; _arguments = @[]; _environment = @{}; } return self; }
 @end
 
 @interface OVProcessRunner : NSObject <OVJobRunner>
@@ -409,7 +430,7 @@ static const NSTimeInterval kNotifyInterval = 0.25;
     OVProcessSpec *_spec;
     OVJobContext *_ctx;
     pid_t _pid;
-    BOOL _reaped, _stopped;
+    BOOL _reaped, _stopped, _launched, _ended;
     NSDictionary *_resultData;
     NSString *_errorMessage;
 }
@@ -422,27 +443,40 @@ static const NSTimeInterval kNotifyInterval = 0.25;
 - (void)start:(OVJob *)job context:(OVJobContext *)ctx {
     _ctx = ctx;
     _spec = _specFor(job);
-    if (!_spec.executable.length) { [ctx failWithError:L(@"No program to run was given.")]; return; }
+    if (!_spec.executable.length) { [self endWithError:L(@"No program to run was given.")]; return; }
     for (NSString *p in _spec.partialPaths) [ctx registerPartialPath:p];
     void (^go)(void) = ^{ [self launch]; };
     if (_spec.beforeStart) {
+        __block BOOL answered = NO;
+        NSLock *lock = [NSLock new];
+        BOOL (^claim)(void) = ^BOOL{ [lock lock]; BOOL first = !answered; answered = YES; [lock unlock]; return first; };
         _spec.beforeStart(^(BOOL ok, NSString *err) {
+            if (!claim()) return;   // timed out already
             dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-                if (!ok) { [ctx failWithError:err.length ? err : L(@"The task could not start.")]; return; }
+                if (!ok) { [self endWithError:err.length ? err : L(@"The task could not start.")]; return; }
                 go();
             });
+        });
+        // a check that never answers must not hold the lane forever
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(_spec.beforeStartTimeout * NSEC_PER_SEC)), dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+            if (claim()) [self endWithError:L(@"Preparing the task took too long. Close other apps and start it again.")];
         });
     } else {
         dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), go);
     }
 }
 
+/// The one place that ends the job from the runner's side, exactly once.
+- (void)endWithError:(NSString *)message {
+    @synchronized (self) { if (_ended) return; _ended = YES; }
+    [_ctx failWithError:message];
+}
+
 - (void)launch {
-    OVJobContext *ctx = _ctx;
-    @synchronized (self) { if (_stopped) { [ctx failWithError:@"Stopped"]; return; } }
+    @synchronized (self) { if (_stopped || _ended) return; _launched = YES; }
     int in[2] = {-1, -1}, out[2], err[2];
     if (pipe(out) != 0 || pipe(err) != 0 || (_spec.stdinData && pipe(in) != 0)) {
-        [ctx failWithError:[NSString stringWithFormat:L(@"The task could not start: %@"), @(strerror(errno))]];
+        [self endWithError:[NSString stringWithFormat:L(@"The task could not start: %@"), @(strerror(errno))]];
         return;
     }
     posix_spawn_file_actions_t fa;
@@ -482,7 +516,7 @@ static const NSTimeInterval kNotifyInterval = 0.25;
     if (rc != 0) {
         close(out[0]); close(err[0]);
         if (in[1] >= 0) close(in[1]);
-        [ctx failWithError:[NSString stringWithFormat:L(@"The task could not start: %@"), @(strerror(rc))]];
+        [self endWithError:[NSString stringWithFormat:L(@"The task could not start: %@"), @(strerror(rc))]];
         return;
     }
     BOOL stopNow;
@@ -516,6 +550,29 @@ static const NSTimeInterval kNotifyInterval = 0.25;
     });
 }
 
+/// UTF-8 with every invalid byte replaced by U+FFFD (never nil, so no line is lost).
+static NSString *OVLossyString(NSData *d) {
+    NSString *s = [[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding];
+    if (s) return s;
+    const uint8_t *b = d.bytes;
+    NSUInteger n = d.length, i = 0;
+    NSMutableString *out = [NSMutableString string];
+    while (i < n) {
+        NSUInteger len = b[i] < 0x80 ? 1 : (b[i] >> 5) == 0x6 ? 2 : (b[i] >> 4) == 0xE ? 3 : (b[i] >> 3) == 0x1E ? 4 : 0;
+        NSString *piece = (len && i + len <= n) ? [[NSString alloc] initWithBytes:b + i length:len encoding:NSUTF8StringEncoding] : nil;
+        if (piece) { [out appendString:piece]; i += len; }
+        else { [out appendString:@"\uFFFD"]; i++; }
+    }
+    return out;
+}
+
+/// "text\r\n" → "text"; a progress bar redrawn with \r keeps its last frame.
+static NSString *OVCleanLine(NSString *line) {
+    while ([line hasSuffix:@"\r"]) line = [line substringToIndex:line.length - 1];
+    NSRange r = [line rangeOfString:@"\r" options:NSBackwardsSearch];
+    return r.location == NSNotFound ? line : [line substringFromIndex:NSMaxRange(r)];
+}
+
 - (void)readFd:(int)fd group:(dispatch_group_t)g queue:(dispatch_queue_t)q asEvents:(BOOL)events {
     dispatch_group_enter(g);
     dispatch_async(q, ^{
@@ -529,14 +586,14 @@ static const NSTimeInterval kNotifyInterval = 0.25;
             for (;;) {
                 NSRange r = [buf rangeOfData:[NSData dataWithBytes:"\n" length:1] options:0 range:NSMakeRange(0, buf.length)];
                 if (r.location == NSNotFound) break;
-                NSString *line = [[NSString alloc] initWithData:[buf subdataWithRange:NSMakeRange(0, r.location)] encoding:NSUTF8StringEncoding];
+                NSString *line = OVCleanLine(OVLossyString([buf subdataWithRange:NSMakeRange(0, r.location)]));
                 [buf replaceBytesInRange:NSMakeRange(0, r.location + 1) withBytes:NULL length:0];
-                if (line.length) { if (events) [self handleLine:line]; else [self->_ctx log:[line componentsSeparatedByString:@"\r"].lastObject]; }
+                if (line.length) { if (events) [self handleLine:line]; else [self->_ctx log:line]; }
             }
             if (buf.length > 4 * 1024 * 1024) [buf setLength:0];   // a stream without newlines
         }
         if (buf.length) {
-            NSString *line = [[NSString alloc] initWithData:buf encoding:NSUTF8StringEncoding];
+            NSString *line = OVCleanLine(OVLossyString(buf));
             if (line.length) { if (events) [self handleLine:line]; else [self->_ctx log:line]; }
         }
         close(fd);
@@ -569,6 +626,7 @@ static const NSTimeInterval kNotifyInterval = 0.25;
 }
 
 - (void)finishWithStatus:(int)status {
+    @synchronized (self) { if (_ended) return; _ended = YES; }
     NSDictionary *res;
     NSString *err;
     BOOL stopped;
@@ -598,13 +656,26 @@ static const NSTimeInterval kNotifyInterval = 0.25;
     killpg(pid, SIGTERM);
     NSTimeInterval grace = _spec.killGrace > 0 ? _spec.killGrace : 3;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(grace * NSEC_PER_SEC)), dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        killpg(pid, SIGKILL);   // ESRCH when the whole group is gone; the group id cannot be reused while it has members
+        @synchronized (self) { if (self->_reaped) return; }   // reaped: the pid may belong to someone else by now
+        killpg(pid, SIGKILL);
     });
 }
 
 - (void)stop:(OVJob *)job {
-    @synchronized (self) { _stopped = YES; }
+    BOOL beforeLaunch;
+    @synchronized (self) { _stopped = YES; beforeLaunch = !_launched; }
+    if (beforeLaunch) { [self endWithError:@"Stopped"]; return; }   // waiting in beforeStart: nothing runs, end at once
     [self terminateGroup];
+}
+
+- (void)kill:(OVJob *)job {
+    pid_t pid;
+    @synchronized (self) {
+        _stopped = YES;
+        if (!_launched) { [self endWithError:@"Stopped"]; return; }
+        pid = _reaped ? 0 : _pid;
+    }
+    if (pid > 0) killpg(pid, SIGKILL);
 }
 @end
 

@@ -21,3 +21,7 @@
 "%lu tasks are running" = "Выполняется задач: %lu";
 "If you quit now, the running tasks are stopped and their unfinished files are deleted." = "Если выйти сейчас, выполняющиеся задачи остановятся, а их незаконченные файлы удалятся.";
 "Stop and quit" = "Остановить и выйти";
+"The task could not start: no runner for this kind of task. Update the app or the plugin." = "Задачу не удалось запустить: для этого вида задач нет исполнителя. Обновите приложение или плагин.";
+"This task cannot be started again." = "Эту задачу нельзя запустить повторно.";
+"This task used a key or password that is not stored. Enter it again and start a new task." = "В этой задаче использовались ключ или пароль, которые не сохраняются. Введите их снова и запустите новую задачу.";
+"Preparing the task took too long. Close other apps and start it again." = "Подготовка задачи заняла слишком много времени. Закройте другие приложения и запустите её снова.";

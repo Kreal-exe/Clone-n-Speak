@@ -459,6 +459,7 @@ static NSRect OVInitialWindowFrame(void) {
 @property OVSidebar *sidebar;
 @property OVContent *content;
 @property BOOL autoSwitch;
+@property BOOL closedWithWork;   // the last window was closed while background work ran
 @end
 
 static void OVRedrawTree(NSView *v) {
@@ -486,6 +487,7 @@ static void OVRedrawTree(NSView *v) {
     [[OVVoices shared] reload];
     [[OVHistory shared] reload];
     [OVJobs registerBuiltinKinds];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(jobsChanged:) name:OVJobsDidChangeNotification object:nil];
     [self buildMenu];
     [self buildWindow];
 
@@ -862,11 +864,26 @@ static void OVWriteSnapshot(NSView *v, NSString *file) {
 
 /// Closing the last window ends the app, unless tasks are running (and, from 8.6, while the local API is on):
 /// they go on in the background with the Dock icon, and a click on it opens the window again.
+/// Work that keeps the app alive without a window. 8.6 adds the local API ([OVAPI shared].enabled) here.
+- (BOOL)hasBackgroundWork {
+    return OVJobs.shared.activeCount > 0;
+}
+
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)a {
-    return OVJobs.shared.activeCount == 0;
+    self.closedWithWork = [self hasBackgroundWork];
+    return !self.closedWithWork;
+}
+
+/// The window was closed while tasks ran: quit when the last one ends, unless the window came back.
+- (void)jobsChanged:(NSNotification *)n {
+    if (!self.closedWithWork || self.window.isVisible || self.window.isMiniaturized || [self hasBackgroundWork]) return;
+    for (NSWindow *w in NSApp.windows) if (w.isVisible && w.canBecomeMainWindow) return;
+    [NSApp terminate:nil];
 }
 
 - (BOOL)applicationShouldHandleReopen:(NSApplication *)a hasVisibleWindows:(BOOL)visible {
+    if (self.window.isMiniaturized) [self.window deminiaturize:nil];
+    self.closedWithWork = NO;
     if (!visible) [self.window makeKeyAndOrderFront:nil];
     return NO;
 }
@@ -877,10 +894,10 @@ static void OVWriteSnapshot(NSView *v, NSString *file) {
     NSAlert *alert = [NSAlert new];
     alert.messageText = n == 1 ? L(@"1 task is running") : [NSString stringWithFormat:L(@"%lu tasks are running"), (unsigned long)n];
     alert.informativeText = L(@"If you quit now, the running tasks are stopped and their unfinished files are deleted.");
+    [alert addButtonWithTitle:L(@"Cancel")];   // the default button: Return keeps the work
     [alert addButtonWithTitle:L(@"Stop and quit")];
-    [alert addButtonWithTitle:L(@"Cancel")];
     [NSApp activateIgnoringOtherApps:YES];
-    if ([alert runModal] != NSAlertFirstButtonReturn) return NSTerminateCancel;
+    if ([alert runModal] != NSAlertSecondButtonReturn) return NSTerminateCancel;
     [OVJobs.shared stopAllAndWait:3];
     return NSTerminateNow;
 }
