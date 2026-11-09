@@ -185,9 +185,12 @@ class DfnTests(unittest.TestCase):
         self.assertLess(float(np.abs(y - x).max()), 1e-3)
 
     def test_missing_binary_error_has_action(self):
-        with self.assertRaises(RuntimeError) as cm:
-            dfn.dfn_denoise(tone(300, 0.3, 48000), 48000, 18)
-        self.assertIn("Download DeepFilterNet in Audio Tools", str(cm.exception))
+        for call in (lambda: dfn.dfn_denoise(tone(300, 0.3, 48000), 48000, 18),
+                     lambda: dfn.dfn_apply({"audio": "x.wav", "out": "y.wav"})):
+            with self.assertRaises(core.AudioInputError) as cm:
+                call()
+            self.assertEqual(cm.exception.code, "unsupported")
+            self.assertIn("Download DeepFilterNet in Audio Tools", cm.exception.message)
 
     def test_tmp_dirs_removed(self):
         self.fake()
@@ -226,6 +229,46 @@ class DfnTests(unittest.TestCase):
             core.run_pre_enhance({"audio": src, "mode": "dfn"}, np.zeros(10, dtype=np.float32), 24000)
         self.assertIn("Download DeepFilterNet in Audio Tools", cm.exception.message)
 
+    def test_pre_enhance_failure_propagates(self):
+        self.fake()
+        open(self.fail, "w").close()
+        src = os.path.join(self.dir, "s.wav")
+        write_wav(src, speechlike(1.0, 16000), 16000)
+        req = {"audio": src, "mode": "dfn"}
+        with self.assertRaises(core.AudioInputError) as cm:
+            core.run_pre_enhance(req, np.zeros(10, dtype=np.float32), 24000)
+        self.assertEqual(cm.exception.code, "unsupported")
+        self.assertIn("boom", cm.exception.message)
+        self.assertIn("Audio Tools", cm.exception.message)
+        self.assertNotIn("denoise", req)
+
+    def test_oversize_download_is_stopped(self):
+        self.pin_stub()
+        dfn.SIZE = len(STUB_BODY) - 5
+        with self.assertRaises(RuntimeError) as cm:
+            dfn.dfn_install({})
+        self.assertIn("larger than expected", str(cm.exception))
+        self.assertFalse(os.path.exists(dfn.BINARY + ".part"))
+        self.assertFalse(dfn.dfn_status({})["installed"])
+
+    def test_network_error_has_action(self):
+        dfn.URL = "http://127.0.0.1:1/deep-filter"
+        with self.assertRaises(RuntimeError) as cm:
+            dfn.dfn_install({})
+        self.assertIn("Check the connection and try again", str(cm.exception))
+        self.assertFalse(os.path.exists(dfn.BINARY + ".part"))
+
+    def test_url_is_https(self):
+        self.assertTrue(dfn.URL.startswith("https://"))
+
+    def test_binary_dir_read_at_call_time(self):
+        dfn.BINARY = dfn._IMPORT_BINARY
+        old = os.environ.get("CNS_BIN_DIR")
+        self.addCleanup(lambda: os.environ.pop("CNS_BIN_DIR", None) if old is None
+                        else os.environ.__setitem__("CNS_BIN_DIR", old))
+        os.environ["CNS_BIN_DIR"] = os.path.join(self.dir, "elsewhere")
+        self.assertEqual(dfn._bin(), os.path.join(self.dir, "elsewhere", "deep-filter"))
+
     def test_registered(self):
         for name in ("dfn_status", "dfn_install", "dfn_remove", "dfn_apply"):
             self.assertIn(name, dfn.COMMANDS)
@@ -248,7 +291,7 @@ class DfnRealBinary(unittest.TestCase):
             rng = np.random.default_rng(3)
             t = np.arange(len(clean)) / sr
             # Loud enough that the network sees noise: its buzzy synthetic "voice" is only half speech to it,
-            # so a quiet noise floor is not improved (measured: +6 dB here, SI-SDR 1.4 -> 7.4 at 30 dB).
+            # so a quiet noise floor is not improved (measured: SI-SDR 1.4 -> 7.9 dB at 18 dB strength).
             noise = 0.05 * rng.standard_normal(len(clean)) + 0.05 * np.sin(2 * np.pi * 50 * t)
             noisy = (clean + noise).astype(np.float32)
             out = dfn.dfn_denoise(noisy, sr, 18)

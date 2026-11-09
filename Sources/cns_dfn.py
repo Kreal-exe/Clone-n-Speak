@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import http.client
 import urllib.request
 
 import cns_core as core
@@ -31,14 +32,16 @@ def bin_dir():
 
 
 BINARY = os.path.join(bin_dir(), "deep-filter")
+_IMPORT_BINARY = BINARY
 
 
-class DfnMissing(RuntimeError):
-    """The binary has not been downloaded yet; the message names the action."""
+def _bin():
+    """The binary's path, read at call time: a test may assign BINARY, else $CNS_BIN_DIR is looked at again."""
+    return BINARY if BINARY != _IMPORT_BINARY else os.path.join(bin_dir(), "deep-filter")
 
 
 def _installed():
-    return os.path.isfile(BINARY) and os.access(BINARY, os.X_OK)
+    return os.path.isfile(_bin()) and os.access(_bin(), os.X_OK)
 
 
 # --------------------------------------------------------------------------
@@ -50,12 +53,12 @@ _help_cache = {}
 def _has_atten_flag():
     """True when `deep-filter --help` lists --atten-lim (cached per binary file and modification time)."""
     try:
-        key = (BINARY, os.stat(BINARY).st_mtime_ns)
+        key = (_bin(), os.stat(_bin()).st_mtime_ns)
     except OSError:
         return True
     if key not in _help_cache:
         try:
-            out = subprocess.run([BINARY, "--help"], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            out = subprocess.run([_bin(), "--help"], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                  stderr=subprocess.STDOUT, timeout=30)
             _help_cache[key] = b"--atten-lim" in out.stdout
         except (OSError, subprocess.SubprocessError):
@@ -83,7 +86,7 @@ def _run_channel(x48, strength_db, use_flag, tmp):
     if os.path.exists(result):
         os.remove(result)  # a leftover of the previous channel must not pass for this one
     core.write_audio(src, x48, RATE, subtype="pcm16")
-    cmd = [BINARY, "-D"]
+    cmd = [_bin(), "-D"]
     if use_flag:
         cmd += ["-a", "%g" % strength_db]
     cmd += ["-o", out_dir, src]
@@ -114,7 +117,7 @@ def dfn_denoise(wav, sr, strength_db=DEFAULT_DB):
     import numpy as np
     strength_db = _clamp_db(strength_db)
     if not _installed():
-        raise DfnMissing(MISSING)
+        raise core.AudioInputError("unsupported", MISSING)
     wav = np.asarray(wav, dtype=np.float32)
     if wav.shape[0] == 0:
         return wav
@@ -138,13 +141,13 @@ def dfn_denoise(wav, sr, strength_db=DEFAULT_DB):
 def dfn_status(req=None):
     if not _installed():
         return {"installed": False, "version": None, "size": 0, "path": None}
-    return {"installed": True, "version": VERSION, "size": os.path.getsize(BINARY), "path": BINARY}
+    return {"installed": True, "version": VERSION, "size": os.path.getsize(_bin()), "path": _bin()}
 
 
 def _runs():
     """True when `deep-filter --version` starts; None when the system killed it (unsigned binary)."""
     try:
-        proc = subprocess.run([BINARY + ".part", "--version"], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+        proc = subprocess.run([_bin() + ".part", "--version"], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                               stderr=subprocess.PIPE, timeout=60)
     except OSError:
         return False
@@ -154,27 +157,38 @@ def _runs():
 
 
 def dfn_install(req=None):
-    part = BINARY + ".part"
-    os.makedirs(os.path.dirname(BINARY), exist_ok=True)
+    part = _bin() + ".part"
+    os.makedirs(os.path.dirname(_bin()), exist_ok=True)
     core.emit_status("Downloading DeepFilterNet…")
     core.emit_progress(0.0)
     try:
         digest = hashlib.sha256()
         done = 0
-        with urllib.request.urlopen(URL, timeout=60) as resp, open(part, "wb") as f:  # overwrites an old .part
-            while True:
-                chunk = resp.read(256 * 1024)
-                if not chunk:
-                    break
-                f.write(chunk)
-                digest.update(chunk)
-                done += len(chunk)
-                core.emit_progress(min(0.95, done / float(SIZE)))
+        try:
+            with urllib.request.urlopen(URL, timeout=60) as resp, open(part, "wb") as f:  # overwrites an old .part
+                while True:
+                    chunk = resp.read(256 * 1024)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    digest.update(chunk)
+                    done += len(chunk)
+                    if done > SIZE:
+                        raise RuntimeError("The DeepFilterNet download is larger than expected and was stopped. "
+                                           "Try again.")
+                    core.emit_progress(min(0.95, done / float(SIZE)))
+        except (OSError, http.client.HTTPException) as e:
+            raise RuntimeError("DeepFilterNet could not be downloaded (%s). Check the connection and try again." % e)
         if done != SIZE:
             raise RuntimeError("The DeepFilterNet download is incomplete (%d of %d bytes). Try again." % (done, SIZE))
         if digest.hexdigest() != SHA256:
             raise RuntimeError("The DeepFilterNet download failed the checksum test and was discarded. Try again.")
         os.chmod(part, 0o755)
+        try:  # best effort: drop quarantine and other extended attributes before the first run
+            subprocess.run(["xattr", "-c", part], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE, timeout=30)
+        except (OSError, subprocess.SubprocessError):
+            pass
         ok = _runs()
         if ok is None:  # killed: the binary has no signature, sign it ad hoc and try once more
             subprocess.run(["codesign", "--force", "--sign", "-", part], stdin=subprocess.DEVNULL,
@@ -182,7 +196,7 @@ def dfn_install(req=None):
             ok = _runs()
         if not ok:
             raise RuntimeError("The downloaded DeepFilterNet does not start on this Mac.")
-        os.replace(part, BINARY)
+        os.replace(part, _bin())
     except BaseException:
         try:
             os.remove(part)
@@ -194,7 +208,7 @@ def dfn_install(req=None):
 
 
 def dfn_remove(req=None):
-    for p in (BINARY, BINARY + ".part"):
+    for p in (_bin(), _bin() + ".part"):
         try:
             os.remove(p)
         except OSError:
@@ -206,7 +220,7 @@ def dfn_apply(req):
     core.free_models()
     strength = _clamp_db(req.get("strength_db", DEFAULT_DB))
     if not _installed():
-        raise DfnMissing(MISSING)
+        raise core.AudioInputError("unsupported", MISSING)
     wav, sr = core.read_audio(req["audio"], mono=False)
     core.emit_status("Removing noise…")
     core.emit_progress(0.1)
@@ -233,8 +247,11 @@ def _pre_enhance(req, wav, sr):
     try:
         src, rate = core.read_audio(req["audio"], mono=True, max_seconds=0)  # at its own rate, as the binary likes
         out = dfn_denoise(src, rate, req.get("strength_db", DEFAULT_DB))
-    except DfnMissing as e:
-        raise core.AudioInputError("unsupported", str(e))
+    except core.AudioInputError:
+        raise
+    except Exception as e:  # core.run_pre_enhance would swallow anything else and fall back to the spectral gate
+        raise core.AudioInputError("unsupported", "%s Pick another cleaning mode, or install DeepFilterNet again in "
+                                   "Audio Tools." % (str(e) or type(e).__name__))
     req["denoise"] = False
     return core.resample(out, rate, sr)
 
