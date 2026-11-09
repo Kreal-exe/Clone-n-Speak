@@ -117,6 +117,8 @@ static NSTextField *MonoMuted(NSString *text) {
     NSTextField *l = OVWrapLabel(text, 13, nil);
     l.font = [NSFont monospacedSystemFontOfSize:13 weight:NSFontWeightRegular];
     l.selectable = YES;
+    l.lineBreakMode = NSLineBreakByCharWrapping;   // a long path wraps instead of widening the window
+    [l setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
     return l;
 }
 
@@ -359,8 +361,10 @@ static NSStackView *Rows(NSArray<NSView *> *rows, CGFloat gap) {
     self.engineInfo = OVWrapLabel(@"", 12, OVColor(OVRoleText));
     self.engineInfo.font = [NSFont monospacedSystemFontOfSize:12 weight:NSFontWeightRegular];
     self.engineInfo.selectable = YES;
+    [self.engineInfo setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
     self.engineStatus = OVHStack(@[], 8);
-    self.engineButtons = OVHStack(@[], 8);
+    self.engineButtons = OVVStack(@[], 8);   // two rows, so the card fits the narrowest window
+    self.engineButtons.alignment = NSLayoutAttributeLeading;
     self.engineEnvs = OVVStack(@[], 6);
     NSView *engine = OVStepCard(0, @"cpu", L(@"Python engine"), nil, Rows(@[self.engineStatus, self.engineInfo, self.engineEnvs, self.engineButtons], 16));
     return CardColumn(@[engine]);
@@ -376,6 +380,8 @@ static NSStackView *Rows(NSArray<NSView *> *rows, CGFloat gap) {
 - (void)previewSlid:(NSSlider *)s { self.previewValue.stringValue = [NSString stringWithFormat:@"%.2f", s.doubleValue]; }
 
 - (void)palettePicked:(OVPaletteTile *)t {
+    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(applyPendingPalette) object:nil];   // a click wins over a pending arrow-key choice
+    self.pendingPalette = nil;
     if ([t.paletteId isEqualToString:[OVTheme paletteId]]) return;
     [OVTheme setPaletteId:t.paletteId];
     [self syncTiles];
@@ -445,7 +451,14 @@ static NSStackView *Rows(NSArray<NSView *> *rows, CGFloat gap) {
             NSTextField *l = OVWrapLabel([NSString stringWithFormat:@"%@ — %@", c[@"source"], [c[@"path"] stringByAbbreviatingWithTildeInPath]], 12, nil);
             l.font = [NSFont monospacedSystemFontOfSize:12 weight:NSFontWeightRegular];
             l.selectable = YES;
-            NSView *row = OVHStack(@[OVCompactBadge(ok ? L(@"OK") : checked ? L(@"Failed") : L(@"Not checked"), ok ? OVRoleOK : checked ? OVRoleErr : OVRoleMuted), l], 8);
+            l.lineBreakMode = NSLineBreakByCharWrapping;
+            [l setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+            NSView *badge = OVCompactBadge(ok ? L(@"OK") : checked ? L(@"Failed") : L(@"Not checked"), ok ? OVRoleOK : checked ? OVRoleErr : OVRoleMuted);
+            [badge setContentCompressionResistancePriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
+            [badge setContentHuggingPriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
+            NSStackView *row = OVVStack(@[badge, l], 4);   // the path wraps under its badge, so the badge is never squeezed
+            row.alignment = NSLayoutAttributeLeading;
+            [l.widthAnchor constraintLessThanOrEqualToAnchor:row.widthAnchor].active = YES;
             [self.engineEnvs addArrangedSubview:row];
         }
     }
@@ -460,8 +473,11 @@ static NSStackView *Rows(NSArray<NSView *> *rows, CGFloat gap) {
                                                           OVGhostButton(L(@"Choose Python…"), @"folder", self, @selector(choosePython:))]];
     if (rt.customPython.length) [bs addObject:OVGhostButton(L(@"Clear selection"), @"xmark", self, @selector(clearPython:))];
     [bs addObject:OVPrimaryButton(installing ? L(@"Installing…") : L(@"Install own environment"), self, @selector(install:))];
-    for (NSButton *b in bs) { b.enabled = !installing || b.action == @selector(redetect:); [self.engineButtons addArrangedSubview:b]; }
-    [self.engineButtons addArrangedSubview:OVSpacer()];
+    NSMutableArray *top = [NSMutableArray array];
+    for (NSButton *b in bs) b.enabled = !installing || b.action == @selector(redetect:);
+    for (NSButton *b in [bs subarrayWithRange:NSMakeRange(0, bs.count - 1)]) [top addObject:b];
+    [self.engineButtons addArrangedSubview:OVHStack(top, 8)];
+    [self.engineButtons addArrangedSubview:bs.lastObject];
 }
 
 #pragma mark Actions
