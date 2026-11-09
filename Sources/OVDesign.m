@@ -1,4 +1,5 @@
 #import "OVDesign.h"
+#import <objc/runtime.h>
 #import "OVLocale.h"
 #import "OVStore.h"
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
@@ -157,7 +158,11 @@ NSButton *OVGhostButton(NSString *title, NSString *symbol, id target, SEL action
 
 NSButton *OVButtonHeight(NSButton *b, CGFloat height) {
     if ([b isKindOfClass:OVPillButton.class]) ((OVPillButton *)b).pillHeight = height;
-    else [b.heightAnchor constraintEqualToConstant:height].active = YES;
+    else {
+        NSLayoutConstraint *c = objc_getAssociatedObject(b, "ovHeight");
+        if (!c) { c = [b.heightAnchor constraintEqualToConstant:height]; c.active = YES; objc_setAssociatedObject(b, "ovHeight", c, OBJC_ASSOCIATION_RETAIN_NONATOMIC); }
+        c.constant = height;
+    }
     return b;
 }
 
@@ -974,6 +979,25 @@ void OVRepaintAll(void) {
 - (id)accessibilityValue { return self.stringValue; }
 @end
 
+/// Muted subtitle that wraps to the width it is given: preferredMaxLayoutWidth follows the frame, the intrinsic height follows the wrapping.
+@interface OVWrapSubtitle : NSTextField
+@end
+@implementation OVWrapSubtitle
+- (NSSize)intrinsicContentSize {
+    CGFloat w = self.preferredMaxLayoutWidth;
+    if (w < 1) return NSMakeSize(NSViewNoIntrinsicMetric, NSViewNoIntrinsicMetric);
+    NSSize sz = [self.cell cellSizeForBounds:NSMakeRect(0, 0, w, CGFLOAT_MAX)];
+    return NSMakeSize(NSViewNoIntrinsicMetric, ceil(sz.height));
+}
+- (void)layout {
+    [super layout];
+    if (fabs(NSWidth(self.bounds) - self.preferredMaxLayoutWidth) > 0.5) {
+        self.preferredMaxLayoutWidth = NSWidth(self.bounds);
+        [self invalidateIntrinsicContentSize];
+    }
+}
+@end
+
 static NSAttributedString *PageTitleText(NSString *title) {
     return [[NSAttributedString alloc] initWithString:title ?: @"" attributes:@{
         NSFontAttributeName: [NSFont systemFontOfSize:28 weight:NSFontWeightBold],
@@ -996,19 +1020,37 @@ NSView *OVPageHeaderWrapped(NSString *title, NSString *subtitle, NSView *accesso
     if (subtitle.length) {
         NSTextField *s = OVLabel(subtitle, 14, NSFontWeightRegular, C(OVRoleMuted));
         if (wrapSubtitle) {
-            s.lineBreakMode = NSLineBreakByWordWrapping;
-            s.usesSingleLineMode = NO;
-            s.maximumNumberOfLines = 0;
-            s.translatesAutoresizingMaskIntoConstraints = NO;
+            OVWrapSubtitle *w = [[OVWrapSubtitle alloc] initWithFrame:NSZeroRect];
+            w.editable = NO;
+            w.selectable = NO;
+            w.bezeled = NO;
+            w.drawsBackground = NO;
+            w.font = s.font;
+            w.textColor = s.textColor;
+            w.stringValue = subtitle;
+            w.lineBreakMode = NSLineBreakByWordWrapping;
+            w.usesSingleLineMode = NO;
+            w.maximumNumberOfLines = 0;
+            w.cell.wraps = YES;
+            [w setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+            [w setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
+            s = w;
         }
         [texts addObject:s];
     }
     NSStackView *left = OVVStack(texts, 4);
-    if (wrapSubtitle) [left setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
-    NSMutableArray *row = [NSMutableArray arrayWithObjects:left, OVSpacer(), nil];
+    if (wrapSubtitle) {
+        [left setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
+        left.alignment = NSLayoutAttributeLeading;
+        if (texts.count > 1) OVFillWidth(@[texts[1]], left);   // the subtitle is as wide as the column, so it wraps there
+    }
+    // wrapped: no spacer, the text column takes all the width the accessory leaves
+    NSMutableArray *row = [NSMutableArray arrayWithObject:left];
+    if (!wrapSubtitle) [row addObject:OVSpacer()];
     if (accessory) [row addObject:accessory];
     NSStackView *h = OVHStack(row, 12);
     h.alignment = NSLayoutAttributeCenterY;
+    if (wrapSubtitle) h.distribution = NSStackViewDistributionFill;
     h.edgeInsets = NSEdgeInsetsMake(0, 0, 4, 0);
     return h;
 }

@@ -12,7 +12,7 @@ set -euo pipefail
 APP="${APP:-/tmp/cns-5.7-app/Clone'n'Speak.app}"
 OUT="${OUT:-/tmp/cns-snap-matrix}"
 THEMES="${THEMES:-dark light}"
-PALETTES="${PALETTES:-applio emerald midnight}"
+PALETTES="${PALETTES:-applio amethyst sunset}"
 SIZES="${SIZES:-default 1100x624 820x560}"
 BIN="$APP/Contents/MacOS/Clone'n'Speak"
 for size in $SIZES; do

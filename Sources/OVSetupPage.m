@@ -328,7 +328,7 @@ BOOL OVEverythingReady(void) {
 }
 
 /// Header of the progress card: dot, title, "n / N steps", one bar over the required steps, the keep-open note.
-/// Only the required steps count (engine and synthesis model); a failed step turns the dot and the title to the error tone.
+/// Only the required steps count (engine and synthesis model); a failed required step turns the dot and the title to the error tone (an optional one shows on its own row).
 - (void)refreshOverall {
     NSArray<OVStepView *> *required = @[self.engineStep, self.modelStep];
     int done = 0;
@@ -339,7 +339,7 @@ BOOL OVEverythingReady(void) {
         if (req && [s.state isEqualToString:@"done"]) done++;
         if (req && !s.bar.hidden && !s.bar.indeterminate) extra = MAX(extra, s.bar.doubleValue);
         if (!s.bar.hidden) working = YES;
-        if ([s.state isEqualToString:@"error"]) failed = YES;
+        if (req && [s.state isEqualToString:@"error"]) failed = YES;
     }
     BOOL ready = OVEverythingReady();
     self.overallTitle.stringValue = failed ? L(@"Setup failed") : ready ? L(@"Everything is ready") : L(@"Setup in progress");
