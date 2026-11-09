@@ -85,13 +85,6 @@ static OVSecureField *MakeSecureField(NSString *placeholder) {
     return f;
 }
 
-/// A badge's label must keep its text width when the title row is short of space (the title truncates instead).
-static NSView *Rigid(NSView *badge) {
-    for (NSView *v in badge.subviews)
-        [v setContentCompressionResistancePriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
-    return badge;
-}
-
 /// Small flat pill for the row buttons (OVPillButton is 36 high; rows want 30).
 static NSButton *SmallPill(NSButton *b) {
     b.font = [NSFont systemFontOfSize:13 weight:NSFontWeightSemibold];
@@ -126,15 +119,15 @@ static NSButton *SmallPill(NSButton *b) {
     r.meta.lineBreakMode = NSLineBreakByTruncatingMiddle;
     r.bar = OVProgressBar();
     r.buttons = OVHStack(@[], 6);
-    r.titleRow = OVHStack(@[r.title], 8);
-    [r.title setContentHuggingPriority:NSLayoutPriorityDefaultHigh forOrientation:NSLayoutConstraintOrientationHorizontal];
-    if (m.recommended) [r.titleRow addArrangedSubview:Rigid(OVBadge(L(@"recommended"), OVRoleAccent))];
-    if (m.ukrainian && !m.recommended) [r.titleRow addArrangedSubview:Rigid(OVBadge(@"UA", OVRoleWarn))];
+    r.titleRow = OVHStack(@[], 8);   // badges and the download count, under the title
+    if (m.recommended) [r.titleRow addArrangedSubview:OVBadge(L(@"recommended"), OVRoleAccent)];
+    if (m.ukrainian && !m.recommended) [r.titleRow addArrangedSubview:OVBadge(@"UA", OVRoleWarn)];
     if (m.catalog && m.downloads)
         [r.titleRow addArrangedSubview:OVLabel([NSString stringWithFormat:@"↓ %ld", (long)m.downloads], 12, NSFontWeightRegular, OVColor(OVRoleMuted))];
-    [r.titleRow addArrangedSubview:OVSpacer()];   // badges sit next to the title, not at the far edge
-    NSStackView *body = OVVStack(@[r.titleRow, r.details, r.meta, r.bar], 4);
-    OVFillWidth(@[r.titleRow, r.details, r.meta, r.bar], body);
+    [r.titleRow addArrangedSubview:OVSpacer()];
+    NSStackView *body = OVVStack(m ? @[r.title, r.titleRow, r.details, r.meta, r.bar] : @[r.title, r.details, r.meta, r.bar], 4);
+    OVFillWidth(m ? @[r.title, r.titleRow, r.details, r.meta, r.bar] : @[r.title, r.details, r.meta, r.bar], body);
+    r.titleRow.hidden = r.titleRow.arrangedSubviews.count <= 1;
     NSStackView *inner = OVHStack(@[], 12);
     inner.alignment = NSLayoutAttributeTop;
     if (!m.catalog) [inner addArrangedSubview:r.radio];
@@ -145,13 +138,9 @@ static NSButton *SmallPill(NSButton *b) {
     [r.radio setContentCompressionResistancePriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
     [r.radio.widthAnchor constraintEqualToConstant:20].active = YES;
     [r.radio.heightAnchor constraintEqualToConstant:20].active = YES;
-    for (NSView *v in r.titleRow.arrangedSubviews)
-        if (v != r.title) [v setContentCompressionResistancePriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
-    [r.title setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
-    [r.buttons setHuggingPriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
     [r addSubview:inner];
     OVPin(inner, r, NSEdgeInsetsMake(14, 14, 14, 14));
-    [body.widthAnchor constraintGreaterThanOrEqualToAnchor:r.widthAnchor multiplier:0.5].active = YES;
+    [body.widthAnchor constraintGreaterThanOrEqualToAnchor:r.widthAnchor multiplier:0.5].active = YES;   // a short description must not collapse the body
     [r update:m];
     return r;
 }
@@ -175,9 +164,8 @@ static NSButton *SmallPill(NSButton *b) {
 - (void)setStatusBadge:(NSView *)badge {
     [_statusBadge removeFromSuperview];
     _statusBadge = badge;
-    if (!badge) return;
-    [badge setContentCompressionResistancePriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
-    [self.titleRow insertArrangedSubview:badge atIndex:1];
+    if (badge) [self.titleRow insertArrangedSubview:badge atIndex:0];
+    self.titleRow.hidden = self.titleRow.arrangedSubviews.count <= 1;   // only the spacer left
 }
 
 - (void)update:(OVModel *)m {
@@ -205,11 +193,11 @@ static NSButton *SmallPill(NSButton *b) {
     } else if (m.installed) {
         self.meta.stringValue = [NSString stringWithFormat:@"%@%@", where, sizeText.length ? [@" · " stringByAppendingString:sizeText] : @""];
         self.meta.textColor = OVColor(OVRoleMuted);
-        self.statusBadge = Rigid(OVBadge(L(@"Installed"), OVRoleOK));
+        self.statusBadge = OVBadge(L(@"Installed"), OVRoleOK);
     } else if (m.error) {
         self.meta.stringValue = [NSString stringWithFormat:L(@"%@ · Error: %@"), where, m.error];
         self.meta.textColor = OVColor(OVRoleErr);
-        self.statusBadge = Rigid(OVBadge(L(@"Error"), OVRoleErr));
+        self.statusBadge = OVBadge(L(@"Error"), OVRoleErr);
     } else {
         self.meta.stringValue = sizeText.length ? [NSString stringWithFormat:@"%@ · %@", where, sizeText] : where;
         self.meta.textColor = OVColor(OVRoleMuted);
@@ -247,6 +235,7 @@ static NSButton *SmallPill(NSButton *b) {
 @property NSTextField *accentMeta;
 @property NSProgressIndicator *accentBar;
 @property NSStackView *accentButtons;
+@property NSView *emptyState;   // catalog empty state; hidden while the catalog loads
 @property NSArray<NSView *> *tabViews;   // Library, Catalog, Add model
 @property (copy) NSString *layoutSignature;
 @end
@@ -275,7 +264,6 @@ static NSButton *SmallPill(NSButton *b) {
     NSView *asrCard = OVStepCard(0, @"waveform.badge.mic", L(@"Speech recognition"), nil, self.asrList);
 
     // native accent (optional download)
-    NSTextField *accentTitle = OVLabel(L(@"Seed-VC · native narrator"), 14, NSFontWeightSemibold, nil);
     NSTextField *accentDetails = OVWrapLabel(L(@"For pronunciation training without an accent: a native speaker (the model’s own voice or "
                                                @"another voice of yours) reads the learning phrases and Seed-VC gives the reading your voice, "
                                                @"so the trained voice speaks without your accent. About 2.7 GB (PyTorch, Seed-VC and its "
@@ -290,7 +278,7 @@ static NSButton *SmallPill(NSButton *b) {
     accentRow.alignment = NSLayoutAttributeTop;
     [accentBody setHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
     [self.accentButtons setHuggingPriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
-    NSView *accentCard = OVStepCard(0, @"person.wave.2", L(@"Accent removal"), accentTitle.stringValue, accentRow);
+    NSView *accentCard = OVStepCard(0, @"person.wave.2", L(@"Accent removal"), L(@"Seed-VC · native narrator"), accentRow);
 
     NSButton *rescan = OVGhostButton(L(@"Rescan cache"), @"arrow.clockwise", self, @selector(rescan:));
     NSButton *openCache = OVGhostButton(L(@"Open cache in Finder"), @"folder", self, @selector(openCache:));
@@ -341,6 +329,7 @@ static NSButton *SmallPill(NSButton *b) {
     self.endpointField.cell.sendsActionOnEndEditing = YES;
     NSButton *cacheBtn = OVGhostButton(L(@"Choose folder…"), @"folder", self, @selector(chooseCache:));
     NSButton *cacheReset = OVGhostButton(L(@"Default"), nil, self, @selector(resetCache:));
+    for (NSButton *b in @[cacheBtn, cacheReset]) [b.heightAnchor constraintEqualToConstant:36].active = YES;
     NSStackView *cacheBtns = OVHStack(@[cacheBtn, cacheReset, OVSpacer()], 8);
     NSStackView *accessBox = OVVStack(@[OVFieldBlock(L(@"Token"), nil, self.tokenField),
                                         OVFieldBlock(L(@"Mirror"), nil, self.endpointField),
@@ -375,8 +364,9 @@ static NSButton *SmallPill(NSButton *b) {
     if (a.installing) {
         self.accentMeta.stringValue = [NSString stringWithFormat:@"%.0f%% · %@", a.progress * 100, a.step];
     } else if (a.installed) {
-        self.accentMeta.stringValue = [NSString stringWithFormat:L(@"✓ Installed · %@ · used by Train… next to the voice on the Speech page"),
+        self.accentMeta.stringValue = [NSString stringWithFormat:L(@"%@ · used by Train… next to the voice on the Speech page"),
                                        [[OVPaths accent] stringByAbbreviatingWithTildeInPath]];
+        [self.accentButtons addArrangedSubview:OVBadge(L(@"Installed"), OVRoleOK)];
         NSButton *rm = OVIconButton(@"trash", L(@"Delete"), self, @selector(removeAccent:));
         [self.accentButtons addArrangedSubview:rm];
     } else {
@@ -457,6 +447,7 @@ static NSButton *SmallPill(NSButton *b) {
             self.rows[m.repo] = row;
             [self place:row in:self.catalogList];
         }
+        self.emptyState = nil;
         if (!catalog.count) {
             NSStackView *empty = OVVStack(@[OVEmptyState(@"shippingbox", L(@"The catalog is empty"),
                                                         L(@"Press Refresh to load it from Hugging Face."),
@@ -465,11 +456,13 @@ static NSButton *SmallPill(NSButton *b) {
             empty.edgeInsets = NSEdgeInsetsMake(28, 0, 28, 0);
             [self.catalogList addArrangedSubview:empty];
             OVFillWidth(@[empty], self.catalogList);
+            self.emptyState = empty;
         }
     } else {
         [self.rows[kNoLoRA] update:nil];
         for (OVModel *m in mm.all) [self.rows[m.repo] update:m];
     }
+    self.emptyState.hidden = mm.catalogLoading;
 
     BOOL anyUA = NO;
     for (OVModel *m in catalog) anyUA |= m.ukrainian && ![m.languages containsObject:@"multi"];

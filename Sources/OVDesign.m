@@ -496,6 +496,8 @@ static NSView *MakeBadge(NSString *text, OVRole tone, CGFloat font, CGFloat vpad
                                    border:muted ? C(OVRoleBorder) : OVColorAlpha(tone, 0.45) radius:radius];
     [b addSubview:l];
     OVPin(l, b, NSEdgeInsetsMake(vpad, hpad, vpad, hpad));
+    [l setContentCompressionResistancePriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];   // a badge never collapses
+    [l setContentHuggingPriority:NSLayoutPriorityDefaultHigh forOrientation:NSLayoutConstraintOrientationHorizontal];
     [b setContentHuggingPriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
     [b setContentCompressionResistancePriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
     return b;

@@ -5,3 +5,4 @@
 "Installed" = "Установлено";
 "The catalog is empty" = "Каталог пуст";
 "Press Refresh to load it from Hugging Face." = "Нажмите «Обновить», чтобы загрузить его с Hugging Face.";
+"%@ · used by Train… next to the voice on the Speech page" = "%@ · используется в «Обучить…» рядом с голосом на странице «Озвучка»";
