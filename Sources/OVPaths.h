@@ -19,7 +19,7 @@ NS_ASSUME_NONNULL_BEGIN
 + (NSString *)jobs;           // …/jobs (the task manager's records)
 + (NSString *)engines;       // …/engines (pro engines, downloaded on demand)
 + (NSString *)proEngine;     // …/engines/pro (Python 3.11 env for the 16 GB tier)
-+ (NSString *)edgeEngine;    // …/engines/edge (lightweight env for realtime)
++ (NSString *)edgeEngine;    // …/engines/edge (Edge TTS venv)
 + (NSString *)rvc;           // …/rvc
 + (NSString *)rvcModels;     // …/rvc/models (voice models: .pth + .index)
 + (NSString *)rvcTraining;   // …/rvc/training (experiment workspaces)

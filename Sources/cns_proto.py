@@ -5,14 +5,17 @@ the real stdout: {"event": "status"|"progress"|"log"|"result"|"error", ...}.
 Everything else a library prints is sent to stderr by install_stdout_guard().
 """
 import json
+import math
 import os
 import sys
+import threading
 import time
 
-_out = None  # the real stdout, kept by install_stdout_guard()
+_out = None  # the real protocol channel, kept by install_stdout_guard()
+_lock = threading.Lock()
 
-_SYSTEM_PREFIXES = ("/System", "/etc", "/private/etc", "/usr", "/bin", "/sbin",
-                    "/private/var/db", "/Library/Keychains", "/dev", "/proc")
+_FORBIDDEN = ("/System", "/etc", "/private/etc", "/usr", "/bin", "/sbin",
+              "/private/var/db", "/Library/Keychains", "/dev", "/proc")
 
 
 class ProtoError(RuntimeError):
@@ -20,22 +23,51 @@ class ProtoError(RuntimeError):
 
 
 def install_stdout_guard():
+    """Keep a private dup of fd 1 for events; fd 1 and sys.stdout then point at stderr, so
+    prints, os.write(1, ...), sys.__stdout__ and child processes cannot reach the channel."""
     global _out
-    if _out is None:
-        _out = sys.stdout
+    if _out is not None:
+        return
+    _out = os.fdopen(os.dup(1), "w", buffering=1, encoding="utf-8")
+    os.dup2(2, 1)
     sys.stdout = sys.stderr
+
+
+def _default(o):
+    try:
+        f = float(o)
+    except (TypeError, ValueError, OverflowError):
+        return str(o)
+    if f.is_integer() and not isinstance(o, float):
+        return int(f)
+    return f
+
+
+def _clean(o):
+    if isinstance(o, float):
+        return o if math.isfinite(o) else None
+    if isinstance(o, dict):
+        return {str(k): _clean(v) for k, v in o.items()}
+    if isinstance(o, (list, tuple)):
+        return [_clean(v) for v in o]
+    if o is None or isinstance(o, (str, int, bool)):
+        return o
+    d = _default(o)
+    return d if isinstance(d, str) else _clean(d)
 
 
 def emit(event, **data):
     obj = {"event": event}
     obj.update(data)
-    stream = _out if _out is not None else sys.stdout
-    stream.write(json.dumps(obj, ensure_ascii=False) + "\n")
-    stream.flush()
+    line = json.dumps(_clean(obj), ensure_ascii=False, allow_nan=False)
+    with _lock:
+        stream = _out if _out is not None else sys.stdout
+        stream.write(line + "\n")
+        stream.flush()
 
 
 def status(msg):
-    emit("status", message=msg)
+    emit("status", msg=str(msg))
 
 
 def progress(value):
@@ -46,21 +78,30 @@ def log(line):
     emit("log", line=str(line))
 
 
+def partial(path):
+    emit("partial", path=str(path))
+
+
 def result(**data):
-    emit("result", **data)
+    emit("result", data=data)
 
 
 def fail(msg):
-    emit("error", message=str(msg))
+    emit("error", msg=str(msg))
 
 
 def read_request():
-    raw = sys.stdin.read()
+    """Reads exactly ONE line of stdin (the request); later lines stay in sys.stdin for the
+    caller (realtime reads live {"set":...}/{"cmd":"quit"} lines from the same pipe)."""
+    try:
+        raw = sys.stdin.readline()
+    except UnicodeDecodeError as e:
+        raise ProtoError("Bad request: %s" % e)
     if not raw.strip():
         raise ProtoError("Bad request: empty")
     try:
         req = json.loads(raw)
-    except ValueError as e:
+    except (ValueError, RecursionError) as e:
         raise ProtoError("Bad request: %s" % e)
     if not isinstance(req, dict):
         raise ProtoError("Bad request: expected a JSON object")
@@ -72,6 +113,8 @@ def _inside(path, root):
 
 
 def safe_output_dir(path, roots):
+    if not str(path).strip():
+        raise ProtoError("Output folder is outside the app folders")
     real = os.path.realpath(os.path.expanduser(str(path)))
     for root in roots:
         if _inside(real, os.path.realpath(root)):
@@ -80,10 +123,13 @@ def safe_output_dir(path, roots):
 
 
 def check_input_file(path, max_bytes=4 << 30):
-    p = os.path.expanduser(str(path))
-    real = os.path.realpath(p)
-    if os.path.islink(p) and any(_inside(real, s) for s in _SYSTEM_PREFIXES):
-        raise ProtoError("Input file is a link to a system path")
+    """Returns the realpath (callers open it). Rejects system/secret locations by the
+    resolved path, whatever symlinks lead there."""
+    real = os.path.realpath(os.path.expanduser(str(path)))
+    home = os.path.realpath(os.path.expanduser("~"))
+    forbidden = _FORBIDDEN + (home + "/.ssh", home + "/Library/Keychains")
+    if any(_inside(real, os.path.realpath(r)) for r in forbidden):
+        raise ProtoError("Input file is in a protected location")
     if not os.path.exists(real):
         raise ProtoError("Input file not found")
     if not os.path.isfile(real):
