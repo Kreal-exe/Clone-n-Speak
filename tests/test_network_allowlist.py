@@ -29,6 +29,7 @@ EXPECTED = {
     "worker.py": (4, "ECAPA fetch (cached only offline), Seed-VC download (explicit_download)"),
     "cns_separate.py": (8, "music-removal model download, started by the user (pinned HTTPS URL + sha256, https-only redirects)"),
     "cns_dfn.py": (4, "DeepFilterNet binary download, started by the user (pinned URL + sha256)"),
+    "cns_api.py": (4, "local API / Bridge listeners on 127.0.0.1, server side only (no outgoing calls)"),
 }
 
 # Files other tasks add (6.8 deep-filter download, 6.10 onnxruntime/model download, Bridge 8.7, Edge TTS, YouTube,

@@ -18,7 +18,7 @@ MAX_SECONDS = 1200  # 20 minutes: the limit of every file tool
 
 class AudioInputError(ValueError):
     """An input the tools cannot work with. `code` is one of empty, too_short, silent, unsupported, too_long,
-    bad_param; `message` names the action to take and is what the user sees (str(e) == message)."""
+    bad_param, engine_missing (an optional engine / model is not installed); `message` names the action to take and is what the user sees (str(e) == message)."""
 
     def __init__(self, code, message):
         super().__init__(message)
@@ -361,7 +361,9 @@ def quality_report(wav, sr=SR):
 EFFECTS = {}       # name -> {"fn", "params", "tail", "title"}
 POST_SYNTH = []    # hooks (wav, sr, req) -> wav, run on a finished take; wav is mono (n,) and a hook must return mono (n,)
 PRE_ENHANCE = []   # hooks (req, wav, sr) -> wav, run on a sample before cleaning
-TOOLS = {}         # cmd -> {"request": (in_path, out_path) -> dict, "setup": (tmpdir) -> ctx | None, "streams": False}
+TOOLS = {}         # cmd -> {"request": (in_path, out_path) -> dict, "setup": (tmpdir) -> ctx | None, "streams": False,
+#                  "no_output": True (analysis-only: no output WAV; the result must survive json.dumps(allow_nan=False)),
+#                  "verify": (result) -> None (extra assertions on that result)}
 
 
 def register_effect(name, fn, params, *, tail=None, title=None):

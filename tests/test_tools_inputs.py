@@ -2,8 +2,11 @@
 length and silence. Each module adds its own entry to core.TOOLS, so the matrix grows by itself.
 
 A TOOLS entry: {"request": callable(in_path, out_path) -> request dict (with "cmd"), "setup": callable(tmpdir) ->
-ctx | None (a callable ctx is called afterwards as cleanup), "streams": False}."""
+ctx | None (a callable ctx is called afterwards as cleanup), "streams": False, "no_output": True (optional, for
+analysis-only tools: no output WAV is expected, the result must be JSON-serialisable without NaN / inf), "verify":
+callable(result) (optional, extra checks of that result)}."""
 import importlib.util
+import json
 import os
 import pathlib
 import sys
@@ -25,7 +28,7 @@ if np is not None:
     from audio_fixtures import speechlike, write_wav
 
 RATES = (8000, 16000, 22050, 24000, 44100, 48000, 96000)
-ALLOWED = {"too_short", "silent", "too_long"}
+ALLOWED = {"too_short", "silent", "too_long", "engine_missing"}
 
 
 def _load_worker():
@@ -71,7 +74,7 @@ class ToolInputs(unittest.TestCase):
                         try:
                             req = tool["request"](src, dst)
                             try:
-                                worker.COMMANDS[req["cmd"]](req)
+                                result = worker.COMMANDS[req["cmd"]](req)
                             except core.AudioInputError as e:
                                 self.assertIn(e.code, ALLOWED)
                                 self.assertTrue(e.message)
@@ -83,6 +86,11 @@ class ToolInputs(unittest.TestCase):
                                 ctx()
                         if kind == "long":
                             self.fail("30 minutes must be refused with too_long")
+                        if tool.get("no_output"):
+                            json.dumps(result, allow_nan=False)
+                            if tool.get("verify"):
+                                tool["verify"](result)
+                            continue
                         self.assertTrue(os.path.exists(dst))
                         y, _ = core.read_audio(dst, mono=False)
                         self.assertGreater(len(y), 0)
