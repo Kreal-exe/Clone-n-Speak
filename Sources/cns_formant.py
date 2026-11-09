@@ -186,7 +186,7 @@ def _fx_formant(wav, sr, ratio=1.0):
 core.register_effect(
     "pitch", _fx_pitch,
     {"semitones": {"min": -12, "max": 12, "default": 0, "unit": "st", "title": "Pitch"},
-     "preserve_formants": {"min": 0, "max": 1, "default": 0, "unit": "", "title": "Keep voice character"}},
+     "preserve_formants": {"choices": [0, 1], "default": 0, "unit": "", "title": "Keep voice character"}},
     title="Pitch")
 core.register_effect(
     "formant", _fx_formant,
