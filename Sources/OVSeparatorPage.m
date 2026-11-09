@@ -137,13 +137,25 @@ static const NSTimeInterval kMaxSeconds = 20 * 60;   // the 20-minute limit
     [NSFileManager.defaultManager createDirectoryAtPath:d withIntermediateDirectories:YES attributes:nil error:nil];
     return d;
 }
+/// Whether a task that may still run or be retried reads this decoded input.
++ (BOOL)inputPathInUse:(NSString *)path {
+    for (OVJob *j in OVJobs.shared.all) {
+        if (!(j.active || j.retryable)) continue;
+        if ([j.request[@"audio"] isEqual:path] || [j.runnerRequest[@"audio"] isEqual:path]) return YES;
+    }
+    return NO;
+}
+/// Deletes a decoded input nobody needs any more.
++ (void)discardInputPath:(NSString *)path {
+    if (path.length && ![self inputPathInUse:path]) [NSFileManager.defaultManager removeItemAtPath:path error:nil];
+}
 + (void)sweepInputFolder {
     NSFileManager *fm = NSFileManager.defaultManager;
     NSString *d = [self inputFolder];
     for (NSString *n in [fm contentsOfDirectoryAtPath:d error:nil]) {
         NSString *p = [d stringByAppendingPathComponent:n];
         NSDate *m = [fm attributesOfItemAtPath:p error:nil][NSFileModificationDate];
-        if (m && -[m timeIntervalSinceNow] > 24 * 3600) [fm removeItemAtPath:p error:nil];
+        if (m && -[m timeIntervalSinceNow] > 24 * 3600 && ![self inputPathInUse:p]) [fm removeItemAtPath:p error:nil];
     }
 }
 
@@ -179,6 +191,9 @@ static const NSTimeInterval kMaxSeconds = 20 * 60;   // the 20-minute limit
         self.licenseLabel.stringValue = [NSString stringWithFormat:L(@"Model license: %@"), m.license];
         self.licenseBox.hidden = NO;
         [m markLicenseShown];   // the license is on screen before the model can be downloaded
+    } else if (!ready && m.statusKnown) {   // fail-closed: without a license text nothing is downloaded, and the page says so
+        self.licenseLabel.stringValue = L(@"The license text of the model is not available, so the download is turned off.");
+        self.licenseBox.hidden = NO;
     }
     self.licenseLink.hidden = m.licenseURL.length == 0;
     self.downloadButton.hidden = ready;
@@ -266,9 +281,11 @@ static const NSTimeInterval kMaxSeconds = 20 * 60;   // the 20-minute limit
 
 - (void)loadInput:(NSString *)path {
     if (self.job.active) return;
+    NSString *old = self.decodedPath;
     self.sourcePath = path;
     self.decoding = YES;
     self.decodedPath = nil;
+    [OVSeparatorPage discardInputPath:old];   // replaced input: gone, unless a running or retryable task still reads it
     self.fileLabel.stringValue = [NSString stringWithFormat:L(@"Reading %@…"), path.lastPathComponent];
     self.inputBar.hidden = YES;
     [self clearResults];
@@ -368,8 +385,7 @@ static const NSTimeInterval kMaxSeconds = 20 * 60;   // the 20-minute limit
         self.runStatus.stringValue = L(@"Stopped.");
     } else {
         NSString *e = job.error ?: L(@"Removing the music failed.");
-        NSString *code = [job.result[@"code"] isKindOfClass:NSString.class] ? job.result[@"code"] : nil;   // see OVJobContext failWithError:code:
-        if ([OVSeparatorModel isEngineMissingCode:code]) {
+        if ([OVSeparatorModel isEngineMissingCode:job.errorCode]) {
             self.runStatus.stringValue = L(@"The engine or the model is not installed. Use \"Download engine\" above.");
             [self refreshStatus];
         } else {

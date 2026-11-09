@@ -69,6 +69,7 @@ static void WriteWav(NSString *path) {
 @property StubSynth *synth;
 @property (copy) NSString *history;
 @property BOOL voiceMissing;
+@property NSInteger presetQuality;   // what the stub preset reports; -1 = unset
 @property NSMutableArray *recorded;
 @end
 @implementation StubEnv
@@ -76,7 +77,7 @@ static void WriteWav(NSString *path) {
 - (NSDictionary *)generationParams { return @{}; }
 - (NSDictionary *)voiceSpecForId:(NSString *)v language:(NSString *)l { return self.voiceMissing ? nil : @{@"audio": v}; }
 - (NSString *)identifierOfVoice:(OVVoice *)v { return @"v1"; }
-- (NSDictionary *)presetFields:(OVPreset *)p { return @{@"identifier": @"p1", @"formatId": @"ogg", @"quality": @0}; }
+- (NSDictionary *)presetFields:(OVPreset *)p { return @{@"identifier": @"p1", @"formatId": @"ogg", @"quality": @(self.presetQuality)}; }
 - (NSString *)historyFolder { return self.history; }
 - (void)recordHistoryPath:(NSString *)p text:(NSString *)t voiceId:(NSString *)v result:(NSDictionary *)r { [self.recorded addObject:p]; }
 - (id<OVBatchSynth>)makeSynth { return self.synth; }
@@ -257,8 +258,13 @@ static void testManySkippedNoRecursion(void) {
 
 static void testPresetFormatAndQuality(void) {
     StubSynth *stub = newStub(); makeJobs(stub);
+    gEnv.presetQuality = -1;
     NSDictionary *r = OVBatchRequest(items(1), nil, @"auto", (OVPreset *)@"p", @"/x");
     ASSERT([r[@"format"] isEqualToString:@"ogg"] && [r[@"quality"] integerValue] == -1 && [r[@"preset"] isEqualToString:@"p1"]);
+    gEnv.presetQuality = 0;   // OGG quality 0 is an explicit choice, not "unset"
+    ASSERT([OVBatchRequest(items(1), nil, @"auto", (OVPreset *)@"p", @"/x")[@"quality"] integerValue] == 0);
+    gEnv.presetQuality = 6;
+    ASSERT([OVBatchRequest(items(1), nil, @"auto", (OVPreset *)@"p", @"/x")[@"quality"] integerValue] == 6);
     ASSERT(OVBatchRequest(items(1), nil, @"auto", nil, @"/x")[@"format"] == nil);
 }
 

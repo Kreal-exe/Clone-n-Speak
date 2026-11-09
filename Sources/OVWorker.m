@@ -247,8 +247,8 @@ NSNotificationName const OVWorkerEventNotification = @"OVWorkerEvent";
 }
 
 - (void)request:(NSDictionary *)req status:(OVWorkerStatus)status progress:(OVWorkerProgress)progress done:(OVWorkerResult)done {
+    _lastErrorCode = nil;   // also for the busy reject below: its callback must not see the code of an earlier error
     if (self.busy) { done(nil, L(@"Another operation is already in progress")); return; }
-    _lastErrorCode = nil;
     if (!self.running) {
         NSString *err = nil;
         if (![self start:&err]) { done(nil, err); return; }

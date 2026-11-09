@@ -9,7 +9,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (readwrite) OVJobState state;  @property (readwrite) OVJobLane lane;
 @property (readwrite, copy) NSDate *created;  @property (readwrite, nullable, copy) NSDate *started, *finished;
 @property (readwrite) double progress;
-@property (readwrite, nullable, copy) NSString *error, *retryOf;
+@property (readwrite, nullable, copy) NSString *error, *errorCode, *retryOf;
 @property (readwrite, copy) NSDictionary *request;
 @property (readwrite, nullable, copy) NSDictionary *result;
 @property (readwrite, copy) NSArray<NSString *> *outputs;

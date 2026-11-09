@@ -310,8 +310,8 @@ static const NSTimeInterval kNotifyInterval = 0.25;
 
 - (void)contextFail:(OVJobContext *)c message:(NSString *)m code:(NSString *)code {
     if (![self isCurrent:c]) return;
-    NSDictionary *res = code.length && !c.stopRequested ? @{@"code": code} : nil;   // a failed job's result holds only the error code
-    [self finish:c.job state:c.stopRequested ? OVJobStopped : OVJobFailed error:c.stopRequested ? nil : m result:res outputs:@[]];
+    c.job.errorCode = code.length && !c.stopRequested ? code : nil;   // the result of a failed job stays nil
+    [self finish:c.job state:c.stopRequested ? OVJobStopped : OVJobFailed error:c.stopRequested ? nil : m result:nil outputs:@[]];
 }
 
 #pragma mark Finishing
@@ -343,6 +343,7 @@ static const NSTimeInterval kNotifyInterval = 0.25;
     job.state = state;
     job.finished = NSDate.date;
     job.error = error.length ? error : nil;
+    if (state != OVJobFailed) job.errorCode = nil;
     job.result = result ? [OVJobStore redact:result] : nil;
     job.outputs = outputs ?: @[];
     if (state == OVJobSucceeded) job.progress = 1;
