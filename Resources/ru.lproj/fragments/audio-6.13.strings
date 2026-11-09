@@ -1,0 +1,7 @@
+/* Analyzer view (task 6.13). */
+"%1$@ · %2$.1f kHz · %3$@ dB" = "%1$@ · %2$.1f кГц · %3$@ дБ";
+"%@ kHz" = "%@ кГц";
+"Median pitch %d Hz" = "Медианная высота %d Гц";
+"Spectrogram" = "Спектрограмма";
+"The analysis result is incomplete." = "Результат анализа неполный.";
+"The spectrogram file is missing or has the wrong size." = "Файл спектрограммы не найден или имеет неверный размер.";
