@@ -208,7 +208,7 @@ class LocalListenerTests(Base):
     def test_oversized_json_413_without_reading_body(self):
         t0 = time.time()
         resp = raw(self.port, ("POST /v1/synthesize HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nAuthorization: Bearer %s\r\n"
-                               "Content-Type: application/json\r\nContent-Length: 70000\r\n\r\n"
+                               "Content-Type: application/json\r\nContent-Length: 200000\r\n\r\n"
                                % (self.port, KEY)).encode())
         self.assertTrue(resp.startswith(b"HTTP/1.1 413"), resp[:40])
         self.assertLess(time.time() - t0, 2)          # body was never sent, never waited for
@@ -509,6 +509,184 @@ class LocalListenerTests(Base):
         p.wait(timeout=3)
 
 
+class HardeningTests(Base):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.uploads = os.path.join(self.tmp.name, "uploads")
+        self.outputs = os.path.join(self.tmp.name, "outputs")
+        self.backend = FakeBackend()
+        self.events = []
+        self.srv = ApiServer(self.backend, KEY_SHA, self.uploads, self.outputs,
+                             Limits(socket_timeout=1, connections=6), port=0, events=self.events.append)
+        self.port = self.srv.start()
+        self.addCleanup(self.tmp.cleanup)
+        self.addCleanup(self.srv.shutdown)
+
+    def _trickle(self, payload, interval=0.2, max_s=8.0):
+        """Send payload one byte at a time; seconds until the server closes the connection (None if it never does)."""
+        s = socket.create_connection(("127.0.0.1", self.port), timeout=5)
+        t0 = time.monotonic()
+        closed = None
+        try:
+            for ch in payload:
+                if time.monotonic() - t0 > max_s:
+                    break
+                try:
+                    s.sendall(bytes([ch]))
+                    s.settimeout(interval)
+                    s.recv(1)                      # b"" (closed) or an error response: either way it ended
+                    closed = time.monotonic() - t0
+                    break
+                except socket.timeout:
+                    pass
+                except OSError:
+                    closed = time.monotonic() - t0
+                    break
+        finally:
+            s.close()
+        return closed
+
+    def test_header_trickle_dropped_within_deadline_and_legit_request_works(self):
+        res = []
+        payload = b"GET /v1/voices HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nX-Pad: " % self.port + b"a" * 400
+        ts = [threading.Thread(target=lambda: res.append(self._trickle(payload))) for _ in range(3)]
+        for t in ts:
+            t.start()
+        time.sleep(0.5)
+        self.assertEqual(call(self.port, "GET", "/v1/voices")[0], 200)          # not starved meanwhile
+        for t in ts:
+            t.join(12)
+        self.assertEqual(len(res), 3)
+        for r in res:
+            self.assertIsNotNone(r)
+            self.assertLess(r, 2.8)                                              # socket_timeout=1, not 12 s
+
+    def test_body_trickle_dropped_within_deadline(self):
+        head = ("POST /v1/synthesize HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nAuthorization: Bearer %s\r\n"
+                "Content-Type: application/json\r\nContent-Length: 200\r\n\r\n" % (self.port, KEY)).encode()
+        s = socket.create_connection(("127.0.0.1", self.port), timeout=5)
+        s.sendall(head)
+        t0 = time.monotonic()
+        closed = None
+        try:
+            for _ in range(40):                       # 1 byte / 0.3 s would last 12 s unprotected
+                try:
+                    s.sendall(b" ")
+                    s.settimeout(0.3)
+                    s.recv(200)
+                    closed = time.monotonic() - t0
+                    break
+                except socket.timeout:
+                    pass
+                except OSError:
+                    closed = time.monotonic() - t0
+                    break
+        finally:
+            s.close()
+        self.assertIsNotNone(closed)
+        self.assertLess(closed, 3.0)
+        self.assertEqual(self.backend.submits, [])
+        self.assertEqual(call(self.port, "POST", "/v1/synthesize", body={"text": "ok"})[0], 202)
+
+    def test_upload_trickle_below_minimum_rate_dropped(self):
+        self.srv.shutdown()
+        self.srv = ApiServer(self.backend, KEY_SHA, self.uploads, self.outputs,
+                             Limits(socket_timeout=1, min_upload_bytes_per_s=1000), port=0)
+        port = self.srv.start()
+        self.addCleanup(self.srv.shutdown)
+        s = socket.create_connection(("127.0.0.1", port), timeout=5)
+        s.sendall(("POST /v1/uploads HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nAuthorization: Bearer %s\r\n"
+                   "Content-Type: audio/wav\r\nContent-Length: 4000\r\n\r\n" % (port, KEY)).encode())
+        t0, closed = time.monotonic(), None
+        for _ in range(60):
+            try:
+                s.sendall(b"x")
+                s.settimeout(0.2)
+                s.recv(100)
+                closed = time.monotonic() - t0
+                break
+            except socket.timeout:
+                pass
+            except OSError:
+                closed = time.monotonic() - t0
+                break
+        s.close()
+        self.assertIsNotNone(closed)
+        self.assertLess(closed, 6.0)                 # 1 s grace + 4000/1000 s
+        time.sleep(0.3)
+        self.assertEqual(os.listdir(self.uploads), [])
+
+    def test_error_and_status_strings_never_leak_paths(self):
+        home = os.path.expanduser("~")
+        self.backend.add_job("j1", "api", "failed")
+        self.backend.snapshots["j1"]["error"] = "cannot read %s/Secret Dir/a.wav: boom" % home
+        self.backend.snapshots["j1"]["status"] = "writing /private/var/folders/xx/out.wav"
+        st, _, body = call(self.port, "GET", "/v1/jobs/j1")
+        text = json.dumps(body)
+        for bad in ("/Users", "/private", home, "Secret Dir/"):
+            self.assertNotIn(bad, text)
+        self.assertIn("boom", text)
+        self.backend.submit = lambda k, p, o: (None, "no such file %s/x.bin" % home)
+        st, _, body = call(self.port, "POST", "/v1/synthesize", body={"text": "hi"})
+        self.assertEqual(st, 400)
+        self.assertNotIn(home, json.dumps(body))
+        self.assertNotIn("/", body["error"])
+
+    def test_per_route_json_ceilings(self):
+        long_ru = "д" * 20000                      # escaped by json.dumps: ~120 KB on the wire
+        st, _, _ = call(self.port, "POST", "/v1/synthesize", body={"text": long_ru})
+        self.assertEqual(st, 202)
+        self.assertEqual(call(self.port, "POST", "/v1/synthesize", body={"text": "a" * 20001})[0], 400)
+        big = {"name": "x", "uploadId": "0" * 8 + "-0000-0000-0000-" + "0" * 12, "ref_text": "y" * 70000, "consent": True}
+        self.assertEqual(call(self.port, "POST", "/v1/clone", body=big)[0], 413)
+        big2 = {"text": "a", "language": "uk", "mood": "x" * 130000}
+        self.assertEqual(call(self.port, "POST", "/v1/synthesize", body=big2)[0], 413)
+
+    def test_logs_use_route_templates_and_safe_methods(self):
+        buf = io.StringIO()
+        with mock.patch.object(sys, "stderr", buf):
+            call(self.port, "GET", "/v1/jobs/secretjobid123")
+            call(self.port, "GET", "/v1/whatever-" + "q" * 20)
+            raw(self.port, b"B\x01D / HTTP/1.1\r\nHost: x\r\n\r\n")
+            time.sleep(0.2)
+        out = buf.getvalue()
+        self.assertIn("/v1/jobs/{id}", out)
+        self.assertNotIn("secretjobid123", out)
+        self.assertNotIn("whatever", out)
+        self.assertNotIn("\x01", out)
+
+    def test_upload_in_use_by_running_job_survives_ttl(self):
+        now = [10.0]
+        self.srv.core.clock = lambda: now[0]
+        up = call(self.port, "POST", "/v1/uploads", body=b"x" * 10, headers={"Content-Type": "audio/wav"})[2]["uploadId"]
+        st, _, sub = call(self.port, "POST", "/v1/convert", body={"uploadId": up, "model": "model1"})
+        self.assertEqual(st, 202)
+        now[0] += 4000
+        self.srv.core.sweep(force=True)
+        self.assertEqual(len(os.listdir(self.uploads)), 1)                         # job still queued
+        self.assertEqual(call(self.port, "POST", "/v1/convert", body={"uploadId": up, "model": "model1"})[0], 404)
+        self.backend.snapshots[sub["jobId"]]["state"] = "done"
+        self.srv.core.sweep(force=True)
+        self.assertEqual(os.listdir(self.uploads), [])
+
+    def test_bad_limits_and_bad_message_do_not_kill_main_loop(self):
+        p = subprocess.Popen([sys.executable, str(SOURCES / "cns_api.py")], stdin=subprocess.PIPE,
+                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        self.addCleanup(lambda: (p.kill(), p.wait(), p.stdin.close() if not p.stdin.closed else None, p.stdout.close()))
+        p.stdin.write(b'{"op":"config","port":0,"key_sha256":"' + KEY_SHA.encode() + b'","uploads_dir":"' +
+                      self.uploads.encode() + b'","outputs_dir":"' + self.outputs.encode() +
+                      b'","limits":{"rate_per_s":1e999,"burst":1e30,"connections":NaN}}\n')
+        p.stdin.write(b'{"op":"job","job":{"id":"abc","origin":{"x":[]}}}\n{"op":"bridge","host":5}\n'
+                      b'{"op":"catalog","voices":7}\n{"op":"revoke","deviceId":{}}\n')
+        p.stdin.flush()
+        ev = json.loads(p.stdout.readline())
+        self.assertEqual(ev["op"], "listening")
+        p.stdin.write(b'{"op":"devices","devices":[1,2]}\n')
+        p.stdin.flush()
+        time.sleep(0.3)
+        self.assertEqual(call(ev["port"], "GET", "/v1/voices")[0], 200)
+
+
 class BridgeTests(Base):
     def setUp(self):
         super().setUp()
@@ -584,16 +762,52 @@ class BridgeTests(Base):
         self.assertEqual(got, {"status": "denied"})
         self.assertEqual([e for e in self.events if e["op"] == "device_added"], [])
         self.srv.shutdown()
-        self.srv = ApiServer(self.backend, KEY_SHA, self.uploads, self.outputs, Limits(pair_ttl=1), port=0)
+        self.srv = ApiServer(self.backend, KEY_SHA, self.uploads, self.outputs, Limits(pair_ttl=100), port=0)
         self.srv.start()
         self.bport = self.srv.start_bridge(BRIDGE_HOST)
         self.addCleanup(self.srv.shutdown)
+        now = [1000.0]
+        self.srv.core.clock = lambda: now[0]               # no wall-clock sleeping
         body, _ = self.pair(approve=None)
-        time.sleep(1.3)
+        now[0] += 99
+        self.assertEqual(self.bcall("GET", "/bridge/pair/" + body["pairId"], auth=None)[2], {"status": "pending"})
+        now[0] += 2
         self.assertEqual(self.bcall("GET", "/bridge/pair/" + body["pairId"], auth=None)[2], {"status": "expired"})
         self.srv.decide_pair(body["pairId"], True)        # too late
         self.assertEqual(self.bcall("GET", "/bridge/pair/" + body["pairId"], auth=None)[2], {"status": "expired"})
         self.assertEqual(self.srv.core.devices, [])
+        now[0] += 250                                      # still visible within the fixed grace, gone after it
+        self.srv.core.sweep(force=True)
+        self.assertEqual(self.bcall("GET", "/bridge/pair/" + body["pairId"], auth=None)[2], {"status": "expired"})
+        now[0] += 150
+        self.srv.core.sweep(force=True)
+        self.assertEqual(self.bcall("GET", "/bridge/pair/" + body["pairId"], auth=None)[0], 404)
+
+    def test_approved_token_not_collected_in_time_expires(self):
+        now = [500.0]
+        self.srv.core.clock = lambda: now[0]
+        body, _ = self.pair(approve=None)
+        self.srv.decide_pair(body["pairId"], True)
+        now[0] += 121
+        self.assertEqual(self.bcall("GET", "/bridge/pair/" + body["pairId"], auth=None)[2], {"status": "expired"})
+
+    def test_pair_poll_bucket_only_for_known_ids(self):
+        body, _ = self.pair(approve=None)
+        codes = [self.bcall("GET", "/bridge/pair/" + body["pairId"], auth=None)[0] for _ in range(40)]
+        self.assertIn(429, codes)
+        for _ in range(60):                                 # malformed ids never charge any bucket
+            self.assertEqual(self.bcall("GET", "/bridge/pair/x!", auth=None)[0], 404)
+        self.assertNotIn("pair-poll:x!", self.srv.core.buckets)
+
+    def test_pair_body_ceiling_2k(self):
+        st, _, _ = self.bcall("POST", "/bridge/pair", body={"name": "x" * 3000}, auth=None)
+        self.assertEqual(st, 413)
+        self.assertEqual(self.bcall("POST", "/bridge/pair", body={"name": "x" * 150}, auth=None)[0], 201)
+
+    def test_set_devices_merges_and_does_not_drop_new_device(self):
+        _, tok = self.pair()
+        self.srv.set_devices([])                           # app pushes a stale (empty) list
+        self.assertEqual(self.bcall("GET", "/v1/voices", auth=tok)[0], 200)
 
     def test_pair_pending_cap_and_rate_limit(self):
         self.srv.shutdown()

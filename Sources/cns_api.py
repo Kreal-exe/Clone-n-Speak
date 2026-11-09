@@ -18,6 +18,7 @@ import json
 import os
 import re
 import secrets
+import socket
 import stat
 import sys
 import threading
@@ -46,6 +47,8 @@ class Limits:
     pair_per_min: int = 5
     pair_ttl: int = 120
     bridge_rate_per_s: int = 5
+    min_upload_bytes_per_s: int = 65536     # slower senders are dropped after the grace period
+    pair_json_body: int = 2048
 
 
 class Backend(Protocol):
@@ -179,6 +182,24 @@ def _scrub(obj, depth=0):
     return str(obj)
 
 
+def _home_words():
+    h = os.path.expanduser("~")
+    base = os.path.basename(h.rstrip("/"))
+    return [w for w in {h, base} if len(w) >= 3]
+
+
+def redact(v, n=300):
+    """Short text for clients: no absolute paths, no home-directory names."""
+    if v is None:
+        return None
+    s = str(v)
+    for w in _home_words():
+        s = re.sub(r"(?<!\w)" + re.escape(w) + r"(?!\w)", "<user>", s)
+    s = " ".join("<path>" if ("/" in t or "\\" in t) else t for t in s.split())
+    s = "".join(c if c.isprintable() else " " for c in s)
+    return s[:n]
+
+
 def _clip(v, n):
     return None if v is None else str(v)[:n]
 
@@ -186,13 +207,14 @@ def _clip(v, n):
 def public_job(s: dict) -> dict:
     out = s.get("output")
     if isinstance(out, dict):
-        out = {"name": _clip(out.get("name"), 200), "bytes": out.get("bytes"), "type": _clip(out.get("type"), 80)}
+        out = {"name": redact(os.path.basename(str(out.get("name") or "")), 200), "bytes": out.get("bytes"),
+               "type": _clip(out.get("type"), 80)}
     else:
         out = None
     prog = s.get("progress")
     return {"id": _clip(s.get("id"), 64), "kind": _clip(s.get("kind"), 32), "state": _clip(s.get("state"), 32),
             "progress": prog if isinstance(prog, (int, float)) and not isinstance(prog, bool) else None,
-            "status": _clip(s.get("status"), 200), "error": _clip(s.get("error"), 300), "output": out}
+            "status": redact(s.get("status"), 200), "error": redact(s.get("error"), 300), "output": out}
 
 
 class _Bucket:
@@ -211,6 +233,9 @@ class _Bucket:
 
 # ---------------------------------------------------------------- core (shared by both listeners)
 
+socket_SHUT_RDWR = socket.SHUT_RDWR
+
+
 class _Core:
     def __init__(self, backend, key_sha256, uploads_dir, outputs_dir, limits, events):
         key_sha256 = str(key_sha256).strip().lower()
@@ -223,7 +248,6 @@ class _Core:
         os.makedirs(self.uploads_dir, mode=0o700, exist_ok=True)
         os.makedirs(self.outputs_dir, mode=0o700, exist_ok=True)
         self.lock = threading.RLock()
-        self.submit_lock = threading.Lock()
         self.clock = time.monotonic
         self.buckets = {}
         self.bad_auth = {"local": [], "bridge": []}
@@ -233,7 +257,8 @@ class _Core:
         self.pairs = {}            # pairId -> dict
         self.pair_times = []
         self.bridge_host = None
-        self.last_tick = 0.0
+        self.last_tick = -1e9
+        self.origin_locks = {}
         self.last_seen = {}
         self._purge_orphans()
 
@@ -302,16 +327,36 @@ class _Core:
             return b.take(self.clock())
 
     # --- uploads
+    PAIR_GRACE = 300       # seconds an expired / decided pairing stays visible to polling
+
+    def origin_lock(self, origin):
+        with self.lock:
+            return self.origin_locks.setdefault(origin, threading.Lock())
+
+    def _upload_in_use(self, e):
+        for jid, origin in list(e.get("jobs", ())):
+            try:
+                snap = self.backend.job(jid, origin)
+            except Exception:
+                snap = None
+            if snap and str(snap.get("state", "")).lower() in ACTIVE_STATES:
+                return True
+        return False
+
     def sweep(self, force=False):
-        now = time.time()
+        now = self.clock()
         with self.lock:
             if not force and now - self.last_tick < 2:
                 return
             self.last_tick = now
-            for uid in [u for u, e in self.uploads.items() if now - e["t"] > self.limits.upload_ttl]:
-                self._drop_upload(uid)
-            for pid in [p for p, e in self.pairs.items() if now - e["t"] > 2 * self.limits.pair_ttl]:
+            expired = [(u, e) for u, e in self.uploads.items() if now - e["t"] > self.limits.upload_ttl]
+            for pid in [p for p, e in self.pairs.items() if now - e["t"] > self.limits.pair_ttl + self.PAIR_GRACE]:
                 self.pairs.pop(pid, None)
+                self.buckets.pop("pair-poll:" + pid, None)
+        for uid, e in expired:               # backend is asked outside the lock
+            if not self._upload_in_use(e):
+                with self.lock:
+                    self._drop_upload(uid)
 
     def _drop_upload(self, uid):
         e = self.uploads.pop(uid, None)
@@ -339,21 +384,25 @@ class _Core:
 
     def register_upload(self, uid, final, nbytes, origin):
         with self.lock:
-            self.uploads[uid] = {"path": final, "bytes": nbytes, "t": time.time(), "origin": origin}
+            self.uploads[uid] = {"path": final, "bytes": nbytes, "t": self.clock(), "origin": origin, "jobs": []}
 
     def find_upload(self, uid, origin):
+        """Entry for a live upload of this origin; expired ones are not offered to new jobs."""
         if not isinstance(uid, str) or not UPLOAD_ID_RE.match(uid):
             return None
         with self.lock:
             e = self.uploads.get(uid)
-            if e is None:
+            if e is None or e["origin"] != origin:
                 return None
-            if time.time() - e["t"] > self.limits.upload_ttl:
-                self._drop_upload(uid)
-                return None
-            if e["origin"] != origin:
-                return None
+            if self.clock() - e["t"] > self.limits.upload_ttl:
+                return None                  # the next sweep removes it once no running job uses it
             return e
+
+    def note_upload_job(self, uid, job_id, origin):
+        with self.lock:
+            e = self.uploads.get(uid)
+            if e is not None:
+                e["jobs"].append((job_id, origin))
 
     def clear_uploads(self):
         with self.lock:
@@ -363,7 +412,7 @@ class _Core:
 
     # --- pairing
     def pair_start(self, name):
-        L, now = self.limits, time.time()
+        L, now = self.limits, self.clock()
         with self.lock:
             self.pair_times[:] = [t for t in self.pair_times if now - t < 60]
             if len(self.pair_times) >= L.pair_per_min:
@@ -374,19 +423,23 @@ class _Core:
             self.pair_times.append(now)
             pid = secrets.token_urlsafe(16)
             code = "%06d" % secrets.randbelow(10 ** 6)
-            self.pairs[pid] = {"name": name, "code": code, "status": "pending", "t": now, "token": None}
+            self.pairs[pid] = {"name": name, "code": code, "status": "pending", "t": now, "ta": None, "token": None}
         return (pid, code), None, 0
 
+    def pair_exists(self, pid):
+        with self.lock:
+            return pid in self.pairs
+
     def pair_state(self, pid):
-        now = time.time()
+        now = self.clock()
         with self.lock:
             e = self.pairs.get(pid)
             if e is None:
                 return None
             if e["status"] == "pending" and now - e["t"] > self.limits.pair_ttl:
                 e["status"] = "expired"
-            if e["status"] == "approved" and e["token"] is not None and now - e["t"] > 2 * self.limits.pair_ttl:
-                e["token"] = None
+            if e["status"] == "approved" and e["token"] is not None and now - e["ta"] > self.limits.pair_ttl:
+                e["token"] = None            # never collected in time: the device must pair again
                 e["status"] = "expired"
             if e["status"] == "approved" and e["token"] is not None:
                 tok, e["token"] = e["token"], None
@@ -394,7 +447,7 @@ class _Core:
             return {"status": e["status"]}
 
     def decide(self, pid, approve):
-        now = time.time()
+        now = self.clock()
         with self.lock:
             e = self.pairs.get(pid)
             if e is None or e["status"] != "pending" or now - e["t"] > self.limits.pair_ttl:
@@ -405,7 +458,7 @@ class _Core:
             tok = secrets.token_urlsafe(32)
             dev = {"id": secrets.token_hex(8), "name": e["name"], "token_sha256": sha256_hex(tok)}
             self.devices.append(dev)
-            e["status"], e["token"] = "approved", tok
+            e["status"], e["token"], e["ta"] = "approved", tok, now
         self.events({"op": "device_added", "id": dev["id"], "name": dev["name"], "token_sha256": dev["token_sha256"]})
 
 
@@ -470,9 +523,29 @@ class _Handler(BaseHTTPRequestHandler):
 
     _expect = False
 
+    def handle_one_request(self):
+        # total deadline for request line + headers (per-recv timeouts alone let a 1 byte/s sender stay forever)
+        timer = threading.Timer(self.server.core.limits.socket_timeout, self._drop_connection)
+        timer.daemon = True
+        self._hdr_timer = timer
+        timer.start()
+        try:
+            super().handle_one_request()
+        finally:
+            timer.cancel()
+
+    def _drop_connection(self):
+        self.close_connection = True
+        try:
+            self.connection.shutdown(socket_SHUT_RDWR)
+        except OSError:
+            pass
+
     def parse_request(self):
         self._expect = False
-        return super().parse_request()
+        ok = super().parse_request()
+        self._hdr_timer.cancel()               # headers are complete: the body has its own deadline
+        return ok
 
     def handle_expect_100(self):
         self._expect = True
@@ -497,11 +570,29 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         if body and self.command != "HEAD":
             self.wfile.write(body)
-        self.server.core.log("%s %s -> %d" % (self.command, self._logpath(), code))
+        self.server.core.log("%s %s -> %d" % (self._logmethod(), self._logroute(), code))
 
-    def _logpath(self):
-        p = (self.path or "").split("?", 1)[0][:80]
-        return "".join(c if c.isprintable() else "?" for c in p)
+    LOG_ROUTES = (
+        (re.compile(r"^/v1/jobs/[^/]+/output$"), "/v1/jobs/{id}/output"),
+        (re.compile(r"^/v1/jobs/[^/]+/stop$"), "/v1/jobs/{id}/stop"),
+        (re.compile(r"^/v1/jobs/[^/]+$"), "/v1/jobs/{id}"),
+        (re.compile(r"^/bridge/pair/[^/]+$"), "/bridge/pair/{id}"),
+    )
+    LOG_FIXED = ("/v1/voices", "/v1/models", "/v1/jobs", "/v1/uploads", "/v1/synthesize", "/v1/clone",
+                 "/v1/convert", "/bridge/pair")
+
+    def _logmethod(self):
+        m = self.command if isinstance(self.command, str) else ""
+        return m if re.fullmatch(r"[A-Z]{1,8}", m) else "?"
+
+    def _logroute(self):
+        p = (self.path or "").split("?", 1)[0]
+        if p in self.LOG_FIXED:
+            return p
+        for rx, tpl in self.LOG_ROUTES:
+            if rx.match(p):
+                return tpl
+        return "(other)"            # arbitrary client text is never written to the log
 
     def _fail(self, code, error, headers=()):
         self._json(code, {"error": error}, headers)
@@ -621,16 +712,31 @@ class _Handler(BaseHTTPRequestHandler):
             return None
         return n
 
-    def _read_exact(self, n, sink, deadline):
+    def _read_exact(self, n, sink):
+        """Read exactly n bytes.  Every read gets the smaller of the socket timeout and the time left, and the
+        whole body must arrive within socket_timeout + n / min_upload_bytes_per_s, so a trickle is dropped."""
+        L = self.server.core.limits
+        t0 = time.monotonic()
+        deadline = t0 + L.socket_timeout + n / float(max(1, L.min_upload_bytes_per_s))
         left = n
-        while left > 0:
-            chunk = self.rfile.read(min(65536, left))
-            if not chunk:
-                return False
-            sink(chunk)
-            left -= len(chunk)
-            if time.monotonic() > deadline:
-                return False
+        try:
+            while left > 0:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self.connection.settimeout(max(0.05, min(L.socket_timeout, remaining)))
+                chunk = self.rfile.read1(min(65536, left))
+                if not chunk:
+                    return False
+                sink(chunk)
+                left -= len(chunk)
+        except OSError:
+            return False
+        finally:
+            try:
+                self.connection.settimeout(L.socket_timeout)
+            except OSError:
+                pass
         return True
 
     def _json_body(self, limit):
@@ -639,7 +745,7 @@ class _Handler(BaseHTTPRequestHandler):
             return None
         self._expect_continue()
         buf = bytearray()
-        if not self._read_exact(n, buf.extend, time.monotonic() + 3 * self.server.core.limits.socket_timeout):
+        if not self._read_exact(n, buf.extend):
             self._fail(400, "incomplete_body")
             return None
         self._unread = False
@@ -673,7 +779,7 @@ class _Handler(BaseHTTPRequestHandler):
             f = os.fdopen(fd, "wb")
             fd = None
             with f:
-                ok = self._read_exact(n, f.write, time.monotonic() + 2 * L.socket_timeout + n / 32768.0)
+                ok = self._read_exact(n, f.write)
             if not ok:
                 os.unlink(part)
                 self._fail(400, "incomplete_body")
@@ -697,7 +803,9 @@ class _Handler(BaseHTTPRequestHandler):
     def _submit(self, kind, origin):
         core = self.server.core
         L = core.limits
-        data = self._json_body(L.json_body)
+        # escaped non-ASCII text is up to 6 bytes per character, so /v1/synthesize gets its own ceiling
+        limit = max(L.json_body, L.text_chars * 6 + 4096) if kind == "synthesize" else L.json_body
+        data = self._json_body(limit)
         if data is None:
             return
         err = validate(SCHEMAS[kind], data, L)
@@ -719,14 +827,16 @@ class _Handler(BaseHTTPRequestHandler):
             if up is None:
                 return self._fail(404, "unknown_upload")
             params["uploadPath"] = up["path"]
-        with core.submit_lock:
+        with core.origin_lock(origin):
             active = [j for j in (core.backend.jobs(origin) or [])
                       if str(j.get("state", "")).lower() in ACTIVE_STATES]
             if len(active) >= L.active_jobs:
                 return self._fail(429, "too_many_active_jobs", [("Retry-After", "5")])
             job_id, error = core.backend.submit(kind, params, origin)
         if not job_id:
-            return self._fail(400, _clip(error, 200) or "rejected")
+            return self._fail(400, redact(error, 200) or "rejected")
+        if "uploadId" in data:
+            core.note_upload_job(data["uploadId"], str(job_id)[:64], origin)
         self._json(202, {"jobId": str(job_id)[:64]})
 
     @staticmethod
@@ -795,7 +905,7 @@ class _Handler(BaseHTTPRequestHandler):
     # --- Bridge pairing (no authentication; strictly limited)
     def _pair_post(self):
         core = self.server.core
-        data = self._json_body(core.limits.json_body)
+        data = self._json_body(min(core.limits.pair_json_body, core.limits.json_body))
         if data is None:
             return
         err = validate(SCHEMAS["pair"], data, core.limits)
@@ -814,11 +924,12 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _pair_get(self, pid):
         core = self.server.core
-        wait = core.global_bucket("pair-poll", 5, 20)
+        if not PAIR_ID_RE.match(pid):
+            return self._fail(404, "not_found")          # malformed ids cost nothing and charge no bucket
+        known = core.pair_exists(pid)
+        wait = core.global_bucket("pair-poll:" + pid, 5, 20) if known else core.global_bucket("pair-unknown", 20, 40)
         if wait > 0:
             return self._fail(429, "rate_limited", [("Retry-After", str(max(1, int(wait + 0.999))))])
-        if not PAIR_ID_RE.match(pid):
-            return self._fail(404, "not_found")
         st = core.pair_state(pid)
         if st is None:
             return self._fail(404, "not_found")
@@ -878,13 +989,16 @@ class ApiServer:
             self.core.pairs.clear()
 
     def set_devices(self, devices: list) -> None:
+        """Add / update devices (merge by id).  Removal is only through revoke()."""
         clean = []
         for d in devices or []:
             h = str(d.get("token_sha256", "")).lower()
             if re.fullmatch(r"[0-9a-f]{64}", h) and re.fullmatch(r"[A-Za-z0-9_-]{1,32}", str(d.get("id", ""))):
                 clean.append({"id": str(d["id"]), "name": sanitize_device_name(d.get("name", "")), "token_sha256": h})
-        with self.core.lock:
-            self.core.devices = clean
+        with self.core.lock:                  # merge by id: a device approved a moment ago is never dropped
+            merged = {d["id"]: d for d in self.core.devices}
+            merged.update({d["id"]: d for d in clean})
+            self.core.devices = list(merged.values())
 
     def decide_pair(self, pair_id: str, approve: bool) -> None:
         self.core.decide(pair_id, bool(approve))
@@ -925,6 +1039,9 @@ class StdioBackend:
         ev.wait(15)
         with self.lock:
             self.waiting.pop(rid, None)
+        if not ev.is_set():
+            # the app may still create the job late: it should stop/remove it when it sees this
+            self.emit({"op": "submit_abandoned", "reqId": rid})
         return slot[1]
 
     def resolve(self, msg):
@@ -973,8 +1090,11 @@ class StdioBackend:
 def _limits_from(d) -> Limits:
     base = Limits()
     if isinstance(d, dict):
-        ok = {k: int(v) for k, v in d.items()
-              if hasattr(base, k) and isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0}
+        ok = {}
+        for k, v in d.items():
+            if hasattr(base, k) and isinstance(v, (int, float)) and not isinstance(v, bool) \
+                    and v == v and 0 < v < 2 ** 40:
+                ok[k] = int(v)
         return dataclasses.replace(base, **ok)
     return base
 
@@ -991,7 +1111,53 @@ def main() -> None:
                 pass
 
     backend = StdioBackend(emit)
-    server = None
+    state = {"server": None}
+
+    def handle(msg):
+        """One protocol message.  True means quit."""
+        server = state["server"]
+        op = msg.get("op")
+        if op == "config" and server is None:
+            try:
+                server = state["server"] = ApiServer(backend, msg["key_sha256"], msg["uploads_dir"], msg["outputs_dir"],
+                                   _limits_from(msg.get("limits")), int(msg.get("port", 18777)), events=emit)
+                backend.set_catalog(msg)
+                server.set_devices(msg.get("devices") or [])
+                port = server.start()
+                emit({"op": "listening", "port": port, "bridgePort": None})
+            except OSError as e:
+                state["server"] = None
+                emit({"op": "error", "code": "EADDRINUSE" if e.errno == 48 or e.errno == 98 else "OSERROR",
+                      "msg": "cannot listen"})
+            except (KeyError, ValueError, TypeError):
+                state["server"] = None
+                emit({"op": "error", "code": "BADCONFIG", "msg": "bad config"})
+        elif op == "catalog":
+            backend.set_catalog(msg)
+        elif op == "job":
+            backend.update_job(msg.get("job") if isinstance(msg.get("job"), dict) else msg)
+        elif op in ("submitted", "rejected"):
+            backend.resolve(msg)
+        elif server is not None and op == "pair_decision":
+            server.decide_pair(str(msg.get("pairId", "")), bool(msg.get("approve")))
+        elif server is not None and op == "bridge":
+            try:
+                if msg.get("host"):
+                    port = server.start_bridge(msg["host"])
+                    emit({"op": "listening", "port": server.local_address[1], "bridgePort": port})
+                else:
+                    server.stop_bridge()
+                    emit({"op": "listening", "port": server.local_address[1], "bridgePort": None})
+            except (OSError, ValueError):
+                emit({"op": "error", "code": "BRIDGE", "msg": "cannot start bridge"})
+        elif server is not None and op == "devices":
+            server.set_devices(msg.get("devices") or [])
+        elif server is not None and op == "revoke":
+            server.revoke(str(msg.get("deviceId", "")))
+        elif op == "quit":
+            return True
+        return False
+
     try:
         for line in sys.stdin:
             try:
@@ -1000,49 +1166,15 @@ def main() -> None:
                 continue
             if not isinstance(msg, dict):
                 continue
-            op = msg.get("op")
-            if op == "config" and server is None:
-                try:
-                    server = ApiServer(backend, msg["key_sha256"], msg["uploads_dir"], msg["outputs_dir"],
-                                       _limits_from(msg.get("limits")), int(msg.get("port", 18777)), events=emit)
-                    backend.set_catalog(msg)
-                    server.set_devices(msg.get("devices") or [])
-                    port = server.start()
-                    emit({"op": "listening", "port": port, "bridgePort": None})
-                except OSError as e:
-                    server = None
-                    emit({"op": "error", "code": "EADDRINUSE" if e.errno == 48 or e.errno == 98 else "OSERROR",
-                          "msg": "cannot listen"})
-                except (KeyError, ValueError, TypeError):
-                    server = None
-                    emit({"op": "error", "code": "BADCONFIG", "msg": "bad config"})
-            elif op == "catalog":
-                backend.set_catalog(msg)
-            elif op == "job":
-                backend.update_job(msg.get("job") if isinstance(msg.get("job"), dict) else msg)
-            elif op in ("submitted", "rejected"):
-                backend.resolve(msg)
-            elif server is not None and op == "pair_decision":
-                server.decide_pair(str(msg.get("pairId", "")), bool(msg.get("approve")))
-            elif server is not None and op == "bridge":
-                try:
-                    if msg.get("host"):
-                        port = server.start_bridge(msg["host"])
-                        emit({"op": "listening", "port": server.local_address[1], "bridgePort": port})
-                    else:
-                        server.stop_bridge()
-                        emit({"op": "listening", "port": server.local_address[1], "bridgePort": None})
-                except (OSError, ValueError):
-                    emit({"op": "error", "code": "BRIDGE", "msg": "cannot start bridge"})
-            elif server is not None and op == "devices":
-                server.set_devices(msg.get("devices") or [])
-            elif server is not None and op == "revoke":
-                server.revoke(str(msg.get("deviceId", "")))
-            elif op == "quit":
-                break
+            try:
+                if handle(msg):
+                    break
+            except Exception as e:          # one bad message must never end the loop
+                sys.stderr.write("[cns_api] message error: %s\n" % type(e).__name__)
+                sys.stderr.flush()
     finally:
-        if server is not None:
-            server.shutdown()
+        if state["server"] is not None:
+            state["server"].shutdown()
 
 
 if __name__ == "__main__":
