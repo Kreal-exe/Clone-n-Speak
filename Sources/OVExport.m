@@ -4,7 +4,6 @@
 // L() lives in OVLocale.m (AppKit). This weak fallback lets the file build standalone for tests (English text);
 // in the app the strong definition from OVLocale.m wins at link time.
 __attribute__((weak)) NSString *L(NSString *english) { return english; }
-static NSString *T(NSString *s) { return L(s); }
 
 NSErrorDomain const OVExportErrorDomain = @"OVExportErrorDomain";
 
@@ -12,7 +11,7 @@ static NSError *ExportError(NSInteger code, NSString *message) {
     return [NSError errorWithDomain:OVExportErrorDomain code:code userInfo:@{NSLocalizedDescriptionKey: message}];
 }
 
-static NSString *const kNeedsFFmpeg = @"Needs ffmpeg. Install it with “brew install ffmpeg”.";
+#define NEEDS_FFMPEG_TEXT L(@"Needs ffmpeg. Install it with “brew install ffmpeg”.")
 
 static NSString *gFFmpegPath;
 static BOOL gFFmpegResolved;
@@ -20,7 +19,7 @@ static NSString *gEncoders;     // output of `ffmpeg -hide_banner -encoders`, ni
 static NSObject *gLock;
 
 // Runs a program with stdout+stderr captured into a temp file. Returns exit status, -1 when it cannot start.
-static int RunProgram(NSString *path, NSArray<NSString *> *args, NSString *_Nullable *_Nullable output) {
+static int RunProgram(NSString *path, NSArray<NSString *> *args, NSTimeInterval timeout, NSString *_Nullable *_Nullable output) {
     NSString *tmp = [NSTemporaryDirectory() stringByAppendingPathComponent:[NSString stringWithFormat:@"cns-export-%@.log", [NSUUID UUID].UUIDString]];
     [[NSFileManager defaultManager] createFileAtPath:tmp contents:nil attributes:nil];
     NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:tmp];
@@ -33,8 +32,13 @@ static int RunProgram(NSString *path, NSArray<NSString *> *args, NSString *_Null
     NSError *err = nil;
     int status = -1;
     if ([task launchAndReturnError:&err]) {
+        NSDate *deadline = timeout > 0 ? [NSDate dateWithTimeIntervalSinceNow:timeout] : nil;
+        while (task.isRunning) {
+            if (deadline && [deadline timeIntervalSinceNow] < 0) { [task terminate]; break; }
+            [NSThread sleepForTimeInterval:0.02];
+        }
         [task waitUntilExit];
-        status = task.terminationStatus;
+        status = deadline && [deadline timeIntervalSinceNow] < 0 && task.terminationReason == NSTaskTerminationReasonUncaughtSignal ? -1 : task.terminationStatus;
     }
     [fh closeFile];
     if (output) {
@@ -71,8 +75,9 @@ static void CompactM4A(NSString *path) {
     dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
     NSDictionary *a = [fm attributesOfItemAtPath:tmp error:nil];
     if (s.status == AVAssetExportSessionStatusCompleted && [a fileSize] > 0) {
-        [fm removeItemAtPath:path error:nil];
-        [fm moveItemAtPath:tmp toPath:path error:nil];
+        NSURL *u = [NSURL fileURLWithPath:path];
+        if (![fm replaceItemAtURL:u withItemAtURL:[NSURL fileURLWithPath:tmp] backupItemName:nil options:0 resultingItemURL:nil error:nil])
+            [fm removeItemAtPath:tmp error:nil];
     } else {
         [fm removeItemAtPath:tmp error:nil];
     }
@@ -105,7 +110,7 @@ static void CompactM4A(NSString *path) {
         }
         if (!found && !override) {
             NSString *out = nil;
-            if (RunProgram(@"/bin/sh", @[@"-lc", @"command -v ffmpeg"], &out) == 0) {
+            if (RunProgram(@"/bin/sh", @[@"-lc", @"command -v ffmpeg"], 3, &out) == 0) {
                 NSString *line = [[out stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] componentsSeparatedByString:@"\n"].lastObject;
                 if ([line hasPrefix:@"/"] && IsExecutable(line)) found = line;
             }
@@ -131,7 +136,7 @@ static void CompactM4A(NSString *path) {
     @synchronized (gLock) { list = gEncoders; }
     if (!list) {
         NSString *out = nil;
-        list = RunProgram(path, @[@"-hide_banner", @"-encoders"], &out) == 0 ? out : @"";
+        list = RunProgram(path, @[@"-hide_banner", @"-encoders"], 10, &out) == 0 ? out : @"";
         @synchronized (gLock) { if (gFFmpegPath) gEncoders = list; }
     }
     for (NSString *line in [list componentsSeparatedByString:@"\n"]) {
@@ -147,7 +152,7 @@ static void CompactM4A(NSString *path) {
 + (NSArray<NSDictionary *> *)formats {
     BOOL mp3 = [self ffmpegHasEncoder:@"libmp3lame"];
     BOOL ogg = [self ffmpegHasEncoder:@"libvorbis"];
-    NSString *reason = T(kNeedsFFmpeg);
+    NSString *reason = NEEDS_FFMPEG_TEXT;
     NSDictionary *(^mk)(NSString *, NSString *, NSString *, BOOL, BOOL) = ^NSDictionary *(NSString *i, NSString *t, NSString *e, BOOL lossless, BOOL avail) {
         NSMutableDictionary *d = [@{@"id": i, @"title": t, @"ext": e, @"lossless": @(lossless), @"available": @(avail)} mutableCopy];
         if (!avail) d[@"reason"] = reason;
@@ -241,23 +246,23 @@ static NSString *ExtensionFor(OVExportFormat f) {
     NSFileManager *fm = [NSFileManager defaultManager];
     BOOL isDir = NO;
     if (src.length == 0 || ![fm fileExistsAtPath:src isDirectory:&isDir] || isDir) {
-        if (error) *error = ExportError(1, T(@"The source audio file was not found. Generate or choose the audio again."));
+        if (error) *error = ExportError(1, L(@"The source audio file was not found. Generate or choose the audio again."));
         return nil;
     }
     NSError *openErr = nil;
     AVAudioFile *in = [[AVAudioFile alloc] initForReading:[NSURL fileURLWithPath:src] error:&openErr];
     if (!in) {
-        if (error) *error = ExportError(2, [NSString stringWithFormat:T(@"The source audio file cannot be read (%@). Choose a WAV file."), openErr.localizedDescription ?: @""]);
+        if (error) *error = ExportError(2, [NSString stringWithFormat:L(@"The source audio file cannot be read (%@). Choose a WAV file."), openErr.localizedDescription ?: @""]);
         return nil;
     }
     if (in.length <= 0) {
-        if (error) *error = ExportError(3, T(@"The audio is empty, so there is nothing to export."));
+        if (error) *error = ExportError(3, L(@"The audio is empty, so there is nothing to export."));
         return nil;
     }
     if (f == OVExportMP3 || f == OVExportOGG) {
         BOOL ok = [self ffmpegHasEncoder:f == OVExportMP3 ? @"libmp3lame" : @"libvorbis"];
         if (!ok) {
-            if (error) *error = ExportError(4, T(kNeedsFFmpeg));
+            if (error) *error = ExportError(4, NEEDS_FFMPEG_TEXT);
             return nil;
         }
     }
@@ -269,7 +274,7 @@ static NSString *ExtensionFor(OVExportFormat f) {
     NSString *dir = base.stringByDeletingLastPathComponent;
     NSError *dirErr = nil;
     if (dir.length && ![fm createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:&dirErr]) {
-        if (error) *error = ExportError(5, [NSString stringWithFormat:T(@"Cannot create the folder (%@). Choose another place."), dirErr.localizedDescription ?: @""]);
+        if (error) *error = ExportError(5, [NSString stringWithFormat:L(@"Cannot create the folder (%@). Choose another place."), dirErr.localizedDescription ?: @""]);
         return nil;
     }
     NSString *part = [dir stringByAppendingPathComponent:[NSString stringWithFormat:@".cns-export-%@.%@", [NSUUID UUID].UUIDString, ext]];
@@ -291,12 +296,12 @@ static NSString *ExtensionFor(OVExportFormat f) {
             break;
         }
         case OVExportM4A: {
-            NSInteger kbps = quality > 0 ? MIN(MAX(quality, 32), 320) : 192;
+            NSInteger kbps = quality > 0 ? MIN(MAX(quality, 32), MIN(320, 256 * (NSInteger)ch)) : 192;   // mono AAC tops out at 256
             NSDictionary *s = @{AVFormatIDKey: @(kAudioFormatMPEG4AAC), AVSampleRateKey: @(rate), AVNumberOfChannelsKey: @(ch),
                                 AVEncoderBitRateKey: @(kbps * 1000),
                                 AVEncoderBitRateStrategyKey: AVAudioBitRateStrategy_Constant};
             ok = [self encodeNative:in to:part settings:s error:&why];
-            if (!ok && rate < 48000) {
+            if (!ok && rate != 48000) {   // the encoder limits the bitrate by rate/channels; 48 kHz accepts all
                 [fm removeItemAtPath:part error:nil];
                 NSMutableDictionary *s2 = [s mutableCopy];
                 s2[AVSampleRateKey] = @48000;
@@ -318,7 +323,7 @@ static NSString *ExtensionFor(OVExportFormat f) {
             if (!ok) {
                 [fm removeItemAtPath:part error:nil];
                 NSString *out = nil;
-                ok = RunProgram(@"/usr/bin/afconvert", @[@"-f", @"flac", @"-d", @"flac", src, part], &out) == 0
+                ok = RunProgram(@"/usr/bin/afconvert", @[@"-f", @"flac", @"-d", @"flac", src, part], 0, &out) == 0
                      && [fm fileExistsAtPath:part];
                 if (!ok) why = Tail(out ?: why ?: @"", 400);
             }
@@ -329,11 +334,11 @@ static NSString *ExtensionFor(OVExportFormat f) {
             NSArray *codec;
             if (f == OVExportMP3) codec = @[@"-c:a", @"libmp3lame", @"-b:a", [NSString stringWithFormat:@"%ldk", (long)(quality > 0 ? MIN(quality, 320) : 192)]];
             else codec = @[@"-c:a", @"libvorbis", @"-q:a", [NSString stringWithFormat:@"%ld", (long)(quality >= 0 ? MIN(quality, 10) : 5)]];
-            NSMutableArray *args = [@[@"-y", @"-i", src, @"-vn"] mutableCopy];
+            NSMutableArray *args = [@[@"-hide_banner", @"-loglevel", @"error", @"-nostdin", @"-y", @"-i", src, @"-vn"] mutableCopy];
             [args addObjectsFromArray:codec];
             [args addObject:part];
             NSString *out = nil;
-            int status = RunProgram([self ffmpegPath], args, &out);
+            int status = RunProgram([self ffmpegPath], args, 0, &out);
             ok = status == 0 && [fm fileExistsAtPath:part];
             if (!ok) why = status == 0 ? @"ffmpeg produced no file" : Tail(out, 400);
             break;
@@ -344,7 +349,7 @@ static NSString *ExtensionFor(OVExportFormat f) {
 
     if (!ok) {
         [fm removeItemAtPath:part error:nil];
-        if (error) *error = ExportError(6, [NSString stringWithFormat:T(@"Export failed: %@"), why.length ? why : T(@"unknown error")]);
+        if (error) *error = ExportError(6, [NSString stringWithFormat:L(@"Export failed: %@"), why.length ? why : L(@"unknown error")]);
         return nil;
     }
     // Pick the final name last, so two exports in a row never overwrite each other.
@@ -352,7 +357,7 @@ static NSString *ExtensionFor(OVExportFormat f) {
     NSError *mvErr = nil;
     if (![fm moveItemAtPath:part toPath:final error:&mvErr]) {
         [fm removeItemAtPath:part error:nil];
-        if (error) *error = ExportError(7, [NSString stringWithFormat:T(@"Cannot save the file (%@). Choose another place."), mvErr.localizedDescription ?: @""]);
+        if (error) *error = ExportError(7, [NSString stringWithFormat:L(@"Cannot save the file (%@). Choose another place."), mvErr.localizedDescription ?: @""]);
         return nil;
     }
     return final;

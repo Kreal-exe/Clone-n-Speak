@@ -127,6 +127,39 @@ static void testNameCollision(NSString *src) {
     for (NSString *n in left) ASSERT(![n hasPrefix:@".cns-export-"], "leftover %s", n.UTF8String);
 }
 
+static NSString *WriteTone(NSString *name, double rate, int channels, double seconds) {
+    NSString *path = TmpPath(name);
+    NSDictionary *s = @{AVFormatIDKey: @(kAudioFormatLinearPCM), AVSampleRateKey: @(rate), AVNumberOfChannelsKey: @(channels),
+                        AVLinearPCMBitDepthKey: @16, AVLinearPCMIsFloatKey: @NO, AVLinearPCMIsBigEndianKey: @NO};
+    AVAudioFile *f = [[AVAudioFile alloc] initForWriting:[NSURL fileURLWithPath:path] settings:s
+                                            commonFormat:AVAudioPCMFormatFloat32 interleaved:NO error:nil];
+    AVAudioFrameCount n = (AVAudioFrameCount)(rate * seconds);
+    AVAudioPCMBuffer *b = [[AVAudioPCMBuffer alloc] initWithPCMFormat:f.processingFormat frameCapacity:n];
+    b.frameLength = n;
+    for (int c = 0; c < channels; c++)
+        for (AVAudioFrameCount i = 0; i < n; i++) b.floatChannelData[c][i] = 0.4f * sinf(2 * (float)M_PI * (440.f + 100 * c) * i / (float)rate);
+    [f writeFromBuffer:b error:nil];
+    f = nil;
+    return path;
+}
+
+static void testAACAnyRateAndChannels(void) {
+    struct { double rate; int ch; } cases[] = {{96000, 1}, {96000, 2}, {8000, 1}, {44100, 2}, {32000, 1}, {16000, 2}};
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        NSString *src = WriteTone([NSString stringWithFormat:@"tone%zu.wav", i], cases[i].rate, cases[i].ch, 0.5);
+        for (NSNumber *q in @[@96, @192, @320]) {
+            NSError *e = nil;
+            NSString *out = [OVExport exportFile:src to:TmpPath([NSString stringWithFormat:@"tone%zu-%@", i, q]) format:OVExportM4A quality:q.integerValue error:&e];
+            ASSERT(out != nil, "rate %g ch %d kbps %@: %s", cases[i].rate, cases[i].ch, q, e.localizedDescription.UTF8String);
+            if (!out) continue;
+            AVAudioFile *f = [[AVAudioFile alloc] initForReading:[NSURL fileURLWithPath:out] error:nil];
+            double dur = f ? (double)f.length / f.processingFormat.sampleRate : 0;
+            ASSERT(fabs(dur - 0.5) <= 0.05, "duration %g (rate %g ch %d)", dur, cases[i].rate, cases[i].ch);
+            ASSERT(f.processingFormat.channelCount == (AVAudioChannelCount)cases[i].ch, "channels");
+        }
+    }
+}
+
 static void testEmptyAndMissingSource(void) {
     NSString *empty = WriteSine(@"empty.wav", 0);
     NSString *dstDir = TmpPath(@"never");
@@ -141,7 +174,7 @@ static void testEmptyAndMissingSource(void) {
 static void SetEnv(NSString *home, NSString *path, NSString *dirs) {
     setenv("HOME", home.UTF8String, 1);
     setenv("PATH", path.UTF8String, 1);
-    setenv("CNS_FFMPEG_DIRS", dirs.UTF8String, 1);
+    if (dirs) setenv("CNS_FFMPEG_DIRS", dirs.UTF8String, 1); else unsetenv("CNS_FFMPEG_DIRS");
     [OVExport resetFFmpegCache];
 }
 
@@ -219,6 +252,23 @@ static void testFakeFFmpeg(NSString *src) {
     }
 }
 
+// The non-override search: $HOME/.local/bin/ffmpeg is found first, and OGG with quality -1 asks for -q:a 5.
+static void testDefaultSearch(NSString *src) {
+    NSString *home = TmpPath(@"fakehome");
+    NSString *argsFile = TmpPath(@"argv-ogg.txt");
+    NSString *dir = MakeStub(@"fakehome/.local/bin", @"echo ' A....D libvorbis  Vorbis'",
+        [NSString stringWithFormat:@"echo \"$@\" > '%@'\nfor a; do last=\"$a\"; done\necho data > \"$last\"\nexit 0", argsFile]);
+    SetEnv(home, @"/usr/bin:/bin", nil);
+    ASSERT([[OVExport ffmpegPath] isEqualToString:[dir stringByAppendingPathComponent:@"ffmpeg"]], "%s", [OVExport ffmpegPath].UTF8String);
+    ASSERT([Format(@"ogg")[@"available"] boolValue] && ![Format(@"mp3")[@"available"] boolValue]);
+    NSError *e = nil;
+    NSString *out = [OVExport exportFile:src to:TmpPath(@"oggdefault") format:OVExportOGG quality:-1 error:&e];
+    ASSERT(out != nil, "%s", e.localizedDescription.UTF8String);
+    NSString *argv = [NSString stringWithContentsOfFile:argsFile encoding:NSUTF8StringEncoding error:nil];
+    ASSERT([argv containsString:@"-c:a libvorbis -q:a 5"], "argv: %s", argv.UTF8String);
+    ASSERT([argv containsString:@"-nostdin"] && [argv containsString:@"-loglevel error"], "argv: %s", argv.UTF8String);
+}
+
 int main(void) {
     @autoreleasepool {
         gTmp = [NSTemporaryDirectory() stringByAppendingPathComponent:[@"cns-export-test-" stringByAppendingString:[NSUUID UUID].UUIDString]];
@@ -229,8 +279,15 @@ int main(void) {
         testWAVCopyKeepsSamples(src);
         testNameCollision(src);
         testEmptyAndMissingSource();
-        testFormatsListAndReasons();
-        testFakeFFmpeg(src);
+        testAACAnyRateAndChannels();
+        {
+            const char *h = getenv("HOME"), *p = getenv("PATH"), *d = getenv("CNS_FFMPEG_DIRS");
+            NSString *h0 = h ? @(h) : @"", *p0 = p ? @(p) : @"/usr/bin:/bin", *d0 = d ? @(d) : nil;
+            testFormatsListAndReasons();
+            testFakeFFmpeg(src);
+            testDefaultSearch(src);
+            SetEnv(h0, p0, d0);     // restore the environment
+        }
         [[NSFileManager defaultManager] removeItemAtPath:gTmp error:nil];
         if (gFailures) { fprintf(stderr, "%d failure(s)\n", gFailures); return 1; }
         printf("export_test: all passed\n");
