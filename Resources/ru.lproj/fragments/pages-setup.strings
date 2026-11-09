@@ -1,0 +1,12 @@
+/* Setup page (task 5.5). */
+"%@ · in the Hugging Face cache" = "%@ · в кеше Hugging Face";
+"%d / %d steps" = "%d / %d шагов";
+"Everything is ready" = "Всё готово";
+"Failed" = "Ошибка";
+"In progress" = "Идёт";
+"Keep the app open. This may take a few minutes, depending on your connection and computer." = "Не закрывайте приложение. Это может занять несколько минут, в зависимости от соединения и компьютера.";
+"Optional" = "По желанию";
+"Queued" = "В очереди";
+"Setup in progress" = "Идёт установка";
+"Step %ld, %@, %@" = "Шаг %ld, %@, %@";
+"Technical details & log" = "Технические подробности и журнал";
