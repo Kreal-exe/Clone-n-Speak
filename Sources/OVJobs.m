@@ -656,8 +656,9 @@ static NSString *OVCleanLine(NSString *line) {
     killpg(pid, SIGTERM);
     NSTimeInterval grace = _spec.killGrace > 0 ? _spec.killGrace : 3;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(grace * NSEC_PER_SEC)), dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        @synchronized (self) { if (self->_reaped) return; }   // reaped: the pid may belong to someone else by now
-        killpg(pid, SIGKILL);
+        // A group id cannot be reused while the group has members: ESRCH means it is empty, anything else means stragglers
+        // (even when the leader is gone) that must go.
+        if (killpg(pid, 0) == 0) killpg(pid, SIGKILL);
     });
 }
 
@@ -673,9 +674,9 @@ static NSString *OVCleanLine(NSString *line) {
     @synchronized (self) {
         _stopped = YES;
         if (!_launched) { [self endWithError:@"Stopped"]; return; }
-        pid = _reaped ? 0 : _pid;
+        pid = _pid;
     }
-    if (pid > 0) killpg(pid, SIGKILL);
+    if (pid > 0 && killpg(pid, 0) == 0) killpg(pid, SIGKILL);   // ESRCH: the group is empty
 }
 @end
 

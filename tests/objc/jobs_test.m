@@ -590,6 +590,25 @@ static void testRegisterAgainReplaces(void) {
     ASSERT([j.title isEqual:@"second"]);
 }
 
+static void testStragglerInGroupIsKilled(BOOL forced) {
+    NSString *dir = tempDir(), *pidFile = [dir stringByAppendingPathComponent:@"pid"];
+    OVJobs *jobs = [OVJobs jobsWithRoot:[dir stringByAppendingPathComponent:@"jobs"]];
+    // forced: the leader ignores TERM as well, so the job is still active at the quit timeout
+    NSString *leader = forced ? @"trap '' TERM; " : @"";
+    NSString *script = [leader stringByAppendingString:@"sh -c 'trap \"\" TERM; echo $$ > \"$PIDF\"; while :; do sleep 1; done' & wait"];
+    [jobs registerKind:@"p" lane:OVJobLaneCompute retryable:NO title:^NSString *(NSDictionary *r) { return @"p"; }
+               factory:shellFactory(script, @{@"PIDF": pidFile}, nil, 0.5) onSuccess:nil];
+    OVJob *j = [jobs submitKind:@"p" request:@{} origin:@"app" onFinish:nil error:nil];
+    ASSERT(waitUntil(5, ^BOOL{ return [[NSString stringWithContentsOfFile:pidFile encoding:NSUTF8StringEncoding error:nil] intValue] > 0; }));
+    int pid = [[NSString stringWithContentsOfFile:pidFile encoding:NSUTF8StringEncoding error:nil] intValue];
+    spin(0.2);
+    if (forced) [jobs stopAllAndWait:0.3]; else [jobs stop:j];
+    ASSERT(waitUntil(3, ^BOOL{ return j.state == OVJobStopped; }));
+    ASSERT(waitUntil(1.7, ^BOOL{ return kill(pid, 0) != 0; }), "the TERM-ignoring child of the group is gone (forced=%d)", forced);
+}
+static void testStragglerAfterStop(void) { testStragglerInGroupIsKilled(NO); }
+static void testStragglerAfterForcedKill(void) { testStragglerInGroupIsKilled(YES); }
+
 int main(void) {
     @autoreleasepool {
         setenv("OV_DATA_DIR", tempDir().fileSystemRepresentation, 1);   // Support/Outputs/voices of the test live here
@@ -599,7 +618,7 @@ int main(void) {
             testBeforeStartCanRefuse, testStopQueuedJob, testRetryCopiesRequestAndLinks, testRelaunchMarksRunningAsInterrupted,
             testCorruptRecordIsSkipped, testPruneKeepsActive, testCleanupRefusesPathsOutsideAppData, testRequestSecretsAreRedacted,
             testRetryUsesRawRequestInSessionAndRefusesAfterRelaunch, testStopBeforeLaunchEndsAtOnce, testBeforeStartTimesOut,
-            testForcedStopKillsAtOnce, testNilRunnerFailsJob, testStderrCrlfAndInvalidBytesAreKept, testRegisterAgainReplaces,
+            testForcedStopKillsAtOnce, testStragglerAfterStop, testStragglerAfterForcedKill, testNilRunnerFailsJob, testStderrCrlfAndInvalidBytesAreKept, testRegisterAgainReplaces,
             testFilesAreOwnerOnly, testLogIsCapped, testProgressIsThrottled, testStopAllAndWait, testRemoveAndClearFinished,
         };
         for (size_t i = 0; i < sizeof tests / sizeof *tests; i++) tests[i]();
