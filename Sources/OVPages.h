@@ -35,6 +35,11 @@ BOOL OVEverythingReady(void);
 @interface OVPlaceholderPage : NSViewController
 @property (nonatomic, copy, nullable) NSString *pageId;
 @end
+/// Pro-engine pages (16 GB tier); stubs until their own tasks land.
+@interface OVConvertPage : NSViewController @end
+@interface OVRealtimePage : NSViewController @end
+@interface OVTrainingPage : NSViewController @end
+@interface OVBlenderPage : NSViewController @end
 /// Developer-only page with every OVDesign component (not in the sidebar; OVNavigate(@"gallery") or -OVStartPage gallery).
 @interface OVGalleryPage : NSViewController @end
 

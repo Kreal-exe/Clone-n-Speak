@@ -17,6 +17,13 @@ NS_ASSUME_NONNULL_BEGIN
 + (NSString *)workerScript;   // …/runtime/worker.py
 + (NSString *)outputs;        // ~/Music/Clone'n'Speak
 + (NSString *)jobs;           // …/jobs (the task manager's records)
++ (NSString *)engines;       // …/engines (pro engines, downloaded on demand)
++ (NSString *)proEngine;     // …/engines/pro (Python 3.11 env for the 16 GB tier)
++ (NSString *)edgeEngine;    // …/engines/edge (lightweight env for realtime)
++ (NSString *)rvc;           // …/rvc
++ (NSString *)rvcModels;     // …/rvc/models (voice models: .pth + .index)
++ (NSString *)rvcTraining;   // …/rvc/training (experiment workspaces)
++ (NSString *)rvcDatasets;   // …/rvc/datasets
 + (void)ensure;
 
 /// Folders of the previous version (OmniVoice UA).

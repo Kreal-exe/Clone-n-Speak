@@ -14,12 +14,12 @@ static NSDictionary *P(NSString *pid, NSString *title, NSString *symbol, Class c
         @{@"title": L(@"VOICE"), @"pages": @[
             P(@"synth", L(@"Speech"), @"waveform", OVSynthPage.class, NO),
             P(@"voices", L(@"Voices"), @"person.wave.2", OVVoicesPage.class, NO),
-            P(@"convert", L(@"Convert"), @"arrow.triangle.2.circlepath", ph, YES),
-            P(@"realtime", L(@"Realtime"), @"dot.radiowaves.left.and.right", ph, YES)]},
+            P(@"convert", L(@"Convert"), @"arrow.triangle.2.circlepath", OVConvertPage.class, YES),
+            P(@"realtime", L(@"Realtime"), @"dot.radiowaves.left.and.right", OVRealtimePage.class, YES)]},
         @{@"title": L(@"MODELS & TRAINING"), @"pages": @[
             P(@"models", L(@"Models"), @"shippingbox", OVModelsPage.class, NO),
-            P(@"training", L(@"Training"), @"graduationcap", ph, YES),
-            P(@"blender", L(@"Voice Blender"), @"square.stack.3d.up", ph, YES)]},
+            P(@"training", L(@"Training"), @"graduationcap", OVTrainingPage.class, YES),
+            P(@"blender", L(@"Voice Blender"), @"square.stack.3d.up", OVBlenderPage.class, YES)]},
         @{@"title": L(@"TOOLS"), @"pages": @[
             P(@"tools", L(@"Audio Tools"), @"slider.horizontal.3", ph, NO),
             P(@"separator", L(@"Separation"), @"waveform.path.ecg", ph, NO)]},

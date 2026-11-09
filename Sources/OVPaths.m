@@ -24,6 +24,13 @@ static NSString *J(NSString *a, NSString *b) { return [a stringByAppendingPathCo
 + (NSString *)voices       { return J([self support], @"voices"); }
 + (NSString *)logs         { return J([self support], @"logs"); }
 + (NSString *)jobs         { return J([self support], @"jobs"); }
++ (NSString *)engines     { return J([self support], @"engines"); }
++ (NSString *)proEngine    { return J([self engines], @"pro"); }
++ (NSString *)edgeEngine   { return J([self engines], @"edge"); }
++ (NSString *)rvc          { return J([self support], @"rvc"); }
++ (NSString *)rvcModels    { return J([self rvc], @"models"); }
++ (NSString *)rvcTraining  { return J([self rvc], @"training"); }
++ (NSString *)rvcDatasets  { return J([self rvc], @"datasets"); }
 + (NSString *)workerScript { return J([self runtime], @"worker.py"); }
 + (NSString *)outputs {
     NSString *music = NSSearchPathForDirectoriesInDomains(NSMusicDirectory, NSUserDomainMask, YES).firstObject
@@ -35,7 +42,8 @@ static NSString *J(NSString *a, NSString *b) { return [a stringByAppendingPathCo
 + (void)ensure {
     NSFileManager *fm = NSFileManager.defaultManager;
     for (NSString *d in @[[self support], [self runtime], [self binDir],
-                          [self voices], [self logs], [self jobs], [self outputs]])
+                          [self voices], [self logs], [self jobs], [self outputs],
+                          [self rvcModels], [self rvcTraining], [self rvcDatasets]])
         [fm createDirectoryAtPath:d withIntermediateDirectories:YES attributes:nil error:nil];
 }
 
