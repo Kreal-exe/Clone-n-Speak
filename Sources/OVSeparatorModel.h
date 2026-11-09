@@ -25,18 +25,21 @@ extern NSString *const OVSeparatorOnnxSpec;   // @"onnxruntime==1.31.1": the one
 @property (nonatomic, readonly) OVSeparatorState state;
 - (void)applyStatus:(NSDictionary *)status;
 
-/// The license has to be on screen before the model is downloaded: the page calls -markLicenseShown when it shows it.
+/// YES after the first sep_status answer (applyStatus:). Before that nothing may be installed: the license is unknown.
+@property (nonatomic, readonly) BOOL statusKnown;
+/// The license has to be on screen before anything is downloaded: the page calls -markLicenseShown when it shows it.
+/// It counts only when there is a license text to show; without one it stays NO.
 @property (nonatomic, readonly) BOOL licenseShown;
 - (void)markLicenseShown;
-/// NO until the license was shown (the first press of "Download engine" only shows it).
+/// YES only once the status is known and the license was shown. Gates the engine and the model download alike.
 @property (nonatomic, readonly) BOOL canDownloadModel;
 
 /// Requests for OVWorker / OVJobs. `dir` is OVPaths separationModels.
 + (NSDictionary *)statusRequestWithDirectory:(NSString *)dir;
 + (NSDictionary *)installModelRequestWithDirectory:(NSString *)dir;
 + (NSDictionary *)vocalsRequestWithAudio:(NSString *)audio out:(NSString *)out stem:(NSString *)stem directory:(NSString *)dir;
-/// Whether an error text means "the engine or model is not installed" (worker code engine_missing).
-+ (BOOL)isEngineMissingMessage:(NSString *)message;
+/// Whether a worker error code means "the engine or model is not installed" (engine_missing).
++ (BOOL)isEngineMissingCode:(nullable NSString *)code;
 /// YES when the Mac may be slow at this (less than 12 GB).
 + (BOOL)slowOnMemoryGB:(double)gb;
 @end

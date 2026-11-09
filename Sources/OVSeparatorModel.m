@@ -26,6 +26,7 @@ NSString *const OVSeparatorOnnxSpec = @"onnxruntime==1.31.1";
 - (OVSeparatorState)state { return [OVSeparatorModel stateForOnnxruntime:self.onnxruntime modelReady:self.modelReady]; }
 
 - (void)applyStatus:(NSDictionary *)s {
+    _statusKnown = YES;
     self.onnxruntime = [s[@"onnxruntime"] boolValue];
     self.modelReady = [s[@"model_ready"] boolValue];
     NSDictionary *m = [s[@"model"] isKindOfClass:NSDictionary.class] ? s[@"model"] : nil;
@@ -33,8 +34,8 @@ NSString *const OVSeparatorOnnxSpec = @"onnxruntime==1.31.1";
     if ([m[@"license_url"] isKindOfClass:NSString.class]) self.licenseURL = m[@"license_url"];
 }
 
-- (void)markLicenseShown { _licenseShown = YES; }
-- (BOOL)canDownloadModel { return self.licenseShown; }
+- (void)markLicenseShown { if (self.license.length) _licenseShown = YES; }
+- (BOOL)canDownloadModel { return self.statusKnown && self.licenseShown; }
 
 + (NSDictionary *)statusRequestWithDirectory:(NSString *)dir { return @{@"cmd": @"sep_status", @"dir": dir}; }
 + (NSDictionary *)installModelRequestWithDirectory:(NSString *)dir { return @{@"cmd": @"sep_install_model", @"dir": dir}; }
@@ -42,8 +43,6 @@ NSString *const OVSeparatorOnnxSpec = @"onnxruntime==1.31.1";
     return @{@"cmd": @"sep_vocals", @"audio": audio, @"out": out, @"stem": stem, @"dir": dir};
 }
 
-+ (BOOL)isEngineMissingMessage:(NSString *)m {
-    return [m containsString:@"music-removal engine"] || [m containsString:@"voice extractor file failed"];
-}
++ (BOOL)isEngineMissingCode:(NSString *)code { return [code isEqualToString:@"engine_missing"]; }
 + (BOOL)slowOnMemoryGB:(double)gb { return gb < 12; }
 @end

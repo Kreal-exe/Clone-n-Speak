@@ -39,7 +39,14 @@ static void testLicenseShownBeforeDownload(void) {
     OVSeparatorModel *m = [OVSeparatorModel new];
     CHECK(!m.licenseShown && !m.canDownloadModel, "license not shown yet -> no download");
     [m markLicenseShown];
-    CHECK(m.licenseShown && m.canDownloadModel, "shown -> download allowed");
+    CHECK(!m.licenseShown && !m.canDownloadModel, "no status, no license text: marking does nothing");
+    [m applyStatus:@{@"onnxruntime": @NO, @"model_ready": @NO}];
+    [m markLicenseShown];
+    CHECK(m.statusKnown && !m.licenseShown && !m.canDownloadModel, "status without a license text: still blocked");
+    [m applyStatus:@{@"onnxruntime": @NO, @"model_ready": @NO, @"model": @{@"license": @"L"}}];
+    CHECK(m.statusKnown && !m.canDownloadModel, "license known but not yet shown: blocked (engine path too)");
+    [m markLicenseShown];
+    CHECK(m.licenseShown && m.canDownloadModel && m.state == OVSeparatorNeedsEngine, "shown -> download allowed");
 }
 
 static void testRequestShape(void) {
@@ -49,8 +56,8 @@ static void testRequestShape(void) {
     CHECK([[OVSeparatorModel installModelRequestWithDirectory:@"/d"] isEqualToDictionary:(@{@"cmd": @"sep_install_model", @"dir": @"/d"})], "install");
     CHECK([[OVSeparatorModel statusRequestWithDirectory:@"/d"] isEqualToDictionary:(@{@"cmd": @"sep_status", @"dir": @"/d"})], "status");
     CHECK([OVSeparatorOnnxSpec isEqual:@"onnxruntime==1.31.1"], "spec");
-    CHECK([OVSeparatorModel isEngineMissingMessage:@"Download the music-removal engine in Separation (~140 MB)."], "engine missing text");
-    CHECK(![OVSeparatorModel isEngineMissingMessage:@"Stopped"], "other error");
+    CHECK([OVSeparatorModel isEngineMissingCode:@"engine_missing"], "engine missing code");
+    CHECK(![OVSeparatorModel isEngineMissingCode:@"bad_param"] && ![OVSeparatorModel isEngineMissingCode:nil], "other codes");
     CHECK([OVSeparatorModel slowOnMemoryGB:8] && ![OVSeparatorModel slowOnMemoryGB:16] && ![OVSeparatorModel slowOnMemoryGB:12], "memory warning");
 }
 

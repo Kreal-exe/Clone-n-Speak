@@ -47,20 +47,9 @@ static const NSTimeInterval kMaxSeconds = 20 * 60;   // the 20-minute limit
 
 + (NSString *)pendingToolsInputPath { return sPendingToolsInput; }
 
-+ (void)registerKind {
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        [OVJobs.shared registerKind:OVJobKindSeparate lane:OVJobLaneCompute retryable:YES
-                              title:^NSString *(NSDictionary *r) {
-            NSString *n = [r[@"_name"] isKindOfClass:NSString.class] ? r[@"_name"] : @"";
-            return n.length ? [NSString stringWithFormat:L(@"Remove music: %@"), n] : L(@"Remove music");
-        } factory:OVWorkerRunnerFactory() onSuccess:nil];
-    });
-}
-
 - (void)loadView {
-    [OVSeparatorPage registerKind];
     self.model = [OVSeparatorModel new];
+    [OVSeparatorPage sweepInputFolder];
     self.pendingStems = [NSMutableArray array];
     self.results = [NSMutableDictionary dictionary];
 
@@ -70,14 +59,14 @@ static const NSTimeInterval kMaxSeconds = 20 * 60;   // the 20-minute limit
     zone = [OVDropZone zoneWithTitle:L(@"Drop a recording or a video here") hint:L(@"or click to choose a file; up to 20 minutes")
                                types:@[@"wav", @"mp3", @"m4a", @"aac", @"flac", @"aiff", @"caf", @"ogg", @"mp4", @"mov", @"m4v"]
                              onFiles:^(NSArray<NSURL *> *urls) { if (urls.firstObject) [weakSelf loadInput:urls.firstObject.path]; }];
-    self.fileLabel = OVLabel(@"", 13, NSFontWeightRegular, OVColor(OVRoleMuted));
+    self.fileLabel = OVWrapLabel(@"", 13, OVColor(OVRoleMuted));
     self.inputBar = [OVPlayerBar new];
     self.inputBar.hidden = YES;
     NSView *c1 = OVFillStack(@[zone, self.fileLabel, self.inputBar], 10);
 
     // 2 Remove music
-    self.engineLabel = OVLabel(@"", 13, NSFontWeightRegular, OVColor(OVRoleMuted));
-    self.modelLabel = OVLabel(@"", 13, NSFontWeightRegular, OVColor(OVRoleMuted));
+    self.engineLabel = OVWrapLabel(@"", 13, OVColor(OVRoleMuted));
+    self.modelLabel = OVWrapLabel(@"", 13, OVColor(OVRoleMuted));
     self.licenseLabel = OVWrapLabel(@"", 13, OVColor(OVRoleMuted));
     self.licenseLink = OVGhostButton(L(@"Open the model page"), @"arrow.up.right.square", self, @selector(openLicense:));
     self.licenseBox = OVFillStack(@[self.licenseLabel, OVHStack(@[self.licenseLink, OVSpacer()], 8)], 6);
@@ -85,7 +74,7 @@ static const NSTimeInterval kMaxSeconds = 20 * 60;   // the 20-minute limit
     self.downloadButton = OVPrimaryButton(L(@"Download engine"), self, @selector(download:));
     self.installBar = OVProgressBar();
     self.installBar.hidden = YES;
-    self.installStatus = OVLabel(@"", 13, NSFontWeightRegular, OVColor(OVRoleMuted));
+    self.installStatus = OVWrapLabel(@"", 13, OVColor(OVRoleMuted));
     self.installStatus.hidden = YES;
     NSStackView *engine = OVFillStack(@[self.engineLabel, self.modelLabel, self.licenseBox,
                                         OVHStack(@[self.downloadButton, OVSpacer()], 8), self.installBar, self.installStatus], 8);
@@ -94,7 +83,7 @@ static const NSTimeInterval kMaxSeconds = 20 * 60;   // the 20-minute limit
     self.musicCheck = OVCheckbox(L(@"Music only"), @"OVSeparatorMusic");
     if (![NSUserDefaults.standardUserDefaults objectForKey:@"OVSeparatorVoice"]) [NSUserDefaults.standardUserDefaults setBool:YES forKey:@"OVSeparatorVoice"];
     self.voiceCheck.state = [NSUserDefaults.standardUserDefaults boolForKey:@"OVSeparatorVoice"] ? NSControlStateValueOn : NSControlStateValueOff;
-    self.memoryNote = OVWrapLabel(L(@"This Mac has less than 12 GB of memory, so removing music may take much longer. It still works."), 13, OVColor(OVRoleWarn));
+    self.memoryNote = OVWrapLabel(L(@"This may be slow on this Mac."), 13, OVColor(OVRoleWarn));
     self.memoryNote.hidden = ![OVSeparatorModel slowOnMemoryGB:[OVSettings physicalMemoryGB]];
     self.runButton = OVPrimaryButton(L(@"Remove music"), self, @selector(run:));
     self.stopButton = OVGhostButton(L(@"Stop"), nil, self, @selector(stop:));
@@ -139,7 +128,23 @@ static const NSTimeInterval kMaxSeconds = 20 * 60;   // the 20-minute limit
 
 - (void)dealloc {
     [NSNotificationCenter.defaultCenter removeObserver:self];
-    if (self.decodedPath) [NSFileManager.defaultManager removeItemAtPath:self.decodedPath error:nil];
+    [NSObject cancelPreviousPerformRequestsWithTarget:self];
+}
+
+/// Decoded inputs live in an app-owned folder so a retry of a job still finds its file; files older than a day are swept.
++ (NSString *)inputFolder {
+    NSString *d = [[OVPaths.support stringByAppendingPathComponent:@"tmp"] stringByAppendingPathComponent:@"separator"];
+    [NSFileManager.defaultManager createDirectoryAtPath:d withIntermediateDirectories:YES attributes:nil error:nil];
+    return d;
+}
++ (void)sweepInputFolder {
+    NSFileManager *fm = NSFileManager.defaultManager;
+    NSString *d = [self inputFolder];
+    for (NSString *n in [fm contentsOfDirectoryAtPath:d error:nil]) {
+        NSString *p = [d stringByAppendingPathComponent:n];
+        NSDate *m = [fm attributesOfItemAtPath:p error:nil][NSFileModificationDate];
+        if (m && -[m timeIntervalSinceNow] > 24 * 3600) [fm removeItemAtPath:p error:nil];
+    }
 }
 
 - (void)viewWillAppear {
@@ -150,6 +155,7 @@ static const NSTimeInterval kMaxSeconds = 20 * 60;   // the 20-minute limit
 #pragma mark - Engine state
 
 - (void)refreshStatus {
+    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(refreshStatus) object:nil];
     if (self.installing) return;
     if (OVWorker.shared.busy) { [self performSelector:@selector(refreshStatus) withObject:nil afterDelay:2]; return; }
     __weak typeof(self) w = self;
@@ -177,7 +183,7 @@ static const NSTimeInterval kMaxSeconds = 20 * 60;   // the 20-minute limit
     self.licenseLink.hidden = m.licenseURL.length == 0;
     self.downloadButton.hidden = ready;
     self.downloadButton.title = m.state == OVSeparatorNeedsModel ? L(@"Download model") : L(@"Download engine");
-    self.downloadButton.enabled = !self.installing && (m.state == OVSeparatorNeedsEngine || m.canDownloadModel);
+    self.downloadButton.enabled = !self.installing && m.canDownloadModel;   // not before the first status: the license must be on screen
     [self updateRunUI];
 }
 
@@ -195,7 +201,7 @@ static const NSTimeInterval kMaxSeconds = 20 * 60;   // the 20-minute limit
     if (self.installing) return;
     OVSeparatorModel *m = self.model;
     if (m.state == OVSeparatorReady) return;
-    if (m.state == OVSeparatorNeedsModel && !m.canDownloadModel) return;   // the license has not been shown yet
+    if (!m.canDownloadModel) return;   // no status yet, or the license has not been shown
     self.installing = YES;
     self.installBar.hidden = NO;
     self.installStatus.hidden = NO;
@@ -231,6 +237,7 @@ static const NSTimeInterval kMaxSeconds = 20 * 60;   // the 20-minute limit
         if (!s) return;
         if (data) [s.model applyStatus:data];
         if (s.model.modelReady) { [s finishInstall:nil]; return; }
+        if (!s.model.canDownloadModel) { [s finishInstall:error ?: L(@"The license of the model has not been shown, so nothing was downloaded.")]; return; }
         s.installBar.indeterminate = NO;
         s.installBar.doubleValue = 0;
         [OVWorker.shared request:[OVSeparatorModel installModelRequestWithDirectory:[OVPaths separationModels]]
@@ -266,7 +273,7 @@ static const NSTimeInterval kMaxSeconds = 20 * 60;   // the 20-minute limit
     self.inputBar.hidden = YES;
     [self clearResults];
     [self updateRunUI];
-    NSString *dst = [NSTemporaryDirectory() stringByAppendingPathComponent:[NSString stringWithFormat:@"clonenspeak-sep-in-%@.wav", NSUUID.UUID.UUIDString]];
+    NSString *dst = [[OVSeparatorPage inputFolder] stringByAppendingPathComponent:[NSString stringWithFormat:@"%@.wav", NSUUID.UUID.UUIDString]];
     __weak typeof(self) w = self;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         NSError *err = nil;
@@ -282,7 +289,6 @@ static const NSTimeInterval kMaxSeconds = 20 * 60;   // the 20-minute limit
                 [s updateRunUI];
                 return;
             }
-            if (s.decodedPath) [NSFileManager.defaultManager removeItemAtPath:s.decodedPath error:nil];
             s.decodedPath = dst;
             s.fileLabel.stringValue = [NSString stringWithFormat:@"%@ · %@", path.lastPathComponent, OVFormatDuration(seconds)];
             s.inputBar.path = dst;
@@ -362,7 +368,8 @@ static const NSTimeInterval kMaxSeconds = 20 * 60;   // the 20-minute limit
         self.runStatus.stringValue = L(@"Stopped.");
     } else {
         NSString *e = job.error ?: L(@"Removing the music failed.");
-        if ([OVSeparatorModel isEngineMissingMessage:e]) {
+        NSString *code = [job.result[@"code"] isKindOfClass:NSString.class] ? job.result[@"code"] : nil;   // see OVJobContext failWithError:code:
+        if ([OVSeparatorModel isEngineMissingCode:code]) {
             self.runStatus.stringValue = L(@"The engine or the model is not installed. Use \"Download engine\" above.");
             [self refreshStatus];
         } else {

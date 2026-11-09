@@ -22,7 +22,8 @@
 "Music only" = "Только музыка";
 "voice" = "голос";
 "music" = "музыка";
-"This Mac has less than 12 GB of memory, so removing music may take much longer. It still works." = "На этом Mac меньше 12 ГБ памяти, поэтому удаление музыки может идти заметно дольше. Работать будет.";
+"This may be slow on this Mac." = "На этом Mac это может идти медленно.";
+"The license of the model has not been shown, so nothing was downloaded." = "Лицензия модели не была показана, поэтому ничего не скачано.";
 "Stopped." = "Остановлено.";
 "Removing the music failed." = "Не удалось убрать музыку.";
 "The engine or the model is not installed. Use \"Download engine\" above." = "Движок или модель не установлены. Нажмите «Скачать движок» выше.";
