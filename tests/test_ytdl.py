@@ -25,9 +25,12 @@ class FakeRun:
         self.info = {"title": "Clip", "duration": 60, "is_live": False} if info is None else info
         self.info_code, self.dl_code, self.make_file = info_code, dl_code, make_file
         self.calls = []
+        self.cwds = []
+        self.size = 4
 
-    def __call__(self, argv, timeout, env):
+    def __call__(self, argv, timeout, env, cwd=None):
         self.calls.append((argv, timeout, env))
+        self.cwds.append(cwd)
         if "--dump-single-json" in argv:
             return subprocess.CompletedProcess(argv, self.info_code, json.dumps(self.info),
                                                "ERROR: gone" if self.info_code else "")
@@ -35,6 +38,7 @@ class FakeRun:
             out = argv[argv.index("-o") + 1].replace("%(ext)s", "wav")
             with open(out, "wb") as f:
                 f.write(b"RIFF")
+                f.truncate(self.size)
         return subprocess.CompletedProcess(argv, self.dl_code, "", "ERROR: boom" if self.dl_code else "")
 
 
@@ -146,6 +150,44 @@ class YtTests(unittest.TestCase):
         self.assertEqual(dl[dl.index("-o") + 1], os.path.join(real, "yt-%s.%%(ext)s" % VID))
         self.assertEqual(res["outputs"], [os.path.join(real, "yt-%s.wav" % VID)])
         self.assertEqual((res["title"], res["duration"]), ("Clip", 60.0))
+
+    def test_ytdlp_runs_in_work_dir_with_safe_path(self):
+        run = FakeRun()
+        yt.fetch(self.req(), run)
+        self.assertEqual(run.cwds, [self.work, self.work])
+        for argv, _, env in run.calls:
+            self.assertIn("-P", argv)
+            self.assertEqual(env["PYTHONSAFEPATH"], "1")
+        self.assertIn("duration<=1200 & !is_live", run.calls[1][0])
+
+    def test_oversized_output_is_removed(self):
+        run = FakeRun()
+        run.size = yt.MAX_BYTES + 1
+        with self.assertRaises(yt.YtError) as cm:
+            yt.fetch(self.req(), run)
+        self.assertIn("too large", str(cm.exception))
+        self.assertEqual(os.listdir(self.out), [])
+
+    def test_failed_download_removes_partials_and_percent_is_escaped(self):
+        d = os.path.join(self.out, "50%")
+        os.makedirs(d)
+        class Partial(FakeRun):
+            def __call__(self, argv, timeout, env, cwd=None):
+                if "--dump-single-json" not in argv:
+                    open(os.path.join(d, "yt-%s.wav.part" % VID), "w").close()
+                return super().__call__(argv, timeout, env, cwd)
+        run = Partial(dl_code=1)
+        with self.assertRaises(yt.YtError):
+            yt.fetch(self.req(dest_dir=d), run)
+        self.assertEqual(os.listdir(d), [])
+        self.assertIn("50%%", run.calls[1][0][run.calls[1][0].index("-o") + 1])
+
+    def test_old_output_symlink_is_unlinked_not_followed(self):
+        victim = os.path.join(self.tmp.name, "victim")
+        open(victim, "w").write("keep")
+        os.symlink(victim, os.path.join(self.out, "yt-%s.wav" % VID))
+        yt.fetch(self.req(), FakeRun())
+        self.assertEqual(open(victim).read(), "keep")
 
     def test_no_shell_in_source(self):
         src = (HERE.parent / "Sources" / "cns_ytdl.py").read_text()

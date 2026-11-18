@@ -6,6 +6,7 @@ Only single-video links on youtube.com / music.youtube.com / youtu.be are accept
 any process starts. yt-dlp runs from an argv list (never a shell) with --ignore-config, --no-playlist, --no-exec, no
 cookies and no plugin folders, in its own process group. Python 3.9+; nothing heavy is imported.
 """
+import glob
 import json
 import os
 import re
@@ -27,6 +28,7 @@ URL_MESSAGE = ("Paste the link to one YouTube video (youtube.com/watch?v=… or 
 INFO_TIMEOUT = 90
 DOWNLOAD_TIMEOUT = 1800
 MAX_FILESIZE = "1G"
+MAX_BYTES = 1 << 30
 DEFAULT_MINUTES = 20
 MAX_MINUTES = 240
 TITLE_LIMIT = 120
@@ -68,7 +70,7 @@ def find_ffmpeg():
 
 
 def _env(work_dir):
-    env = {"PATH": PATH, "HOME": os.environ.get("HOME", os.path.expanduser("~")),
+    env = {"PYTHONSAFEPATH": "1", "PATH": PATH, "HOME": os.environ.get("HOME", os.path.expanduser("~")),
            "LANG": os.environ.get("LANG", "en_US.UTF-8"), "PYTHONNOUSERSITE": "1", "PYTHONDONTWRITEBYTECODE": "1"}
     if work_dir:
         env["TMPDIR"] = work_dir
@@ -79,10 +81,10 @@ def _env(work_dir):
     return env
 
 
-def _run(argv, timeout, env):
+def _run(argv, timeout, env, cwd=None):
     """Runs argv (a list, no shell) in its own process group; on timeout the whole group is killed."""
     p = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
-                         start_new_session=True)
+                         cwd=cwd, start_new_session=True)
     try:
         out, err = p.communicate(timeout=timeout)
     except BaseException:
@@ -99,7 +101,7 @@ def _run(argv, timeout, env):
 
 
 def _base(ffmpeg):
-    return [sys.executable, "-s", "-m", "yt_dlp", "--ignore-config", "--no-plugin-dirs", "--no-playlist", "--no-exec",
+    return [sys.executable, "-s", "-P", "-m", "yt_dlp", "--ignore-config", "--no-plugin-dirs", "--no-playlist", "--no-exec",
             "--no-warnings", "--ffmpeg-location", os.path.dirname(ffmpeg)]
 
 
@@ -107,9 +109,9 @@ def info_argv(url, ffmpeg):
     return _base(ffmpeg) + ["--dump-single-json", "--", url]
 
 
-def download_argv(url, vid, dest_dir, ffmpeg):
-    return _base(ffmpeg) + ["-x", "--audio-format", "wav", "--max-filesize", MAX_FILESIZE, "--no-part",
-                            "-o", os.path.join(dest_dir, "yt-%s.%%(ext)s" % vid), "--", url]
+def download_argv(url, vid, dest_dir, ffmpeg, max_minutes=DEFAULT_MINUTES):
+    return _base(ffmpeg) + ["--match-filter", "duration<=%d & !is_live" % (max_minutes * 60), "-x", "--audio-format", "wav", "--max-filesize", MAX_FILESIZE, "--no-part",
+                            "-o", os.path.join(dest_dir.replace("%", "%%"), "yt-%s.%%(ext)s" % vid), "--", url]
 
 
 def _tail(text):
@@ -134,6 +136,14 @@ def check_info(info, max_minutes):
     return float(dur)
 
 
+def _cleanup(dest, vid):
+    for f in glob.glob(os.path.join(glob.escape(dest), "yt-%s.*" % vid)):
+        try:
+            os.unlink(f)
+        except OSError:
+            pass
+
+
 def fetch(req, run=None):
     run = run or _run
     cns_net.require_online("youtube")
@@ -151,10 +161,13 @@ def fetch(req, run=None):
     if not ffmpeg:
         raise YtError(FFMPEG_MESSAGE)
     os.makedirs(dest, exist_ok=True)
-    env = _env(req.get("work_dir"))
+    work = req.get("work_dir")
+    if not work or not os.path.isdir(work):
+        raise YtError("No work folder given.")
+    env = _env(work)
     cns_proto.status("Reading video information…")
     try:
-        r = run(info_argv(url, ffmpeg), INFO_TIMEOUT, env)
+        r = run(info_argv(url, ffmpeg), INFO_TIMEOUT, env, work)
     except subprocess.TimeoutExpired:
         raise YtError("YouTube did not answer in time. Check the network and try again.")
     except OSError as e:
@@ -167,15 +180,19 @@ def fetch(req, run=None):
         raise YtError("yt-dlp returned an unreadable answer. Update yt-dlp in Models and try again.")
     dur = check_info(info, max_minutes)
     out = os.path.join(dest, "yt-%s.wav" % vid)
-    if os.path.exists(out):
-        os.remove(out)
+    _cleanup(dest, vid)
     cns_proto.progress(0.1)
     cns_proto.status("Downloading audio…")
     try:
-        r = run(download_argv(url, vid, dest, ffmpeg), DOWNLOAD_TIMEOUT, env)
+        r = run(download_argv(url, vid, dest, ffmpeg, max_minutes), DOWNLOAD_TIMEOUT, env, work)
     except subprocess.TimeoutExpired:
+        _cleanup(dest, vid)
         raise YtError("The download took too long. Check the network and try again.")
-    if r.returncode != 0 or not os.path.isfile(out):
+    if r.returncode == 0 and os.path.isfile(out) and not os.path.islink(out) and os.path.getsize(out) > MAX_BYTES:
+        _cleanup(dest, vid)
+        raise YtError("The audio is too large (over %d GB). Pick a shorter video." % (MAX_BYTES >> 30))
+    if r.returncode != 0 or not os.path.isfile(out) or os.path.islink(out):
+        _cleanup(dest, vid)
         raise YtError("Download failed: %s" % (_tail(r.stderr) or "no audio was produced"))
     return {"outputs": [out], "title": _clean_title(info.get("title")), "duration": dur, "video_id": vid}
 
