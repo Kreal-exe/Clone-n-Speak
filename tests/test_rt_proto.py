@@ -195,6 +195,32 @@ class RealtimeProcess(unittest.TestCase):
             self.assertEqual(res["data"]["stats"]["blocks"], 3)
             self.assertFalse(os.path.exists(sockp))
 
+    def test_socket_control_frames_set_and_quit(self):
+        """The app cannot write to the job's stdin: {"set"} and {"cmd":"quit"} also work as ctl frames on the socket."""
+        import cns_proto
+        events = []
+        with tempfile.TemporaryDirectory() as t:
+            sockp = os.path.join(t, "rt.sock")
+            with mock.patch.object(cns_proto, "emit", lambda ev, **kw: events.append((ev, kw))):
+                th, w = self._start(t, sockp)
+                c = socket.socket(socket.AF_UNIX)
+                c.connect(sockp)
+                n = p.block_frame(0.15)
+                dec = p.FrameDecoder()
+                got = []
+                c.sendall(p.pack_ctl(0, {"set": {"pitch": 5}}))
+                c.sendall(p.pack_ctl(0, {"set": {"pitch": 99}}))   # out of range: ignored, the session goes on
+                c.sendall(p.pack_audio(0, np.ones(n, dtype="<f4")))
+                while not got:
+                    got += p.read_frames(c, dec)
+                c.sendall(p.pack_ctl(0, {"cmd": "quit"}))
+                th.join(5)
+                c.close()
+            os.close(w)
+            self.assertFalse(th.is_alive())
+            res = [kw for ev, kw in events if ev == "result"][0]
+            self.assertEqual(res["data"]["stats"]["blocks"], 1)
+
     def test_wrong_block_size_ends_session(self):
         import cns_proto
         with tempfile.TemporaryDirectory() as t:

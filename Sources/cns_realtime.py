@@ -168,6 +168,9 @@ class Session:
                 if not select.select([self.conn], [], [], 0.5)[0]:
                     continue   # idle gap: the connection stays open until the client leaves
                 for ftype, seq, n, payload in rt.read_frames(self.conn, dec):
+                    if ftype == rt.T_CTL:   # the app holds no stdin of the job: live controls and quit also arrive on the socket
+                        self.control_frame(payload)
+                        continue
                     if ftype != rt.T_AUDIO:
                         continue
                     if n != self.s["block_frame"]:
@@ -184,6 +187,19 @@ class Session:
             self.stop.set()
             with self.cv:
                 self.cv.notify_all()
+
+    def control_frame(self, payload):
+        try:
+            kind, body = rt.parse_control_line(payload.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError) as e:
+            cns_proto.log("ignored control frame: %s" % e)
+            return
+        if kind == "quit":
+            self.stop.set()
+            with self.cv:
+                self.cv.notify_all()
+        else:
+            self.apply(body)
 
     def worker(self):
         import numpy as np
