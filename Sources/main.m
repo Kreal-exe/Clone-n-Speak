@@ -7,6 +7,7 @@
 #import "OVModels.h"
 #import "OVWorker.h"
 #import "OVStore.h"
+#import "OVBatch.h"
 #import "OVPaths.h"
 #import "OVMemory.h"
 #import "OVPageRegistry.h"
@@ -493,6 +494,7 @@ static void OVRedrawTree(NSView *v) {
     [[OVHistory shared] reload];
     [OVJobs registerBuiltinKinds];
     [OVSeparatorPage sweepInputFolder];
+    OVBatchRegister();
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(jobsChanged:) name:OVJobsDidChangeNotification object:nil];
     [self buildMenu];
     [self buildWindow];
