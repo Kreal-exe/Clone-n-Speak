@@ -7,6 +7,7 @@
 #import "OVRuntime.h"
 #import "OVLocale.h"
 #import "OVNativeAccent.h"
+#import "OVProModelsCards.h"
 
 static NSString *const kNoLoRA = @"__none__";
 
@@ -286,7 +287,7 @@ static NSString *DetailsText(NSString *details) {
     OVFillWidth(@[addCard, accessCard], addTab);
 
     self.tabViews = @[library, catalog, addTab];
-    self.view = OVPageScroll(@[head, library, catalog, addTab]);
+    self.view = OVPageScroll(@[head, library, catalog, addTab, OVRvcModelsCard(), OVProEnginesCard()]);
     [self tabChanged:nil];
 
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(refresh) name:OVModelsDidChangeNotification object:nil];

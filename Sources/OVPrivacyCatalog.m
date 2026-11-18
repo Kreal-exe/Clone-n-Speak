@@ -73,6 +73,9 @@ NSNotificationName const OVPrivacyWillDeleteAppDataNotification = @"OVPrivacyWil
         Src(@"cns_realtime.py", @"internal", @"realtime voice process; a local connection to the app only, no internet"),
         Src(@"cns_rt_proto.py", @"internal", @"realtime block protocol over a local connection; no internet"),
         Src(@"cns_engines.py", dl, @"pro-engine installs, pinned versions"),
+        Src(@"OVRealtimeIO.h", @"internal", @"realtime audio client; a local connection to the voice process only, no internet"),
+        Src(@"OVRealtimeIO.m", @"internal", @"realtime audio client; a local connection to the voice process only, no internet"),
+        Src(@"OVRealtimePage.m", @"internal", @"realtime page; mentions the local connection, makes no network call"),
         Src(@"OVEngines.h", @"internal", @"pro-engine manager; a local connection to the realtime process only"),
         Src(@"OVEngines.m", dl, @"starts the engine installs and updates you ask for; Edge and YouTube jobs wait for the gate"),
         Src(@"OVProKit.m", @"internal", @"checks the gate before Edge and YouTube jobs; sends nothing itself"),
@@ -80,8 +83,12 @@ NSNotificationName const OVPrivacyWillDeleteAppDataNotification = @"OVPrivacyWil
         Src(@"OVBridge.m", @"bridge", @"downloads the tunnel program once from GitHub (pinned address, checksums, signer) and runs it while Bridge is on; the traffic of approved devices passes through Cloudflare"),
         Src(@"OVBridge.h", @"bridge", @"Bridge's interface; sends nothing by itself"),
         Src(@"OVPlugins.m", @"plugin_network", @"plugins, only with the network permission"),
+        Src(@"OVYouTubeSheet.m", @"youtube", @"the YouTube import sheet; the download runs as a job you start"),
+        Src(@"OVYouTubeSheet.h", @"youtube", @"the YouTube import sheet"),
         Src(@"cns_ytdl.py", @"youtube", @"video downloader, only for the link you paste"),
         Src(@"cns_edge.py", @"edge_tts", @"Edge speech service, only for the text you speak"),
+        Src(@"OVProModelsCards.h", @"internal", @"Models page cards' interface; sends nothing"),
+        Src(@"OVProModelsCards.m", dl, @"voice-model downloads you press (through the gate), engine installs, the video downloader update; the search of voice models sends only the words you type to Hugging Face (Offline mode blocks it)"),
         Src(@"cns_rvc.py", dl, @"voice-model files, only from the link you paste"),
     ];
 }

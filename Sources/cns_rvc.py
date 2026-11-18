@@ -735,7 +735,7 @@ def fetch_model(url, work_dir, emit_fn=None, opener=None, max_bytes=MAX_MODEL_BY
     .part, size limit, https-only redirects). Returns (path, kind) where kind is 'pth' or 'zip'."""
     url = normalize_model_url(url)
     ext = os.path.splitext(urllib.parse.urlsplit(url).path)[1].lower()
-    if ext not in (".pth", ".zip"):
+    if ext not in (".pth", ".zip", ".index"):   # .index: the faiss index that belongs to a .pth (the app imports both together)
         raise RvcError("The link must point to a .pth or .zip file.")
     # Offline mode blocks every download, the one the user started included, unless the app says a button started it
     cns_engines._require_download_allowed(explicit_download)
@@ -963,8 +963,10 @@ def cmd_fetch(req):
         path, kind = fetch_model(req.get("url"), work, lambda ev, **kw: cns_proto.emit(ev, **kw),
                                  explicit_download=req.get("explicit_download") is True)
     name = req.get("name") or os.path.splitext(os.path.basename(urllib.parse.urlsplit(req["url"]).path))[0]
+    # outputs=[path]: the file lives in this job's work folder, which is kept while an output is inside it, so the app can
+    # run `import` on it after this job ended (the app removes the job after the import).
     cns_proto.result(path=path, kind=kind, name=name, source_url=normalize_model_url(req["url"]),
-                     size_bytes=os.path.getsize(path))
+                     size_bytes=os.path.getsize(path), outputs=[path])
 
 
 def cmd_blend(req):

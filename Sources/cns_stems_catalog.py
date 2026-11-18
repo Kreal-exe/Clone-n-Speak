@@ -35,7 +35,7 @@ _BASE = [
          license_url="https://github.com/TRvlvr/model_repo/issues/2",
          license_evidence="No license file in TRvlvr/model_repo; the author (KimberleyJensen) published none; "
                           "re-uploads carry conflicting tags.",
-         verified=False, accepted_by_user=True, peak_gb=6.5, outputs=["vocals", "instrumental"],
+         verified=False, accepted_by_user=True, peak_gb=7.2, outputs=["vocals", "instrumental"],
          note=_UNVERIFIED_NOTE),
     dict(id="bs-roformer", title="Vocals, quality (BS-Roformer)", kind="vocals", arch="roformer",
          file="model_bs_roformer_ep_317_sdr_12.9755.ckpt", license=UNVERIFIED,

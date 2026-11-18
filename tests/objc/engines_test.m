@@ -320,6 +320,12 @@ static void testSpecForProKindRunsUnderSandbox(void) {
     NSArray *edRest = nil;
     NSDictionary *esb = sandboxParts(es, &edRest);
     ASSERT([esb[@"NET"] isEqual:@"allow"] && [edRest[0] isEqual:pythonIn(root, @"edge")] && [edRest[2] hasSuffix:@"/cns_edge.py"]);
+    OVProcessSpec *vs = [e specForKind:OVProKindEdgeVoices job:submitted(jobs, OVProKindEdgeVoices, @{})];
+    NSArray *vRest = nil;
+    NSDictionary *vsb = sandboxParts(vs, &vRest);
+    ASSERT([vsb[@"NET"] isEqual:@"allow"] && [vRest[0] isEqual:pythonIn(root, @"edge")] && [vRest[3] isEqual:@"voices"]);
+    ASSERT([vsb[@"ROOT1"] isEqual:[root stringByAppendingPathComponent:@"edge"].stringByResolvingSymlinksInPath], "the voices cache folder is writable: %s", [vs.arguments componentsJoinedByString:@" "].UTF8String);
+    ASSERT([vsb[@"ROOT2"] isEqual:vsb[@"WORK"]], "and nothing else");
     OVJob *fetch = submitted(jobs, OVProKindRvcFetch, @{@"url": @"https://x/y.zip", @"name": @"v"});
     NSDictionary *fsb = sandboxParts([e specForKind:OVProKindRvcFetch job:fetch], &rest);
     ASSERT([fsb[@"NET"] isEqual:@"allow"] && [fsb[@"ROOT1"] isEqual:[OVPaths rvcModels].stringByResolvingSymlinksInPath]);
@@ -474,14 +480,14 @@ static void testSocketConnectsThroughALongPath(void) {
 
 static void testKindTableCoversTheContract(void) {
     NSArray *names = @[@"pro_convert", @"rvc_import", @"rvc_info", @"rvc_fetch", @"rvc_blend", @"rvc_train", @"rvc_review", @"rvc_realtime",
-                       @"stems", @"yt_import", @"edge_tts", @"engine_install", @"engine_weights", @"engine_update"];
+                       @"stems", @"yt_import", @"edge_tts", @"edge_voices", @"engine_install", @"engine_weights", @"engine_update"];
     NSMutableSet *seen = [NSMutableSet set];
     for (NSDictionary *r in [OVEngines kindTable]) {
         NSString *k = r[@"kind"];
         [seen addObject:k];
         ASSERT([names containsObject:k], "unexpected kind %s", k.UTF8String);
         ASSERT([r[@"retryable"] boolValue] == ![k isEqual:@"rvc_realtime"], "retryable %s", k.UTF8String);
-        BOOL network = [@[@"rvc_fetch", @"yt_import", @"edge_tts", @"engine_install", @"engine_weights", @"engine_update"] containsObject:k];
+        BOOL network = [@[@"rvc_fetch", @"yt_import", @"edge_tts", @"edge_voices", @"engine_install", @"engine_weights", @"engine_update"] containsObject:k];
         ASSERT([r[@"lane"] integerValue] == (network ? OVJobLaneNetwork : OVJobLaneCompute), "lane of %s", k.UTF8String);
         BOOL light = [@[@"rvc_import", @"rvc_info"] containsObject:k];
         ASSERT([r[@"heavy"] boolValue] == (!network && !light), "heavy %s", k.UTF8String);

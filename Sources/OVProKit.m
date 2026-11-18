@@ -34,6 +34,7 @@ static NSString *OVProTitle(NSString *kind, NSDictionary *r) {
     if ([kind isEqualToString:OVProKindStems]) return has ? [NSString stringWithFormat:L(@"Separate: %@"), n] : L(@"Separate stems");
     if ([kind isEqualToString:OVProKindYouTube]) return has ? [NSString stringWithFormat:L(@"YouTube: %@"), n] : L(@"YouTube import");
     if ([kind isEqualToString:OVProKindEdge]) return L(@"Edge speech");
+    if ([kind isEqualToString:OVProKindEdgeVoices]) return L(@"Edge voices");
     if ([kind isEqualToString:OVProKindEngineWeights]) return L(@"Downloading models");
     if ([kind isEqualToString:OVProKindEngineUpdate]) return L(@"Updating yt-dlp");
     return L(@"Installing components");
@@ -108,7 +109,10 @@ static NSString *OVProTitle(NSString *kind, NSDictionary *r) {
         [OVJobs.shared registerKind:kind lane:(OVJobLane)[row[@"lane"] integerValue] retryable:[row[@"retryable"] boolValue]
                               title:^NSString *(NSDictionary *r) { return OVProTitle(kind, r); }
                             factory:OVProcessRunnerFactory(^OVProcessSpec *(OVJob *job) { return [OVEngines.shared specForKind:kind job:job]; })
-                          onSuccess:engineKind ? ^(OVJob *job) { [OVEngines.shared refresh]; } : nil];
+                          onSuccess:engineKind ? ^(OVJob *job) { [OVEngines.shared refresh]; }
+                                     : [kind isEqualToString:OVProKindRvcBlend] ? ^(OVJob *job) {   // lists refresh even when the page is gone
+                                           [NSNotificationCenter.defaultCenter postNotificationName:OVRvcModelsDidChangeNotification object:nil];
+                                       } : nil];
     }
     // A pro job holds the memory the main models would need: direct requests wait for it.
     OVWorker.requestGuard = ^NSString *(NSDictionary *req) { return [OVEngines.shared guardMessageForRequest:req]; };

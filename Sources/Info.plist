@@ -20,6 +20,6 @@
 	<key>NSHighResolutionCapable</key><true/>
 	<key>NSSupportsAutomaticGraphicsSwitching</key><true/>
 	<key>NSHumanReadableCopyright</key><string>MIT License. OmniVoice model © k2-fsa (Apache-2.0).</string>
-	<key>NSMicrophoneUsageDescription</key><string>Clone'n'Speak records a sample of your voice for cloning.</string>
+	<key>NSMicrophoneUsageDescription</key><string>Clone'n'Speak records a sample of your voice for cloning and changes your voice live on the Realtime page. Nothing is kept except the samples you record.</string>
 </dict>
 </plist>

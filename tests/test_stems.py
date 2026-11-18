@@ -78,7 +78,7 @@ class Catalog(unittest.TestCase):
         self.assertEqual(cat.get(cat.DEFAULT_ID)["file"], "Kim_Vocal_2.onnx")
         self.assertEqual(cat.get(cat.DEFAULT_ID)["size"], 66759214)
         self.assertEqual(cat.get(cat.QUALITY_ID)["file"], "model_bs_roformer_ep_317_sdr_12.9755.ckpt")
-        self.assertEqual(cat.get(cat.DEFAULT_ID)["peak_gb"], 6.5)
+        self.assertEqual(cat.get(cat.DEFAULT_ID)["peak_gb"], 7.2)
         self.assertEqual(cat.get(cat.QUALITY_ID)["peak_gb"], 6.6)
 
     def test_every_pinned_stem_model_has_a_catalog_entry(self):
