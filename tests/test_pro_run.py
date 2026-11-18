@@ -18,11 +18,12 @@ OUTPUT = {}
 PRO_RUN = ["test_pro_job_unloads_main_models_first", "test_declined_pro_run_keeps_models_loaded",
            "test_16gb_mac_skips_confirm_but_still_unloads", "test_low_memory_warns_with_numbers",
            "test_train_falls_back_to_batch_2_when_tight", "test_offline_blocks_edge_and_youtube_before_anything",
-           "test_two_pro_jobs_never_run_together", "test_before_start_unloads_when_started_from_queue"]
+           "test_two_pro_jobs_never_run_together", "test_before_start_unloads_when_started_from_queue",
+           "test_light_job_checks_memory_without_unloading"]
 ENGINES = ["testEnginesStateFromStatusJson", "testInstallRefusedWhileProJobActive", "testLayoutSplitMapsLogicalNames",
            "testPeakBytesFromStatus", "testSpecForProKindRunsUnderSandbox", "testSpecEnvironmentIsADictionary",
            "testSpecRunsThroughTheJobManager", "testSocketConnectsThroughALongPath", "testKindTableCoversTheContract",
-           "testWorkerGuardBlocksModelLoading"]
+           "testWorkerGuardBlocksModelLoading", "testKeepStdinOpenUntilStop"]
 
 
 def build_and_run(name):

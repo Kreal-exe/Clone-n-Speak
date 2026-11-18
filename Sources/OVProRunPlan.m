@@ -44,6 +44,7 @@
             [host unloadMainModels];
             if (![self memoryOK:[host availableBytes] host:host reduced:&reduced]) { done(OVProRunDeclined, NO); return; }
         }
+        else if (self.memoryCheckOnly && ![self memoryOK:[host availableBytes] host:host reduced:&reduced]) { done(OVProRunDeclined, NO); return; }
         [host submitReducedBatch:reduced];
         done(OVProRunSubmitted, reduced);
     };
@@ -59,7 +60,7 @@
 
 - (BOOL)prepareToStartWithHost:(id<OVProRunHost>)host reduced:(BOOL *)reduced {
     *reduced = NO;
-    if (!_heavy) return YES;
+    if (!_heavy) return self.memoryCheckOnly ? [self memoryOK:[host availableBytes] host:host reduced:reduced] : YES;
     [host unloadMainModels];
     return [self memoryOK:[host availableBytes] host:host reduced:reduced];
 }

@@ -68,26 +68,10 @@ SANDBOX_EXEC = "/usr/bin/sandbox-exec"
 
 
 def train_profile(write_roots):
+    """The shared engine profile (Resources/sandbox/engine.sb) rendered for training: no IP traffic, writes only in
+    write_roots (first = the work folder). Kept for tests and for runs outside the app."""
     import cns_engines as eng
-    allow = ['(literal "/dev/null")', '(regex #"^/dev/tty")', '(regex #"^/dev/dtracehelper$")']
-    for r in write_roots:
-        allow.append("(subpath %s)" % eng._sb_quote(os.path.realpath(r)))
-    for d in _darwin_cache_dirs():
-        allow.append("(subpath %s)" % eng._sb_quote(d))
-    return ("(version 1)\n(allow default)\n(deny network-outbound (remote ip))\n(deny network-inbound (local ip))\n"
-            "(deny network-bind (local ip))\n(deny file-write*)\n(allow file-write* %s)\n" % " ".join(allow))
-
-
-def _darwin_cache_dirs():
-    out = []
-    try:
-        for key in ("DARWIN_USER_CACHE_DIR", "DARWIN_USER_TEMP_DIR"):
-            r = subprocess.run(["/usr/bin/getconf", key], capture_output=True, text=True, timeout=5).stdout.strip()
-            if r.startswith("/"):
-                out.append(os.path.realpath(r))
-    except Exception:  # noqa: BLE001
-        pass
-    return out
+    return eng.sandbox_profile(True, list(write_roots))
 
 
 class TrainError(RuntimeError):
@@ -581,10 +565,13 @@ class Trainer:
         argv = [self.paths["python"]] + script_args
         if os.environ.get(NO_SANDBOX_ENV) == "1":
             return argv
-        if not os.path.exists(SANDBOX_EXEC):
-            raise TrainError("Can't start training safely: the macOS sandbox tool is missing.")
-        roots = [self.paths["training"], self.tmp]
-        return [SANDBOX_EXEC, "-p", train_profile(roots)] + argv
+        if os.environ.get("CNS_SANDBOXED") == "1":
+            return argv   # the app already runs this whole process under engine.sb: no second sandbox
+        import cns_engines as eng
+        try:
+            return eng.sandbox_command("deny-ip", self.tmp, None, [self.paths["training"]]) + argv
+        except eng.EngineError as e:
+            raise TrainError(str(e))
 
     def _run(self, stage, script_args, line_handler=None, watchdog_s=STAGE_WATCHDOG_S):
         wd = cns_proto.Watchdog(watchdog_s, lambda: None, clock=self.clock)

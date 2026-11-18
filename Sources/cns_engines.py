@@ -1090,20 +1090,79 @@ def _sb_quote(path):
     return '"' + path.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
+SANDBOX_EXEC = "/usr/bin/sandbox-exec"
+SANDBOX_ROOTS = 4   # ROOT1..ROOT4 in engine.sb
+
+
+def sandbox_file():
+    """The one profile of every engine process: Resources/sandbox/engine.sb (CNS_SANDBOX_FILE from the app, else the
+    repository copy next to Sources). None when it cannot be found."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    for p in (os.environ.get("CNS_SANDBOX_FILE"), os.path.join(here, "sandbox", "engine.sb"),
+              os.path.join(here, "..", "Resources", "sandbox", "engine.sb")):
+        if p and os.path.isfile(p):
+            return os.path.abspath(p)
+    return None
+
+
+def darwin_cache_dirs():
+    out = []
+    for key in ("DARWIN_USER_CACHE_DIR", "DARWIN_USER_TEMP_DIR"):
+        try:
+            r = subprocess.run(["/usr/bin/getconf", key], capture_output=True, text=True, timeout=5).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            r = ""
+        out.append(os.path.realpath(r) if r.startswith("/") else None)
+    return out
+
+
+def sandbox_params(net, work, out=None, roots=()):
+    """The -D values of engine.sb. net: "deny-ip" or "allow". Unused roots repeat the work folder."""
+    if net not in ("deny-ip", "allow"):
+        raise EngineError("Unknown sandbox network mode: %r" % (net,))
+    roots = list(roots)
+    if len(roots) > SANDBOX_ROOTS:
+        raise EngineError("At most %d extra write folders" % SANDBOX_ROOTS)
+    for r in [work, out] + roots:
+        if r is not None:
+            _sb_quote(r)   # absolute and printable
+    work = os.path.realpath(work)
+    cache, temp = darwin_cache_dirs()
+    params = {"NET": net, "WORK": work, "OUT": os.path.realpath(out) if out else work,
+              "DCACHE": cache or work, "DTEMP": temp or work}
+    for i in range(SANDBOX_ROOTS):
+        params["ROOT%d" % (i + 1)] = os.path.realpath(roots[i]) if i < len(roots) else work
+    return params
+
+
+def sandbox_command(net, work, out=None, roots=()):
+    """["/usr/bin/sandbox-exec", "-f", engine.sb, "-D", ...] to put before a command; raises EngineError when
+    sandbox-exec or the profile is missing (the caller must not run unconfined)."""
+    f = sandbox_file()
+    if not os.path.exists(SANDBOX_EXEC):
+        raise EngineError("Can't start this safely: the macOS sandbox tool is missing.")
+    if not f:
+        raise EngineError("Can't start this safely: the sandbox profile is missing.")
+    cmd = [SANDBOX_EXEC, "-f", f]
+    for k, v in sandbox_params(net, work, out, roots).items():
+        cmd += ["-D", "%s=%s" % (k, v)]
+    return cmd
+
+
 def sandbox_profile(deny_network, write_roots):
-    """A sandbox-exec profile whose goal is: no network and no writes outside write_roots. Reads and exec stay open on
-    purpose (Python, torch and the models are read from all over the disk), so it is not a confidentiality boundary.
-    Callers must put TMPDIR (and any cache the child writes, e.g. the MPS/torch caches) into write_roots, or the child
-    fails on its first temp file. /dev/null is always writable."""
-    lines = ["(version 1)", "(allow default)"]
-    if deny_network:
-        lines.append("(deny network*)")
-    lines.append("(deny file-write*)")
-    for r in write_roots:
-        _sb_quote(r)   # absolute and printable, before it is resolved
-    allow = ['(literal "/dev/null")'] + ["(subpath %s)" % _sb_quote(os.path.realpath(r)) for r in write_roots]
-    lines.append("(allow file-write* %s)" % " ".join(allow))
-    return "\n".join(lines) + "\n"
+    """engine.sb rendered to one string with its parameters filled in (for `sandbox-exec -p`); the first root is the
+    work folder. Reads and exec stay open on purpose, so it is not a confidentiality boundary."""
+    f = sandbox_file()
+    if not f:
+        raise EngineError("Can't start this safely: the sandbox profile is missing.")
+    write_roots = list(write_roots)
+    if not write_roots:
+        raise EngineError("A sandbox needs at least a work folder.")
+    params = sandbox_params("deny-ip" if deny_network else "allow", write_roots[0], None, write_roots[1:])
+    text = open(f, encoding="utf-8").read()
+    for k, v in params.items():
+        text = text.replace('(param "%s")' % k, '"%s"' % v if k == "NET" else _sb_quote(v))
+    return text
 
 
 # --------------------------------------------------------------------------------------------------------------- CLI

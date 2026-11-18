@@ -168,6 +168,20 @@ static void testBeforeStartUnloadsWhenStartedFromQueue(void) {
     ASSERT([heavyPlan(10.0, 8.2, NO) prepareToStartWithHost:h reduced:&reduced] && reduced);
 }
 
+static void testLightJobChecksMemoryWithoutUnloading(void) {
+    FakeHost *h = [FakeHost new];
+    h.gb = 8;
+    OVProRunPlan *p = [OVProRunPlan planWithPeakBytes:1 * GB reducedPeakBytes:0 needsNetwork:NO heavy:NO];
+    p.memoryCheckOnly = YES;
+    ASSERT(run(p, h) == OVProRunSubmitted);
+    ASSERT(([h.log isEqualToArray:@[@"memory", @"submit"]]), "no confirm, no unload: %s", [h.log componentsJoinedByString:@","].UTF8String);
+    h = [FakeHost new];
+    h.avail = 100000000ULL; h.lowFreeAnswer = NO;
+    p = [OVProRunPlan planWithPeakBytes:1 * GB reducedPeakBytes:0 needsNetwork:NO heavy:NO];
+    p.memoryCheckOnly = YES;
+    ASSERT(run(p, h) == OVProRunDeclined && h.asks == 1 && [h indexOf:@"unload"] == NSNotFound);
+}
+
 static void testTwoProJobsNeverRunTogether(void) {
     NSString *dir = [NSTemporaryDirectory() stringByAppendingPathComponent:[NSString stringWithFormat:@"prorun-%u", arc4random()]];
     OVJobs *jobs = [OVJobs jobsWithRoot:dir];
@@ -208,6 +222,7 @@ int main(void) {
         runCase(@"test_low_memory_warns_with_numbers", ^{ testLowMemoryWarnsWithNumbers(); });
         runCase(@"test_train_falls_back_to_batch_2_when_tight", ^{ testTrainFallsBackToBatch2(); });
         runCase(@"test_offline_blocks_edge_and_youtube_before_anything", ^{ testOfflineBlocksEdgeAndYouTubeFirst(); });
+        runCase(@"test_light_job_checks_memory_without_unloading", ^{ testLightJobChecksMemoryWithoutUnloading(); });
         runCase(@"test_two_pro_jobs_never_run_together", ^{ testTwoProJobsNeverRunTogether(); });
         runCase(@"test_before_start_unloads_when_started_from_queue", ^{ testBeforeStartUnloadsWhenStartedFromQueue(); });
     }

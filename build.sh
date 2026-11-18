@@ -59,6 +59,8 @@ for lproj in "$ROOT"/Resources/*.lproj; do
   cp "$lproj"/*.strings "$RES/$(basename "$lproj")/"
 done
 cp "$ROOT/Resources/themes.json" "$RES/themes.json"
+mkdir -p "$RES/sandbox"
+cp "$ROOT/Resources/sandbox/engine.sb" "$RES/sandbox/engine.sb"   # the one sandbox profile of the pro engines
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 
 # The icon is drawn in code.

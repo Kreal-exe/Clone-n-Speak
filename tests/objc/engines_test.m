@@ -224,6 +224,24 @@ static OVJob *submitted(OVJobs *jobs, NSString *kind, NSDictionary *req) {
     return j;
 }
 
+/// Splits `-f <file> -D K=V ... <rest>` into the parameters and the command that runs inside the sandbox.
+static NSDictionary *sandboxParts(OVProcessSpec *s, NSArray **rest) {
+    NSMutableDictionary *p = [NSMutableDictionary dictionary];
+    NSArray *a = s.arguments;
+    NSUInteger i = 0;
+    if (a.count < 2 || ![a[0] isEqual:@"-f"]) { *rest = a; return nil; }
+    p[@"file"] = a[1];
+    i = 2;
+    while (i + 1 < a.count && [a[i] isEqual:@"-D"]) {
+        NSString *kv = a[i + 1];
+        NSRange eq = [kv rangeOfString:@"="];
+        p[[kv substringToIndex:eq.location]] = [kv substringFromIndex:eq.location + 1];
+        i += 2;
+    }
+    *rest = [a subarrayWithRange:NSMakeRange(i, a.count - i)];
+    return p;
+}
+
 static NSDictionary *stdinOf(OVProcessSpec *spec) {
     return [NSJSONSerialization JSONObjectWithData:spec.stdinData options:0 error:nil];
 }
@@ -240,10 +258,16 @@ static void testSpecForProKindRunsUnderSandbox(void) {
     OVJob *conv = submitted(jobs, OVProKindConvert, @{@"input": @"/in.wav", @"model": @"/m", @"_note": @"app only"});
     OVProcessSpec *s = [e specForKind:OVProKindConvert job:conv];
     ASSERT([s.executable isEqual:@"/usr/bin/sandbox-exec"]);
-    ASSERT([s.arguments[0] isEqual:@"-p"] && [s.arguments[1] containsString:@"(deny network*)"] && [s.arguments[1] containsString:@"(deny file-write*)"]);
-    ASSERT([s.arguments[1] containsString:conv.workDirectory.stringByResolvingSymlinksInPath], "the work folder is writable");
-    ASSERT([s.arguments[2] isEqual:py] && [s.arguments[3] isEqual:@"-s"] && [s.arguments[4] hasSuffix:@"/cns_rvc.py"] && [s.arguments[5] isEqual:@"infer"],
+    NSArray *rest = nil;
+    NSDictionary *sb = sandboxParts(s, &rest);
+    ASSERT(sb && [sb[@"file"] hasSuffix:@"/sandbox/engine.sb"], "the one shared profile file");
+    ASSERT([sb[@"NET"] isEqual:@"deny-ip"], "inference has no IP traffic");
+    ASSERT([sb[@"WORK"] isEqual:conv.workDirectory.stringByResolvingSymlinksInPath] && [sb[@"OUT"] isEqual:[OVPaths outputs].stringByResolvingSymlinksInPath]);
+    for (NSString *k in @[@"ROOT1", @"ROOT2", @"ROOT3", @"ROOT4", @"DCACHE", @"DTEMP"]) ASSERT([sb[k] length] > 0, "%s is always given", k.UTF8String);
+    ASSERT([rest[0] isEqual:py] && [rest[1] isEqual:@"-s"] && [rest[2] hasSuffix:@"/cns_rvc.py"] && [rest[3] isEqual:@"infer"],
            "%s", [s.arguments componentsJoinedByString:@" "].UTF8String);
+    ASSERT([s.environment[@"CNS_SANDBOXED"] isEqual:@"1"] && s.environment[@"CNS_SANDBOX_FILE"], "the child is told it is already sandboxed");
+    ASSERT(!s.keepStdinOpen && s.launchError == nil);
     NSDictionary *req = stdinOf(s);
     ASSERT([req[@"input"] isEqual:@"/in.wav"] && [req[@"work_dir"] isEqual:conv.workDirectory] && [req[@"job_id"] isEqual:conv.identifier]);
     ASSERT([req[@"outputs_dir"] isEqual:[OVPaths outputs]] && req[@"_note"] == nil, "app-side notes are not sent");
@@ -253,28 +277,58 @@ static void testSpecForProKindRunsUnderSandbox(void) {
     // request shapes pick the script and command
     OVJob *batch = submitted(jobs, OVProKindConvert, @{@"inputs": @[@"/a.wav"], @"model": @"/m"});
     ASSERT([[e specForKind:OVProKindConvert job:batch].arguments.lastObject isEqual:@"batch"]);
+    ASSERT([[e specForKind:OVProKindRvcInfo job:submitted(jobs, OVProKindRvcInfo, @{@"model": @"/m"})].arguments.lastObject isEqual:@"info"]);
     OVJob *seed = submitted(jobs, OVProKindConvert, @{@"engine": @"seedvc", @"input": @"/a.wav", @"target": @"/t.wav"});
     OVProcessSpec *ss = [e specForKind:OVProKindConvert job:seed];
-    ASSERT([ss.arguments[4] hasSuffix:@"/cns_seedvc.py"] && [ss.arguments[5] isEqual:@"convert"]);
+    NSArray *seedRest = nil;
+    sandboxParts(ss, &seedRest);
+    ASSERT([seedRest[2] hasSuffix:@"/cns_seedvc.py"] && [seedRest[3] isEqual:@"convert"]);
     ASSERT([ss.environment[@"HF_HOME"] isEqual:[root stringByAppendingPathComponent:@"seedvc/hf"]] && [ss.environment[@"TRANSFORMERS_OFFLINE"] isEqual:@"1"]);
     OVJob *train = submitted(jobs, OVProKindRvcTrain, @{@"name": @"v"});
     OVProcessSpec *ts = [e specForKind:OVProKindRvcTrain job:train];
-    ASSERT([ts.arguments[4] hasSuffix:@"/cns_train.py"] && [ts.arguments[5] isEqual:@"run"]);
-    ASSERT([ts.arguments[1] containsString:[OVPaths rvcTraining].stringByResolvingSymlinksInPath], "training is writable");
+    NSArray *trainRest = nil;
+    NSDictionary *tsb = sandboxParts(ts, &trainRest);
+    ASSERT([trainRest[2] hasSuffix:@"/cns_train.py"] && [trainRest[3] isEqual:@"run"]);
+    ASSERT([tsb[@"ROOT1"] isEqual:[OVPaths rvcTraining].stringByResolvingSymlinksInPath] && [tsb[@"NET"] isEqual:@"deny-ip"], "training is writable, no IP");
+    ASSERT([ts.environment[@"CNS_SANDBOXED"] isEqual:@"1"], "cns_train must not wrap its child again (no double sandbox)");
+    OVJob *rt = submitted(jobs, OVProKindRealtime, @{@"model": @"/m", @"socket": @"/x/rt.sock"});
+    OVProcessSpec *rs = [e specForKind:OVProKindRealtime job:rt];
+    NSArray *rtRest = nil;
+    NSDictionary *rsb = sandboxParts(rs, &rtRest);
+    ASSERT([rsb[@"NET"] isEqual:@"deny-ip"] && rs.keepStdinOpen, "realtime: AF_UNIX works under deny-ip, stdin stays open");
+    ASSERT([rtRest[2] hasSuffix:@"/cns_realtime.py"] && [rtRest[3] isEqual:@"run"]);
+    OVJob *imp = submitted(jobs, OVProKindRvcImport, @{@"pth": @"/a.pth", @"name": @"v"});
+    NSArray *impRest = nil;
+    NSDictionary *isb = sandboxParts([e specForKind:OVProKindRvcImport job:imp], &impRest);
+    ASSERT([isb[@"ROOT1"] isEqual:[OVPaths rvcModels].stringByResolvingSymlinksInPath] && [isb[@"NET"] isEqual:@"deny-ip"]);
     ASSERT([ts.environment[@"APPLIO_LOGS_DIR"] isEqual:[root stringByAppendingPathComponent:@"training"]]);
 
-    // network features: no sandbox, the pro python directly (cns_ytdl runs in the pro env), the engines root in the request
+    // network features: the same profile with NET=allow, writes only in work + outputs; the pro python inside it
+    // (cns_ytdl runs in the pro env), the engines root in the request
     OVJob *yt = submitted(jobs, OVProKindYouTube, @{@"url": @"https://youtu.be/x", @"consent": @YES});
     OVProcessSpec *ys = [e specForKind:OVProKindYouTube job:yt];
-    ASSERT([ys.executable isEqual:py] && [ys.arguments[0] isEqual:@"-s"] && [ys.arguments[1] hasSuffix:@"/cns_ytdl.py"] && [ys.arguments[2] isEqual:@"fetch"],
-           "%s", ys.executable.UTF8String);
+    NSArray *ytRest = nil;
+    NSDictionary *ysb = sandboxParts(ys, &ytRest);
+    ASSERT([ys.executable isEqual:@"/usr/bin/sandbox-exec"] && [ysb[@"NET"] isEqual:@"allow"] && [ysb[@"OUT"] isEqual:[OVPaths outputs].stringByResolvingSymlinksInPath]);
+    ASSERT([ysb[@"ROOT1"] isEqual:ysb[@"WORK"]] && [ysb[@"ROOT2"] isEqual:ysb[@"WORK"]], "no extra write folder");
+    ASSERT([ytRest[0] isEqual:py] && [ytRest[2] hasSuffix:@"/cns_ytdl.py"] && [ytRest[3] isEqual:@"fetch"]);
     ASSERT([stdinOf(ys)[@"root"] isEqual:root] && [ys.environment[@"CNS_ENGINES_ROOT"] isEqual:root]);
+    ASSERT(ys.environment[@"OV_OFFLINE"] == nil, "YouTube may go online");
     OVJob *edge = submitted(jobs, OVProKindEdge, @{@"text": @"hi"});
     OVProcessSpec *es = [e specForKind:OVProKindEdge job:edge];
-    ASSERT([es.executable isEqual:pythonIn(root, @"edge")] && [es.arguments[1] hasSuffix:@"/cns_edge.py"]);
+    NSArray *edRest = nil;
+    NSDictionary *esb = sandboxParts(es, &edRest);
+    ASSERT([esb[@"NET"] isEqual:@"allow"] && [edRest[0] isEqual:pythonIn(root, @"edge")] && [edRest[2] hasSuffix:@"/cns_edge.py"]);
+    OVJob *fetch = submitted(jobs, OVProKindRvcFetch, @{@"url": @"https://x/y.zip", @"name": @"v"});
+    NSDictionary *fsb = sandboxParts([e specForKind:OVProKindRvcFetch job:fetch], &rest);
+    ASSERT([fsb[@"NET"] isEqual:@"allow"] && [fsb[@"ROOT1"] isEqual:[OVPaths rvcModels].stringByResolvingSymlinksInPath]);
+    // installs are not sandboxed (they write the engines folder) and run in the main runtime
+    OVProcessSpec *ins = [e specForKind:OVProKindEngineInstall job:submitted(jobs, OVProKindEngineInstall, @{@"components": @[@"pro-env"]})];
+    ASSERT([ins.executable isEqual:@"/usr/bin/python3"] && sandboxParts(ins, &rest) == nil && ins.environment[@"CNS_SANDBOXED"] == nil);
     // not installed: no program (the job fails with a message, the gate card stops it before)
     [e applyStatus:status(@"shared", @{@"pro-env": @"notinstalled"})];
-    ASSERT([e specForKind:OVProKindConvert job:conv].executable.length == 0);
+    OVProcessSpec *none = [e specForKind:OVProKindConvert job:conv];
+    ASSERT(none.executable.length == 0 && [none.launchError containsString:@"needs its engine"], "a specific message, not 'no program'");
     ASSERT([e specForKind:@"nope" job:conv] == nil);
     [NSFileManager.defaultManager removeItemAtPath:root error:nil];
 }
@@ -354,7 +408,7 @@ static void testSpecRunsThroughTheJobManager(void) {
     ASSERT([j.result[@"cwd"] hasSuffix:@"/applio"], "cwd %s", [j.result[@"cwd"] UTF8String]);
     NSString *sent = [NSString stringWithContentsOfFile:[j.workDirectory stringByAppendingPathComponent:@"stdin.json"] encoding:NSUTF8StringEncoding error:nil];
     ASSERT(sent == nil || [sent containsString:j.identifier], "stdin reached the process");
-    ASSERT(([host.log isEqualToArray:@[@"unload", @"memory"]]), "beforeStart ran the preflight: %s", [host.log componentsJoinedByString:@","].UTF8String);
+    ASSERT(host.log.count >= 2 && [host.log.firstObject isEqual:@"unload"] && [host.log.lastObject isEqual:@"memory"], "beforeStart ran the preflight: %s", [host.log componentsJoinedByString:@","].UTF8String);
 
     // a start from the queue that finds no memory fails with a message, and does not run the process
     host.log = [NSMutableArray array];
@@ -410,7 +464,9 @@ static void testKindTableCoversTheContract(void) {
         ASSERT([r[@"retryable"] boolValue] == ![k isEqual:@"rvc_realtime"], "retryable %s", k.UTF8String);
         BOOL network = [@[@"rvc_fetch", @"yt_import", @"edge_tts", @"engine_install", @"engine_weights", @"engine_update"] containsObject:k];
         ASSERT([r[@"lane"] integerValue] == (network ? OVJobLaneNetwork : OVJobLaneCompute), "lane of %s", k.UTF8String);
-        ASSERT([r[@"heavy"] boolValue] == !network, "heavy %s", k.UTF8String);
+        BOOL light = [@[@"rvc_import", @"rvc_info"] containsObject:k];
+        ASSERT([r[@"heavy"] boolValue] == (!network && !light), "heavy %s", k.UTF8String);
+        ASSERT([r[@"light"] boolValue] == light && [r[@"keepStdin"] boolValue] == [k isEqual:@"rvc_realtime"], "light / keepStdin %s", k.UTF8String);
         NSArray *taken = @[@"synth", @"train", @"install", @"convert", @"separate", @"download", @"plugin", @"batch", @"clone", @"tool"];
         ASSERT(![taken containsObject:k], "%s collides with a kind of sub-plan D", k.UTF8String);
     }
@@ -422,23 +478,51 @@ static void testWorkerGuardBlocksModelLoading(void) {
     OVJobs *jobs = [OVJobs jobsWithRoot:[root stringByAppendingPathComponent:@"jobs"]];
     registerManualPro(jobs);
     OVEngines *e = [OVEngines enginesWithRoot:root jobs:jobs mainPython:nil];
-    NSSet *loading = [NSSet setWithObjects:@"synth", @"clone", nil];
-    OVWorker.requestGuard = ^NSString *(NSDictionary *req) {
-        return [loading containsObject:req[@"cmd"]] && e.proJobActive ? @"A pro job is running — wait for it or stop it in Jobs" : nil;
-    };
-    __block NSString *err = @"untouched";
-    __block int calls = 0;
-    // no pro job: the guard lets the request through (it then fails for another reason: no engine installed here)
-    [OVWorker.shared request:@{@"cmd": @"synth"} status:nil progress:nil done:^(NSDictionary *d, NSString *m) { err = m; calls++; }];
-    ASSERT(calls == 1 && ![err containsString:@"pro job"], "%s", err.UTF8String);
+    // the production list, not a copy of it
+    NSSet *list = [OVEngines modelLoadingCommands];
+    for (NSString *c in @[@"synth", @"clone", @"transcribe", @"prepare", @"train_voice", @"install_accent", @"enhance", @"sep_vocals", @"dfn_apply"])
+        ASSERT([list containsObject:c], "%s is guarded", c.UTF8String);
+    for (NSString *c in @[@"hello", @"unload", @"analyze", @"quit"]) ASSERT(![list containsObject:c], "%s is not guarded", c.UTF8String);
+    for (NSString *c in list) ASSERT([e guardMessageForRequest:@{@"cmd": c}] == nil, "no pro job: %s passes", c.UTF8String);
     OVJob *busy = [jobs submitKind:OVProKindStems request:@{} origin:@"app" onFinish:nil error:nil];
     ASSERT(busy != nil);
-    [OVWorker.shared request:@{@"cmd": @"synth"} status:nil progress:nil done:^(NSDictionary *d, NSString *m) { err = m; calls++; }];
-    ASSERT(calls == 2 && [err isEqual:@"A pro job is running — wait for it or stop it in Jobs"], "%s", err.UTF8String);
-    ASSERT([OVWorker.shared.lastErrorCode isEqual:@"pro_job_running"] || OVWorker.shared.lastErrorCode == nil);
-    [OVWorker.shared request:@{@"cmd": @"unload"} status:nil progress:nil done:^(NSDictionary *d, NSString *m) { err = m; calls++; }];
-    ASSERT(calls == 3 && ![err containsString:@"pro job"], "commands that load no model pass");
+    for (NSString *c in list)
+        ASSERT([[e guardMessageForRequest:@{@"cmd": c}] isEqual:@"A pro job is running — wait for it or stop it in Jobs"], "%s waits", c.UTF8String);
+    ASSERT([e guardMessageForRequest:@{@"cmd": @"unload"}] == nil && [e guardMessageForRequest:@{}] == nil);
+    // wired into OVWorker: a direct request is refused with the message
+    OVWorker.requestGuard = ^NSString *(NSDictionary *req) { return [e guardMessageForRequest:req]; };
+    __block NSString *err = nil;
+    __block int calls = 0;
+    [OVWorker.shared request:@{@"cmd": @"sep_vocals"} status:nil progress:nil done:^(NSDictionary *d, NSString *m) { err = m; calls++; }];
+    ASSERT(calls == 1 && [err containsString:@"pro job is running"], "%s", err.UTF8String);
     OVWorker.requestGuard = nil;
+    [NSFileManager.defaultManager removeItemAtPath:root error:nil];
+}
+
+static void testKeepStdinOpenUntilStop(void) {
+    NSString *root = tempDir();
+    OVJobs *jobs = [OVJobs jobsWithRoot:[root stringByAppendingPathComponent:@"jobs"]];
+    for (NSNumber *keep in @[@NO, @YES]) {
+        NSString *kind = keep.boolValue ? @"hold" : @"drop";
+        [jobs registerKind:kind lane:OVJobLaneCompute retryable:NO title:^NSString *(NSDictionary *r) { return kind; }
+                   factory:OVProcessRunnerFactory(^OVProcessSpec *(OVJob *job) {
+            OVProcessSpec *s = [OVProcessSpec new];
+            s.executable = @"/bin/sh";
+            s.arguments = @[@"-c", @"read a; read b; echo '{\"event\":\"result\",\"data\":{}}'"];   // a second line, or EOF
+            s.environment = @{@"PATH": @"/usr/bin:/bin"};
+            s.stdinData = [@"{}\n" dataUsingEncoding:NSUTF8StringEncoding];
+            s.keepStdinOpen = keep.boolValue;
+            return s;
+        }) onSuccess:nil];
+    }
+    OVJob *drop = [jobs submitKind:@"drop" request:@{} origin:@"app" onFinish:nil error:nil];
+    ASSERT(waitUntil(5, ^BOOL{ return drop.state == OVJobSucceeded; }), "without keepStdinOpen the process reads EOF and ends");
+    OVJob *hold = [jobs submitKind:@"hold" request:@{} origin:@"app" onFinish:nil error:nil];
+    ASSERT(waitUntil(5, ^BOOL{ return hold.state == OVJobRunning; }));
+    [NSRunLoop.mainRunLoop runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.6]];
+    ASSERT(hold.state == OVJobRunning, "with keepStdinOpen it keeps waiting for the next line");
+    [jobs stop:hold];
+    ASSERT(waitUntil(8, ^BOOL{ return hold.state == OVJobStopped; }), "stop ends it (state %ld)", (long)hold.state);
     [NSFileManager.defaultManager removeItemAtPath:root error:nil];
 }
 
@@ -465,6 +549,7 @@ int main(void) {
         runCase(@"testSocketConnectsThroughALongPath", ^{ testSocketConnectsThroughALongPath(); });
         runCase(@"testKindTableCoversTheContract", ^{ testKindTableCoversTheContract(); });
         runCase(@"testWorkerGuardBlocksModelLoading", ^{ testWorkerGuardBlocksModelLoading(); });
+        runCase(@"testKeepStdinOpenUntilStop", ^{ testKeepStdinOpenUntilStop(); });
         [NSFileManager.defaultManager removeItemAtPath:data error:nil];
     }
     return gFailures ? 1 : 0;

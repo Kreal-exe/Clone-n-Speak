@@ -115,6 +115,11 @@ OVJobRunnerFactory OVWorkerRunnerFactory(void);
 @property (copy) NSString *executable; @property (copy) NSArray<NSString *> *arguments;
 @property (copy) NSDictionary<NSString *, NSString *> *environment;   // exactly this, nothing inherited
 @property (copy, nullable) NSString *currentDirectory; @property (copy, nullable) NSData *stdinData;
+/// Keep the stdin pipe open after stdinData was written (a process that takes more lines later, like the realtime engine).
+/// It is closed when the process ends or on stop; the process reads EOF then.
+@property BOOL keepStdinOpen;
+/// When set, the job fails at once with this text and nothing is started (a missing engine, a missing sandbox tool).
+@property (copy, nullable) NSString *launchError;
 /// Files to delete when the job ends Stopped/Failed (same rule as registerPartialPath:).
 @property (copy, nullable) NSArray<NSString *> *partialPaths;
 /// Seconds between SIGTERM and SIGKILL on stop. Default 3.

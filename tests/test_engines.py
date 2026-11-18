@@ -601,10 +601,11 @@ Pages purgeable:                           3000.
     def test_sandbox_profile_denies_network_and_limits_writes(self):
         with tempfile.TemporaryDirectory() as d:
             p = eng.sandbox_profile(True, [d])
-            self.assertTrue(p.startswith("(version 1)\n(allow default)\n(deny network*)\n(deny file-write*)\n"))
+            self.assertIn("(allow default)", p)
+            self.assertIn('(string=? "deny-ip" "deny-ip")', p)
             self.assertIn('(subpath "%s")' % os.path.realpath(d), p)
             self.assertLess(p.index("(deny file-write*)"), p.index("(allow file-write*"))
-            self.assertNotIn("(deny network*)", eng.sandbox_profile(False, [d]))
+            self.assertIn('(string=? "allow" "deny-ip")', eng.sandbox_profile(False, [d]))
             tricky = os.path.join(d, 'a"b')
             self.assertIn('a\\"b', eng.sandbox_profile(True, [tricky]))
             with self.assertRaises(eng.EngineError):
@@ -620,10 +621,42 @@ Pages purgeable:                           3000.
             ok = subprocess.run(["/usr/bin/sandbox-exec", "-p", prof, "/usr/bin/touch", os.path.join(d, "f")],
                                 capture_output=True)
             self.assertEqual(ok.returncode, 0, ok.stderr)
-            home_file = os.path.join(os.path.dirname(d), "cns-sandbox-outside-%d" % os.getpid())
+            home_file = "/tmp/cns-sandbox-outside-%d" % os.getpid()
             bad = subprocess.run(["/usr/bin/sandbox-exec", "-p", prof, "/usr/bin/touch", home_file], capture_output=True)
             self.assertNotEqual(bad.returncode, 0)
             self.assertFalse(os.path.exists(home_file))
+
+    @unittest.skipUnless(sys.platform == "darwin" and os.path.exists("/usr/bin/sandbox-exec"), "needs macOS sandbox-exec")
+    def test_engine_sb_smoke_bind_unix_but_no_internet_no_outside_writes(self):
+        """The shared profile with NET=deny-ip: AF_UNIX bind works in WORK, IP is refused, writes outside are refused."""
+        import subprocess
+        outside = "/tmp/cns-sb-smoke-%d" % os.getpid()
+        with tempfile.TemporaryDirectory() as d:
+            work = os.path.join(os.path.realpath(d), "w")
+            os.makedirs(work)
+            code = (
+                "import socket,os\n"
+                "os.chdir(%r)\n"
+                "s=socket.socket(socket.AF_UNIX); s.bind('u.sock'); print('bind-ok')\n"
+                "try:\n socket.create_connection(('1.1.1.1',443),2); print('connected')\n"
+                "except OSError: print('ip-blocked')\n"
+                "try:\n open(%r,'w').write('x'); print('wrote')\n"
+                "except OSError: print('write-blocked')\n" % (work, outside))
+            cmd = eng.sandbox_command("deny-ip", work, None, []) + [sys.executable, "-c", code]
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.stdout.split(), ["bind-ok", "ip-blocked", "write-blocked"], r.stdout + r.stderr)
+        self.assertFalse(os.path.exists(outside))
+
+    def test_sandbox_command_fails_closed(self):
+        old = eng.SANDBOX_EXEC
+        eng.SANDBOX_EXEC = "/nonexistent/sandbox-exec"
+        try:
+            with self.assertRaises(eng.EngineError):
+                eng.sandbox_command("deny-ip", tempfile.gettempdir())
+        finally:
+            eng.SANDBOX_EXEC = old
+        with self.assertRaises(eng.EngineError):
+            eng.sandbox_params("sideways", tempfile.gettempdir())
 
     def test_pins_match_spike_requirements_file(self):
         spikes = HERE.parent / "tools" / "spikes"

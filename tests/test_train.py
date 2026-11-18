@@ -241,14 +241,25 @@ class RunTests(unittest.TestCase):
     def test_missing_sandbox_tool_is_an_error_not_an_unsandboxed_run(self):
         base, req = make_world()
         trainer = tr.Trainer(req)
-        old = tr.SANDBOX_EXEC
-        tr.SANDBOX_EXEC = "/nonexistent/sandbox-exec"
+        import cns_engines as eng
+        old = eng.SANDBOX_EXEC
+        eng.SANDBOX_EXEC = "/nonexistent/sandbox-exec"
         os.environ.pop("CNS_TRAIN_NO_SANDBOX", None)
         try:
             with self.assertRaises(tr.TrainError):
                 trainer._argv(["x"])
         finally:
-            tr.SANDBOX_EXEC = old
+            eng.SANDBOX_EXEC = old
+
+    def test_no_second_sandbox_when_the_app_already_runs_it(self):
+        base, req = make_world()
+        trainer = tr.Trainer(req)
+        os.environ.pop("CNS_TRAIN_NO_SANDBOX", None)
+        os.environ["CNS_SANDBOXED"] = "1"
+        try:
+            self.assertEqual(trainer._argv(["x"])[1:], ["x"])
+        finally:
+            os.environ.pop("CNS_SANDBOXED", None)
 
     def test_resume_requires_checkpoints(self):
         base, req = make_world()

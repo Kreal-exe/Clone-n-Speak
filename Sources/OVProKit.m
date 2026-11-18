@@ -43,6 +43,8 @@ static NSString *OVProTitle(NSString *kind, NSDictionary *r) {
 
 @interface OVProLiveHost : NSObject <OVProRunHost>
 @property (weak) NSWindow *window;
+@property unsigned long long pendingReclaim;   // what the engine we just shut down will give back
+@property (strong) NSDate *unloadedAt;
 @property OVNetFeature net;
 @property (copy) void (^submit)(BOOL reduced);
 @end
@@ -50,20 +52,24 @@ static NSString *OVProTitle(NSString *kind, NSDictionary *r) {
 @implementation OVProLiveHost
 - (double)physicalMemoryGB { return [OVSettings physicalMemoryGB]; }
 - (BOOL)confirmLowMemory { return OVConfirmProRun(self.window); }
-- (unsigned long long)availableBytes { return [OVMemory availableBytes]; }
+- (BOOL)justUnloaded { return self.unloadedAt && -[self.unloadedAt timeIntervalSinceNow] < 3; }
+- (unsigned long long)availableBytes { return [OVMemory availableBytes] + ([self justUnloaded] ? self.pendingReclaim : 0); }
 - (unsigned long long)reclaimableBytes {
     unsigned long long f = OVWorker.shared.engineFootprint;
     return f > 380000000ULL ? f - 380000000ULL : 0;
 }
+- (NSTimeInterval)settleDelay { return [self justUnloaded] ? 1.2 : 0; }   // the process needs a moment to exit
 
+/// Frees OmniVoice and Whisper. A running synth or clone is never killed for it: when the compute lane or the worker is
+/// busy, nothing happens here and the pro job unloads in its own beforeStart, when the lane is free.
 - (void)unloadMainModels {
+    OVEngines *e = OVEngines.shared;
+    if (OVWorker.shared.busy) return;
+    if (!e.inBeforeStart && e.computeLaneBusy) return;
     BOOL had = OVWorker.shared.running;
+    unsigned long long reclaim = [self reclaimableBytes];
     [OVWorker.shared shutdown];
-    // the process needs a moment to exit before its memory is free again
-    if (had) {
-        NSDate *end = [NSDate dateWithTimeIntervalSinceNow:1.2];
-        while ([end timeIntervalSinceNow] > 0) [NSRunLoop.mainRunLoop runMode:NSDefaultRunLoopMode beforeDate:end];
-    }
+    if (had) { self.pendingReclaim = reclaim; self.unloadedAt = [NSDate date]; }
 }
 
 - (BOOL)askLowFreeNeed:(unsigned long long)need available:(unsigned long long)avail {
@@ -105,11 +111,7 @@ static NSString *OVProTitle(NSString *kind, NSDictionary *r) {
                           onSuccess:engineKind ? ^(OVJob *job) { [OVEngines.shared refresh]; } : nil];
     }
     // A pro job holds the memory the main models would need: direct requests wait for it.
-    NSSet *loading = [NSSet setWithObjects:@"synth", @"clone", @"transcribe", @"prepare", @"train_voice", @"install_accent", nil];
-    OVWorker.requestGuard = ^NSString *(NSDictionary *req) {
-        if (![req[@"cmd"] isKindOfClass:NSString.class] || ![loading containsObject:req[@"cmd"]]) return nil;
-        return OVEngines.shared.proJobActive ? L(@"A pro job is running — wait for it or stop it in Jobs") : nil;
-    };
+    OVWorker.requestGuard = ^NSString *(NSDictionary *req) { return [OVEngines.shared guardMessageForRequest:req]; };
     [engines refresh];
 }
 @end
@@ -132,10 +134,11 @@ static NSString *OVProTitle(NSString *kind, NSDictionary *r) {
     NSString *option = [OVEngines peakOptionForKind:kind request:req];
     BOOL train = [kind isEqualToString:OVProKindRvcTrain] && ![option isEqual:@"batch2"];
     NSInteger feat = (NSInteger)net >= 0 ? (NSInteger)net : [info[@"net"] integerValue];
-    BOOL heavy = [info[@"heavy"] boolValue];
-    OVProRunPlan *plan = [OVProRunPlan planWithPeakBytes:heavy ? [engines peakBytesForKind:kind option:option] : 0
+    BOOL heavy = [info[@"heavy"] boolValue], light = [info[@"light"] boolValue];
+    OVProRunPlan *plan = [OVProRunPlan planWithPeakBytes:heavy || light ? [engines peakBytesForKind:kind option:option] : 0
                                         reducedPeakBytes:heavy && train ? [engines peakBytesForKind:kind option:@"batch2"] : 0
                                             needsNetwork:feat >= 0 heavy:heavy];
+    plan.memoryCheckOnly = light;
     OVProLiveHost *host = [OVProLiveHost new];
     host.window = w;
     host.net = (OVNetFeature)feat;
@@ -166,6 +169,7 @@ static BOOL IsInstallKind(NSString *k) { return [k isEqualToString:OVProKindEngi
 @property NSProgressIndicator *bar;
 @property NSNumber *lastReady;
 @property (weak) OVJob *job;
+@property BOOL retry;
 @end
 
 @implementation OVEngineGate
@@ -216,8 +220,25 @@ static BOOL IsInstallKind(NSString *k) { return [k isEqualToString:OVProKindEngi
 }
 
 - (void)update {
-    BOOL known = OVEngines.shared.components.count > 0;
-    if (!known) { self.hidden = YES; return; }
+    OVEngines *engines = OVEngines.shared;
+    self.accessibilityRole = NSAccessibilityGroupRole;
+    self.accessibilityLabel = [NSString stringWithFormat:L(@"%@: engine setup"), self.feature];
+    if (!engines.statusLoaded) {
+        // No status yet: checking, or the check failed (the main engine may be missing).
+        self.hidden = NO;
+        BOOL failed = engines.statusError.length && !engines.refreshing;
+        self.titleLabel.stringValue = failed ? L(@"Set up the main engine first") : [NSString stringWithFormat:L(@"%@: checking the engine…"), self.feature];
+        self.detailLabel.stringValue = failed ? engines.statusError : L(@"Checking…");
+        self.detailLabel.textColor = failed ? OVColor(OVRoleErr) : OVColor(OVRoleMuted);
+        self.bar.hidden = YES;
+        self.stop.hidden = YES;
+        self.action.hidden = !failed;
+        self.retry = YES;
+        self.action.title = L(@"Retry");
+        self.action.accessibilityLabel = L(@"Retry");
+        if (!failed && !engines.refreshing) [engines refresh];
+        return;
+    }
     NSArray<OVEngineComponent *> *missing = [self missing];
     BOOL ready = missing.count == 0;
     if (!self.lastReady || self.lastReady.boolValue != ready) {
@@ -236,24 +257,30 @@ static BOOL IsInstallKind(NSString *k) { return [k isEqualToString:OVProKindEngi
     }
     OVJob *job = [self relevantJob];
     self.job = job;
+    self.retry = NO;
     BOOL running = job.active;
     self.titleLabel.stringValue = [NSString stringWithFormat:L(@"%1$@ needs its engine · %2$@ download"), self.feature, OVFormatBytes((long long)bytes)];
     self.bar.hidden = !running;
     self.stop.hidden = !running;
     self.action.hidden = running;
+    self.stop.accessibilityLabel = [NSString stringWithFormat:L(@"Stop %@"), self.feature];
     self.detailLabel.textColor = OVColor(OVRoleMuted);
     if (running) {
         self.detailLabel.stringValue = job.status.length ? job.status : L(@"Installing…");
         self.bar.indeterminate = job.progress < 0;
         if (job.progress >= 0) { self.bar.minValue = 0; self.bar.maxValue = 1; self.bar.doubleValue = job.progress; }
         else [self.bar startAnimation:nil];
-        self.action.title = L(@"Install");
+        self.bar.accessibilityLabel = L(@"Installation progress");
+        self.bar.accessibilityValue = job.progress >= 0 ? [NSString stringWithFormat:@"%.0f%%", job.progress * 100] : L(@"In progress");
         return;
     }
     [self.bar stopAnimation:nil];
     NSString *detail = L(@"Installs once; it works offline afterwards.");
     NSString *title = L(@"Install");
-    if (job && job.state == OVJobFailed && job.error.length) {
+    // A failure counts only when it is newer than the last status: after a fresh check the state speaks for itself.
+    BOOL failedNewer = job && job.state == OVJobFailed && job.error.length && job.finished &&
+                       (!engines.statusDate || [job.finished compare:engines.statusDate] == NSOrderedDescending);
+    if (failedNewer) {
         detail = job.error;
         title = L(@"Try again");
         self.detailLabel.textColor = OVColor(OVRoleErr);
@@ -266,14 +293,15 @@ static BOOL IsInstallKind(NSString *k) { return [k isEqualToString:OVProKindEngi
     }
     self.detailLabel.stringValue = detail;
     self.action.title = title;
-    self.action.accessibilityLabel = title;
+    self.action.accessibilityLabel = [NSString stringWithFormat:@"%@ — %@", title, self.feature];
 }
 
 - (void)act:(id)sender {
+    if (self.retry) { [OVEngines.shared refresh]; [self update]; return; }
     NSMutableArray *ids = [NSMutableArray array];
     for (OVEngineComponent *c in [self missing]) [ids addObject:c.identifier];
     NSString *err = nil;
-    OVJob *j = [OVEngines.shared install:ids error:&err];
+    OVJob *j = [OVEngines.shared install:ids error:&err];   // refuses with a text while a pro job runs or the gate is closed
     if (!j) {
         self.detailLabel.stringValue = err ?: L(@"The installation could not start.");
         self.detailLabel.textColor = OVColor(OVRoleErr);

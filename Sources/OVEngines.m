@@ -7,6 +7,7 @@
 #import <sys/socket.h>
 #import <sys/un.h>
 #import <unistd.h>
+#import <sys/stat.h>
 
 NSNotificationName const OVEnginesDidChangeNotification = @"OVEnginesDidChangeNotification";
 NSString *const OVEnginePro = @"pro";
@@ -41,6 +42,12 @@ static NSDictionary *Row(NSString *kind, OVJobLane lane, BOOL retryable, BOOL he
              @"sandbox": @(denyNetwork), @"install": @(installKind), @"cwd": cwd ?: @"", @"roots": roots, @"cmd": cmd};
 }
 
+static NSDictionary *With(NSDictionary *row, NSDictionary *extra) {
+    NSMutableDictionary *m = [row mutableCopy];
+    [m addEntriesFromDictionary:extra];
+    return m;
+}
+
 static NSArray<NSDictionary *> *KindTable(void) {
     static NSArray *t;
     static dispatch_once_t once;
@@ -54,13 +61,13 @@ static NSArray<NSDictionary *> *KindTable(void) {
         // write (the job's work folder is always one).
         t = @[
             Row(OVProKindConvert,       OVJobLaneCompute, YES, YES, -1, YES, NO, @"applio", @[@"outputs"], convert),
-            Row(OVProKindRvcImport,     OVJobLaneCompute, YES, YES, -1, YES, NO, @"applio", @[@"models"], FixedCmd(@"cns_rvc.py", @"import")),
-            Row(OVProKindRvcInfo,       OVJobLaneCompute, YES, YES, -1, YES, NO, @"applio", @[], FixedCmd(@"cns_rvc.py", @"info")),
+            With(Row(OVProKindRvcImport, OVJobLaneCompute, YES, NO, -1, YES, NO, @"applio", @[@"models"], FixedCmd(@"cns_rvc.py", @"import")), @{@"light": @YES}),
+            With(Row(OVProKindRvcInfo,   OVJobLaneCompute, YES, NO, -1, YES, NO, @"applio", @[], FixedCmd(@"cns_rvc.py", @"info")), @{@"light": @YES}),
             Row(OVProKindRvcFetch,      OVJobLaneNetwork, YES, NO,  OVNetModelDownload, NO, NO, @"applio", @[@"models"], FixedCmd(@"cns_rvc.py", @"fetch")),
             Row(OVProKindRvcBlend,      OVJobLaneCompute, YES, YES, -1, YES, NO, @"applio", @[@"models"], FixedCmd(@"cns_rvc.py", @"blend")),
             Row(OVProKindRvcTrain,      OVJobLaneCompute, YES, YES, -1, YES, NO, @"applio", @[@"training", @"datasets", @"models"], FixedCmd(@"cns_train.py", @"run")),
             Row(OVProKindRvcReview,     OVJobLaneCompute, YES, YES, -1, YES, NO, @"applio", @[@"training"], FixedCmd(@"cns_train.py", @"review")),
-            Row(OVProKindRealtime,      OVJobLaneCompute, NO,  YES, -1, YES, NO, @"applio", @[], FixedCmd(@"cns_realtime.py", @"run")),
+            With(Row(OVProKindRealtime, OVJobLaneCompute, NO, YES, -1, YES, NO, @"applio", @[], FixedCmd(@"cns_realtime.py", @"run")), @{@"keepStdin": @YES}),
             Row(OVProKindStems,         OVJobLaneCompute, YES, YES, -1, YES, NO, @"",       @[@"outputs"], FixedCmd(@"cns_stems.py", @"separate")),
             Row(OVProKindYouTube,       OVJobLaneNetwork, YES, NO,  OVNetYouTube, NO, NO, @"", @[@"outputs"], FixedCmd(@"cns_ytdl.py", @"fetch")),
             Row(OVProKindEdge,          OVJobLaneNetwork, YES, NO,  OVNetEdgeTTS, NO, NO, @"", @[@"outputs"], FixedCmd(@"cns_edge.py", @"synth")),
@@ -87,7 +94,9 @@ static NSDictionary<NSString *, NSNumber *> *DefaultPeaks(void) {
 @property (copy) NSArray<OVEngineComponent *> *components;
 @property (copy) NSString *mainPythonOverride;
 @property OVJobs *jobs;
-@property BOOL refreshing, refreshAgain;
+@property BOOL refreshing, refreshAgain, statusLoaded, inBeforeStart;
+@property (copy) NSString *statusError;
+@property (copy) NSDate *statusDate;
 @property (copy) NSDictionary<NSString *, NSNumber *> *peaks;
 @property NSMutableSet<NSString *> *settledJobs;
 @end
@@ -210,6 +219,9 @@ static NSDictionary<NSString *, NSNumber *> *DefaultPeaks(void) {
         [list addObject:c];
     }
     self.components = list;
+    self.statusLoaded = YES;
+    self.statusError = nil;
+    self.statusDate = [NSDate date];
     NSString *layout = status[@"layout"];
     self.layout = [layout isEqualToString:@"split"] ? @"split" : @"shared";
     if ([status[@"peak_gb"] isKindOfClass:NSDictionary.class]) {
@@ -271,13 +283,17 @@ static NSDictionary<NSString *, NSNumber *> *DefaultPeaks(void) {
 - (void)refresh {
     if (_refreshing) { _refreshAgain = YES; return; }
     _refreshing = YES;
+    [NSNotificationCenter.defaultCenter postNotificationName:OVEnginesDidChangeNotification object:self];
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         NSString *err = nil;
         NSDictionary *st = [self runEngines:@"status" request:@{} timeout:60 error:&err];
         dispatch_async(dispatch_get_main_queue(), ^{
             self.refreshing = NO;
             if (st) [self applyStatus:st];
-            else [NSNotificationCenter.defaultCenter postNotificationName:OVEnginesDidChangeNotification object:self];
+            else {
+                self.statusError = err ?: L(@"The engine check failed.");
+                [NSNotificationCenter.defaultCenter postNotificationName:OVEnginesDidChangeNotification object:self];
+            }
             if (self.refreshAgain) { self.refreshAgain = NO; [self refresh]; }
         });
     });
@@ -288,6 +304,9 @@ static NSDictionary<NSString *, NSNumber *> *DefaultPeaks(void) {
     if (!j || ![[OVEngines infoForKind:j.kind][@"install"] boolValue]) return;
     if (j.active) { [self applyStatusKeepingRows]; return; }
     if ([_settledJobs containsObject:j.identifier]) return;
+    NSMutableSet *live = [NSMutableSet set];
+    for (OVJob *x in [self activeJobs].all) [live addObject:x.identifier];
+    [_settledJobs intersectSet:live];   // forget jobs that were removed from the list
     [_settledJobs addObject:j.identifier];
     [self refresh];   // a failed or stopped install leaves "partial" behind: show it
 }
@@ -301,7 +320,11 @@ static NSDictionary<NSString *, NSNumber *> *DefaultPeaks(void) {
         [rows addObject:@{@"id": c.identifier, @"title": c.title, @"license": c.license, @"state": s, @"download_bytes": @(c.downloadBytes),
                           @"disk_bytes": @(c.diskBytes), @"optional": @(c.optional)}];
     }
+    NSDate *keep = _statusDate;
+    BOOL loaded = _statusLoaded;
     [self applyStatus:@{@"layout": _layout, @"components": rows}];
+    self.statusDate = keep;           // this was not a status from Python
+    self.statusLoaded = loaded;
 }
 
 #pragma mark Install, uninstall, update
@@ -312,6 +335,7 @@ static BOOL IsWeightId(NSString *i) { return [i hasPrefix:@"rvc-core"] || [i has
 - (OVJob *)install:(NSArray<NSString *> *)ids error:(NSString **)error {
     if (!ids.count) { if (error) *error = L(@"Nothing to install."); return nil; }
     if (self.proJobActive) { if (error) *error = L(@"A pro job is running — wait for it or stop it in Jobs"); return nil; }
+    if ([OVNetwork decisionFor:OVNetModelDownload] != OVNetAllowed) { if (error) *error = [OVNetwork blockedMessageFor:OVNetModelDownload]; return nil; }
     BOOL weightsOnly = YES;
     for (NSString *i in ids) if (!IsWeightId(i)) weightsOnly = NO;
     NSString *kind = weightsOnly ? OVProKindEngineWeights : OVProKindEngineInstall;
@@ -326,6 +350,40 @@ static BOOL IsWeightId(NSString *i) { return [i hasPrefix:@"rvc-core"] || [i has
     if (!res) { if (error) *error = err; return NO; }
     [self applyStatus:res];
     return YES;
+}
+
+/// Same, off the main thread (deleting gigabytes takes a while); completion runs on main. Pages use this one.
+- (void)uninstall:(NSArray<NSString *> *)ids completion:(void (^)(BOOL ok, NSString *_Nullable error))done {
+    if (self.proJobActive || [self installActive]) { done(NO, L(@"A pro job is running — wait for it or stop it in Jobs")); return; }
+    if (!ids.count) { done(NO, L(@"Nothing to install.")); return; }
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSString *err = nil;
+        NSDictionary *res = [self runEngines:@"uninstall" request:@{@"components": ids} timeout:600 error:&err];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (res) [self applyStatus:res];
+            done(res != nil, res ? nil : (err ?: L(@"The engine check failed.")));
+        });
+    });
+}
+
+#pragma mark Guard
+
+/// Commands of the main engine that load the voice or speech models (or the separation / enhancement models).
++ (NSSet<NSString *> *)modelLoadingCommands {
+    return [NSSet setWithObjects:@"synth", @"clone", @"transcribe", @"prepare", @"train_voice", @"install_accent", @"enhance",
+                                 @"sep_vocals", @"dfn_apply", nil];
+}
+
+/// The OVWorker.requestGuard: a message while a pro job holds the memory, nil otherwise.
+- (NSString *)guardMessageForRequest:(NSDictionary *)req {
+    if (![req[@"cmd"] isKindOfClass:NSString.class] || ![[OVEngines modelLoadingCommands] containsObject:req[@"cmd"]]) return nil;
+    return self.proJobActive ? L(@"A pro job is running — wait for it or stop it in Jobs") : nil;
+}
+
+/// Any job of the compute lane is queued or running (a synth, a clone, a pro job).
+- (BOOL)computeLaneBusy {
+    for (OVJob *j in [self activeJobs].all) if (j.active && j.lane == OVJobLaneCompute) return YES;
+    return NO;
 }
 
 - (OVJob *)updateYtDlp:(NSString **)error {
@@ -366,7 +424,7 @@ static BOOL IsWeightId(NSString *i) { return [i hasPrefix:@"rvc-core"] || [i has
 + (NSArray<NSDictionary *> *)kindTable {
     NSMutableArray *a = [NSMutableArray array];
     for (NSDictionary *r in KindTable()) {
-        [a addObject:@{@"kind": r[@"kind"], @"lane": r[@"lane"], @"retryable": r[@"retryable"], @"heavy": r[@"heavy"], @"net": r[@"net"]}];
+        [a addObject:@{@"kind": r[@"kind"], @"lane": r[@"lane"], @"retryable": r[@"retryable"], @"heavy": r[@"heavy"], @"light": r[@"light"] ?: @NO, @"keepStdin": r[@"keepStdin"] ?: @NO, @"net": r[@"net"]}];
     }
     return a;
 }
@@ -387,19 +445,35 @@ static BOOL IsWeightId(NSString *i) { return [i hasPrefix:@"rvc-core"] || [i has
     return @"rvc";
 }
 
-static NSString *SBQuote(NSString *p) {
-    return [NSString stringWithFormat:@"\"%@\"", [[p stringByReplacingOccurrencesOfString:@"\\" withString:@"\\\\"] stringByReplacingOccurrencesOfString:@"\"" withString:@"\\\""]];
+/// The one sandbox profile: Resources/sandbox/engine.sb (the app bundle, or the repository copy when tests run from its root).
++ (NSString *)sandboxFile {
+    NSFileManager *fm = NSFileManager.defaultManager;
+    NSMutableArray *c = [NSMutableArray array];
+    NSString *env = NSProcessInfo.processInfo.environment[@"CNS_SANDBOX_FILE"];
+    if (env.length) [c addObject:env];
+    [c addObject:J(NSBundle.mainBundle.resourcePath ?: @"", @"sandbox/engine.sb")];
+    [c addObject:J(fm.currentDirectoryPath, @"Resources/sandbox/engine.sb")];
+    for (NSString *p in c) if ([fm fileExistsAtPath:p]) return p;
+    return nil;
 }
 
-/// The sandbox-exec profile of cns_engines.sandbox_profile(deny_network, write_roots): no network, no writes outside the roots.
-+ (NSString *)sandboxProfileDenyNetwork:(BOOL)deny writeRoots:(NSArray<NSString *> *)roots {
-    NSMutableString *s = [NSMutableString stringWithString:@"(version 1)\n(allow default)\n"];
-    if (deny) [s appendString:@"(deny network*)\n"];
-    [s appendString:@"(deny file-write*)\n"];
-    NSMutableArray *allow = [NSMutableArray arrayWithObject:@"(literal \"/dev/null\")"];
-    for (NSString *r in roots) [allow addObject:[NSString stringWithFormat:@"(subpath %@)", SBQuote(r.stringByResolvingSymlinksInPath)]];
-    [s appendFormat:@"(allow file-write* %@)\n", [allow componentsJoinedByString:@" "]];
-    return s;
+static NSString *DarwinDir(int name, NSString *fallback) {
+    char buf[PATH_MAX];
+    if (confstr(name, buf, sizeof buf) == 0) return fallback;
+    return [[NSString stringWithUTF8String:buf] stringByResolvingSymlinksInPath];
+}
+
+/// `-f engine.sb -D KEY=VALUE ...` for sandbox-exec. net: @"deny-ip" or @"allow". At most four extra write folders.
++ (NSArray<NSString *> *)sandboxArgumentsWithFile:(NSString *)file net:(NSString *)net work:(NSString *)work out:(NSString *)out
+                                            roots:(NSArray<NSString *> *)roots {
+    NSMutableArray *a = [NSMutableArray arrayWithObjects:@"-f", file, nil];
+    NSString *w = work.stringByResolvingSymlinksInPath;
+    NSMutableDictionary<NSString *, NSString *> *d = [NSMutableDictionary dictionaryWithDictionary:@{
+        @"NET": net, @"WORK": w, @"OUT": (out ?: work).stringByResolvingSymlinksInPath,
+        @"DCACHE": DarwinDir(_CS_DARWIN_USER_CACHE_DIR, w), @"DTEMP": DarwinDir(_CS_DARWIN_USER_TEMP_DIR, w)}];
+    for (int i = 0; i < 4; i++) d[[NSString stringWithFormat:@"ROOT%d", i + 1]] = i < (int)roots.count ? roots[i].stringByResolvingSymlinksInPath : w;
+    for (NSString *k in [d.allKeys sortedArrayUsingSelector:@selector(compare:)]) [a addObjectsFromArray:@[@"-D", [NSString stringWithFormat:@"%@=%@", k, d[k]]]];
+    return a;
 }
 
 - (NSData *)stdinForRequest:(NSDictionary *)req job:(OVJob *)job reduced:(BOOL)reduced {
@@ -426,6 +500,13 @@ static NSString *SBQuote(NSString *p) {
     return d;
 }
 
+static OVProcessSpec *Refused(NSString *why) {
+    OVProcessSpec *s = [OVProcessSpec new];
+    s.executable = @"";
+    s.launchError = why;
+    return s;
+}
+
 - (OVProcessSpec *)specForKind:(NSString *)kind job:(OVJob *)job {
     NSDictionary *info = [OVEngines infoForKind:kind];
     if (!info) return nil;
@@ -433,11 +514,8 @@ static NSString *SBQuote(NSString *p) {
     BOOL install = [info[@"install"] boolValue];
     NSString *engineName = [OVEngines engineNameForKind:kind request:req];
     NSString *py = install ? [self mainPython] : (engineName ? [self pythonForEngine:engineName] : nil);
+    if (!py) return Refused([NSString stringWithFormat:L(@"%@ needs its engine — install it first."), L(@"This feature")]);
     OVProcessSpec *spec = [OVProcessSpec new];
-    if (!py) {
-        spec.executable = @"";   // the runner fails with a message; the gate card keeps this from happening
-        return spec;
-    }
     NSString *work = job.workDirectory;
     [NSFileManager.defaultManager createDirectoryAtPath:work withIntermediateDirectories:YES attributes:nil error:nil];
     NSArray<NSString *> *cmd = ((OVProCommandBlock)info[@"cmd"])(req);
@@ -476,6 +554,7 @@ static NSString *SBQuote(NSString *p) {
         spec.stdinData = [self stdinForRequest:req job:job reduced:NO];
     }
     spec.environment = env;
+    spec.keepStdinOpen = [info[@"keepStdin"] boolValue];
     spec.currentDirectory = work;
     if ([info[@"cwd"] isEqual:@"applio"]) {
         NSString *applio = J(_root, @"applio");
@@ -483,41 +562,65 @@ static NSString *SBQuote(NSString *p) {
     }
 
     NSArray<NSString *> *args = @[@"-s", script, cmd[1]];
-    BOOL sandboxAvailable = [NSFileManager.defaultManager isExecutableFileAtPath:@"/usr/bin/sandbox-exec"];
-    if (!install && denyNet && sandboxAvailable) {   // network kinds (Edge, YouTube, a download) run plain: they need the network
-        NSDictionary *tokens = @{@"outputs": [OVPaths outputs], @"models": [OVPaths rvcModels], @"training": [OVPaths rvcTraining],
-                                 @"datasets": [OVPaths rvcDatasets]};
-        NSMutableArray *roots = [NSMutableArray arrayWithObject:work];
-        for (NSString *t in info[@"roots"]) if (tokens[t]) [roots addObject:tokens[t]];
+    if (install) {
+        spec.executable = py;
+        spec.arguments = args;
+    } else {
+        // Every engine process runs under the one profile engine.sb: writes only in the work folder, the outputs and the
+        // kind's own roots; no IP traffic for the kinds that need none (AF_UNIX, DataLoader and torch_shm_manager still
+        // work). Without sandbox-exec or the profile nothing starts.
+        NSString *file = [OVEngines sandboxFile];
+        if (![NSFileManager.defaultManager isExecutableFileAtPath:@"/usr/bin/sandbox-exec"]) return Refused(L(@"Can’t start this safely: the macOS sandbox tool is missing."));
+        if (!file) return Refused(L(@"Can’t start this safely: the sandbox profile is missing."));
+        NSDictionary *tokens = @{@"models": [OVPaths rvcModels], @"training": [OVPaths rvcTraining], @"datasets": [OVPaths rvcDatasets]};
+        NSMutableArray *roots = [NSMutableArray array];
+        BOOL toOutputs = NO;
+        for (NSString *t in info[@"roots"]) {
+            if ([t isEqual:@"outputs"]) toOutputs = YES;
+            else if (tokens[t]) [roots addObject:tokens[t]];
+        }
         for (NSString *k in @[@"dest_dir", @"output_dir"]) {
             NSString *d = req[k];
             if ([d isKindOfClass:NSString.class] && d.isAbsolutePath) [roots addObject:d];
         }
-        for (NSString *r in roots) [NSFileManager.defaultManager createDirectoryAtPath:r withIntermediateDirectories:YES attributes:nil error:nil];
-        NSString *profile = [OVEngines sandboxProfileDenyNetwork:denyNet writeRoots:roots];
+        if (roots.count > 4) return Refused(L(@"Too many output folders for this task."));
+        NSString *out = toOutputs ? [OVPaths outputs] : work;
+        for (NSString *r in [roots arrayByAddingObjectsFromArray:@[work, out]])
+            [NSFileManager.defaultManager createDirectoryAtPath:r withIntermediateDirectories:YES attributes:nil error:nil];
+        NSArray *sb = [OVEngines sandboxArgumentsWithFile:file net:denyNet ? @"deny-ip" : @"allow" work:work out:out roots:roots];
+        env[@"CNS_SANDBOXED"] = @"1";   // cns_train must not wrap its child a second time
+        env[@"CNS_SANDBOX_FILE"] = file;
+        spec.environment = env;
         spec.executable = @"/usr/bin/sandbox-exec";
-        spec.arguments = [@[@"-p", profile, py] arrayByAddingObjectsFromArray:args];
-    } else {
-        spec.executable = py;
-        spec.arguments = args;
+        spec.arguments = [[sb arrayByAddingObject:py] arrayByAddingObjectsFromArray:args];
     }
 
     // Starting later (from the queue or the API): unload and check the memory again, then maybe with the lighter variant.
-    if ([info[@"heavy"] boolValue] && self.runHost) {
+    BOOL heavy = [info[@"heavy"] boolValue], light = [info[@"light"] boolValue];
+    if ((heavy || light) && self.runHost) {
         NSString *option = [OVEngines peakOptionForKind:kind request:req];
         BOOL canLighten = [kind isEqualToString:OVProKindRvcTrain] && ![option isEqual:@"batch2"];
         OVProRunPlan *plan = [OVProRunPlan planWithPeakBytes:[self peakBytesForKind:kind option:option]
                                             reducedPeakBytes:canLighten ? [self peakBytesForKind:kind option:@"batch2"] : 0
-                                                needsNetwork:NO heavy:YES];
+                                                needsNetwork:NO heavy:heavy];
+        plan.memoryCheckOnly = light;
         plan.lowFreeAccepted = [req[@"_lowFreeAccepted"] boolValue];
         id<OVProRunHost> host = self.runHost;
         OVProcessSpec *captured = spec;
         spec.beforeStart = ^(void (^proceed)(BOOL, NSString *)) {
             dispatch_async(dispatch_get_main_queue(), ^{
-                BOOL reduced = NO;
-                BOOL ok = [plan prepareToStartWithHost:host reduced:&reduced];
-                if (ok && reduced) captured.stdinData = [self stdinForRequest:req job:job reduced:YES];
-                proceed(ok, ok ? nil : L(@"Not enough free memory — close other apps and try again."));
+                // The job runs now, so the compute lane is ours: this is where OmniVoice is unloaded (a running synth or
+                // clone is never killed for it, and nothing here waits in a nested run loop).
+                self.inBeforeStart = YES;
+                if (heavy) [host unloadMainModels];
+                self.inBeforeStart = NO;
+                NSTimeInterval settle = heavy && [host respondsToSelector:@selector(settleDelay)] ? [host settleDelay] : 0;
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(settle * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                    BOOL reduced = NO;
+                    BOOL ok = [plan prepareToStartWithHost:host reduced:&reduced];
+                    if (ok && reduced) captured.stdinData = [self stdinForRequest:req job:job reduced:YES];
+                    proceed(ok, ok ? nil : L(@"Not enough free memory — close other apps and try again."));
+                });
             });
         };
         spec.beforeStartTimeout = 600;   // the user may be reading a dialog
@@ -556,6 +659,21 @@ static NSString *SBQuote(NSString *p) {
 
 static NSLock *SockLock(void) { static NSLock *l; static dispatch_once_t o; dispatch_once(&o, ^{ l = [NSLock new]; }); return l; }
 
+/// A short alias of a long folder: /tmp/cns-<uid>/<hash> -> dir (the folder is ours, mode 0700). nil if it cannot be made.
+static NSString *ShortAlias(NSString *dir) {
+    NSString *base = [NSString stringWithFormat:@"/tmp/cns-%u", getuid()];
+    NSFileManager *fm = NSFileManager.defaultManager;
+    [fm createDirectoryAtPath:base withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions: @0700} error:nil];
+    struct stat st;
+    if (lstat(base.fileSystemRepresentation, &st) != 0 || st.st_uid != getuid() || !S_ISDIR(st.st_mode)) return nil;
+    NSUInteger h = dir.hash;
+    NSString *link = [base stringByAppendingFormat:@"/%08lx", (unsigned long)(h & 0xffffffffUL)];
+    NSString *cur = [fm destinationOfSymbolicLinkAtPath:link error:nil];
+    if (cur && ![cur isEqualToString:dir]) { [fm removeItemAtPath:link error:nil]; cur = nil; }
+    if (!cur && ![fm createSymbolicLinkAtPath:link withDestinationPath:dir error:nil]) return nil;
+    return link;
+}
+
 int OVEnginesConnectSocket(NSString *path) {
     NSString *dir = path.stringByDeletingLastPathComponent, *name = path.lastPathComponent;
     if (!path.isAbsolutePath || !name.length || strlen(name.fileSystemRepresentation) >= sizeof(((struct sockaddr_un *)0)->sun_path)) return -1;
@@ -564,8 +682,22 @@ int OVEnginesConnectSocket(NSString *path) {
     struct sockaddr_un a;
     memset(&a, 0, sizeof a);
     a.sun_family = AF_UNIX;
+    if (strlen(path.fileSystemRepresentation) < sizeof a.sun_path) {          // fits: connect directly
+        strlcpy(a.sun_path, path.fileSystemRepresentation, sizeof a.sun_path);
+        if (connect(fd, (struct sockaddr *)&a, sizeof a) == 0) return fd;
+        close(fd);
+        return -1;
+    }
+    NSString *alias = ShortAlias(dir);                                        // too long: through a short alias, no chdir
+    NSString *shortPath = alias ? [alias stringByAppendingPathComponent:name] : nil;
+    if (shortPath && strlen(shortPath.fileSystemRepresentation) < sizeof a.sun_path) {
+        strlcpy(a.sun_path, shortPath.fileSystemRepresentation, sizeof a.sun_path);
+        if (connect(fd, (struct sockaddr *)&a, sizeof a) == 0) return fd;
+        close(fd);
+        return -1;
+    }
     strlcpy(a.sun_path, name.fileSystemRepresentation, sizeof a.sun_path);
-    // chdir is process-wide: the lock keeps other users of this function out, and the folder is restored at once
+    // Last resort. chdir is process-wide: the lock keeps other users of this function out, and the folder is restored at once
     [SockLock() lock];
     char cwd[PATH_MAX];
     BOOL haveCwd = getcwd(cwd, sizeof cwd) != NULL;

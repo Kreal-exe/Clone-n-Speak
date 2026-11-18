@@ -13,6 +13,10 @@ NS_ASSUME_NONNULL_BEGIN
 - (unsigned long long)availableBytes;
 /// What unloadMainModels would give back (the main engine's footprint), bytes; 0 when nothing is loaded.
 - (unsigned long long)reclaimableBytes;
+@optional
+/// Seconds to wait after unloadMainModels before the memory is read for real (the process needs a moment to exit).
+- (NSTimeInterval)settleDelay;
+@required
 /// Not enough free memory: shows the numbers. YES = run anyway.
 - (BOOL)askLowFreeNeed:(unsigned long long)need available:(unsigned long long)avail;
 /// Offline mode / first-use consent of a network feature. May answer later (a sheet).
@@ -38,6 +42,9 @@ typedef NS_ENUM(NSInteger, OVProRunOutcome) { OVProRunSubmitted, OVProRunDecline
 @property (readonly) BOOL needsNetwork;
 /// Network-lane features (Edge, YouTube, downloads) do not compete for memory: heavy = NO skips steps 2 to 4.
 @property (readonly) BOOL heavy;
+/// A light job (checking or importing a model file) skips the confirmation and the unload but still asks when even
+/// its small peak does not fit.
+@property BOOL memoryCheckOnly;
 /// Whether the user already agreed to run on little free memory (the job re-checks silently then).
 @property BOOL lowFreeAccepted;
 

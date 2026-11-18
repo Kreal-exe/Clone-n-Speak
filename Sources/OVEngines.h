@@ -46,6 +46,22 @@ extern NSString *const OVProKindConvert, *const OVProKindRvcImport, *const OVPro
 @property (readonly) BOOL proJobActive;                       // any compute-lane pro job is queued or running
 /// Whom beforeStart asks (unload, memory); the app sets the live host, tests a fake. nil = no checks.
 @property (nullable, strong) id<OVProRunHost> runHost;
+/// YES once a status from cns_engines.py arrived; statusError says why the last check failed (nil when it did not);
+/// refreshing = a check is running; statusDate = when the last status arrived.
+@property (readonly) BOOL statusLoaded, refreshing;
+@property (readonly, copy, nullable) NSString *statusError;
+@property (readonly, copy, nullable) NSDate *statusDate;
+/// YES while a job's beforeStart block runs (the compute lane is the job's own then).
+@property (readonly) BOOL inBeforeStart;
+/// Any compute-lane job (synth, clone, pro) is queued or running.
+@property (readonly) BOOL computeLaneBusy;
+/// Commands of the main engine that load models; the OVWorker guard refuses them while a pro job runs.
++ (NSSet<NSString *> *)modelLoadingCommands;
+- (nullable NSString *)guardMessageForRequest:(NSDictionary *)request;
+/// engine.sb file and the `sandbox-exec` arguments of a run (nil file = missing profile).
++ (nullable NSString *)sandboxFile;
++ (NSArray<NSString *> *)sandboxArgumentsWithFile:(NSString *)file net:(NSString *)net work:(NSString *)work out:(nullable NSString *)out
+                                            roots:(NSArray<NSString *> *)roots;
 
 - (nullable OVEngineComponent *)componentWithId:(NSString *)identifier;
 /// Asynchronous: cns_engines.py status → components → OVEnginesDidChangeNotification.
@@ -53,7 +69,9 @@ extern NSString *const OVProKindConvert, *const OVProKindRvcImport, *const OVPro
 /// For tests and for the result of uninstall: takes a `status` result.
 - (void)applyStatus:(NSDictionary *)status;
 - (nullable OVJob *)install:(NSArray<NSString *> *)ids error:(NSString *_Nullable *_Nullable)error;
-- (BOOL)uninstall:(NSArray<NSString *> *)ids error:(NSString *_Nullable *_Nullable)error;
+- (BOOL)uninstall:(NSArray<NSString *> *)ids error:(NSString *_Nullable *_Nullable)error;   // synchronous (tests, scripts)
+/// The one pages use: the removal runs off the main thread, completion on main.
+- (void)uninstall:(NSArray<NSString *> *)ids completion:(void (^)(BOOL ok, NSString *_Nullable error))done;
 - (nullable OVJob *)updateYtDlp:(NSString *_Nullable *_Nullable)error;
 /// Peak memory of a run, bytes, from status.peak_gb (the built-in table until the first status).
 /// option: pro_convert "seedvc"|"rvc"; rvc_train "batch2"; stems the model id (roformer / mdx families).
@@ -62,7 +80,7 @@ extern NSString *const OVProKindConvert, *const OVProKindRvcImport, *const OVPro
 + (nullable NSString *)peakOptionForKind:(NSString *)kind request:(NSDictionary *)request;
 
 #pragma mark Kinds (data-driven: later tasks add entries to the table in OVEngines.m)
-/// @[@{@"kind", @"lane" (NSNumber OVJobLane), @"retryable", @"heavy" (compute lane: unload + memory), @"net" (OVNetFeature or -1)}]
+/// @[@{@"kind", @"lane" (NSNumber OVJobLane), @"retryable", @"heavy" (compute lane: unload + memory), @"light" (small memory check only), @"keepStdin", @"net" (OVNetFeature or -1)}]
 + (NSArray<NSDictionary *> *)kindTable;
 + (nullable NSDictionary *)infoForKind:(NSString *)kind;
 /// Name of the engine (see pythonForEngine:) a run of this kind needs; nil for kinds that run in the main runtime.

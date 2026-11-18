@@ -33,3 +33,12 @@
 "Try again" = "Повторить";
 "Updating yt-dlp" = "Обновление yt-dlp";
 "YouTube: %@" = "YouTube: %@";
+"%@: checking the engine…" = "%@: проверяю движок…";
+"%@: engine setup" = "%@: установка движка";
+"Can’t start this safely: the macOS sandbox tool is missing." = "Не удаётся безопасно запустить: в macOS нет программы sandbox-exec.";
+"Can’t start this safely: the sandbox profile is missing." = "Не удаётся безопасно запустить: не найден профиль песочницы.";
+"Checking…" = "Проверяю…";
+"Installation progress" = "Ход установки";
+"Set up the main engine first" = "Сначала настройте основной движок";
+"The engine check failed." = "Не удалось проверить движки.";
+"Too many output folders for this task." = "Слишком много папок для результата в этой задаче.";
