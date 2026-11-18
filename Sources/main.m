@@ -669,7 +669,7 @@ static void OVWriteSnapshot(NSView *v, NSString *file) {
         }
         if (sv) {
             CGFloat step = NSHeight(sv.contentView.bounds) - 40, max = NSHeight(sv.documentView.frame) - NSHeight(sv.contentView.bounds);
-            for (int n = 2; n <= 8 && step > 0; n++) {
+            for (int n = 2; n <= 12 && step > 0; n++) {
                 CGFloat y = MIN((n - 1) * step, max);
                 [sv.contentView scrollToPoint:NSMakePoint(0, y)];
                 [sv reflectScrolledClipView:sv.contentView];

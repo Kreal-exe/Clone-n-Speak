@@ -5,6 +5,7 @@
 #import "OVPaths.h"
 #import "OVStore.h"
 #import "OVWorker.h"
+#import "OVRuntime.h"
 
 #pragma mark - Titles
 
@@ -173,7 +174,7 @@ static BOOL IsInstallKind(NSString *k) { return [k isEqualToString:OVProKindEngi
 @property NSProgressIndicator *bar;
 @property NSNumber *lastReady;
 @property (weak) OVJob *job;
-@property BOOL retry;
+@property BOOL retry, needsSetup;
 @end
 
 @implementation OVEngineGate
@@ -238,8 +239,9 @@ static BOOL IsInstallKind(NSString *k) { return [k isEqualToString:OVProKindEngi
         self.stop.hidden = YES;
         self.action.hidden = !failed;
         self.retry = YES;
-        self.action.title = L(@"Retry");
-        self.action.accessibilityLabel = L(@"Retry");
+        self.needsSetup = failed && OVRuntime.shared.state != OVRuntimeReady;   // Retry cannot help: the main engine has to be installed first
+        self.action.title = self.needsSetup ? L(@"Open Setup") : L(@"Retry");
+        self.action.accessibilityLabel = self.action.title;
         if (!failed && !engines.refreshing) [engines refresh];
         return;
     }
@@ -262,6 +264,7 @@ static BOOL IsInstallKind(NSString *k) { return [k isEqualToString:OVProKindEngi
     OVJob *job = [self relevantJob];
     self.job = job;
     self.retry = NO;
+    self.needsSetup = NO;
     BOOL running = job.active;
     self.titleLabel.stringValue = [NSString stringWithFormat:L(@"%1$@ needs its engine · %2$@ download"), self.feature, OVFormatBytes((long long)bytes)];
     self.bar.hidden = !running;
@@ -301,6 +304,7 @@ static BOOL IsInstallKind(NSString *k) { return [k isEqualToString:OVProKindEngi
 }
 
 - (void)act:(id)sender {
+    if (self.needsSetup) { [NSNotificationCenter.defaultCenter postNotificationName:@"OVNavigate" object:@"setup"]; return; }   // same as OVNavigate(@"setup")
     if (self.retry) { [OVEngines.shared refresh]; [self update]; return; }
     NSMutableArray *ids = [NSMutableArray array];
     for (OVEngineComponent *c in [self missing]) [ids addObject:c.identifier];

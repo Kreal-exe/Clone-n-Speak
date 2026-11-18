@@ -15,3 +15,4 @@
 "Choose the folder for the models" = "Выберите папку для моделей";
 "The model folder is on %@, which isn’t connected — connect it or choose another folder" = "Папка моделей на диске «%@», который не подключён: подключите его или выберите другую папку";
 "The Hugging Face address in the settings is not https, so nothing was downloaded. Fix it on the Models page." = "Адрес Hugging Face в настройках не https, поэтому ничего не загружено. Исправьте его на странице «Модели».";
+"Open Setup" = "Открыть «Подготовка к работе»";

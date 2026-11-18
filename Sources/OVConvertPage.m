@@ -495,7 +495,7 @@ static void SetEnabledDeep(NSView *v, BOOL on, NSArray<NSView *> *skip) {
     self.cleanBox.hidden = [[self cleanMode] isEqual:@"off"];
     BOOL fcpeOK = [self fcpeReady];
     self.f0Hint.hidden = fcpeOK;
-    self.fcpeGate.hidden = fcpeOK;
+    self.fcpeGate.hidden = fcpeOK || !OVEngines.shared.statusLoaded;   // without a status the main gate above already says what to do
 
     BOOL on = [self bodyEnabled];
     SetEnabledDeep(self.body, on, @[self.fcpeGate, self.inputBar, self.resultBox, self.stopButton]);   // Stop and the result stay usable while the gate is closed

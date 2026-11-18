@@ -216,6 +216,7 @@ static NSArray<NSString *> *paramOrder(NSDictionary *info) {
     OVPin(self.disclosure, self, NSEdgeInsetsZero);
     // The user's own choice wins; before that, open for a chain that has effects on, and keep what a rebuild found open.
     BOOL open = self.userExpanded == 1 ? YES : self.userExpanded == 2 ? NO : (anyOn || wasExpanded);
+    if (NSProcessInfo.processInfo.environment[@"OV_SNAPSHOT_FX_OPEN"].length && self.userExpanded == 0) open = YES;   // developer aid for snapshots
     [self.disclosure setExpanded:open animated:NO];
     __weak OVEffectsView *weak = self;
     self.disclosure.onToggle = ^(BOOL expanded) {
