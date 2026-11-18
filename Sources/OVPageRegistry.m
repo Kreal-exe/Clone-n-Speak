@@ -25,7 +25,7 @@ static NSDictionary *P(NSString *pid, NSString *title, NSString *symbol, Class c
             P(@"separator", L(@"Separation"), @"waveform.path.ecg", OVSeparatorPage.class, NO)]},
         @{@"title": L(@"SYSTEM"), @"pages": @[
             P(@"jobs", L(@"Jobs"), @"clock.arrow.circlepath", OVJobsPage.class, NO),
-            P(@"api", L(@"API & Bridge"), @"chevron.left.forwardslash.chevron.right", ph, NO),
+            P(@"api", L(@"API & Bridge"), @"chevron.left.forwardslash.chevron.right", OVAPIPage.class, NO),
             P(@"plugins", L(@"Plugins"), @"puzzlepiece.extension", ph, YES),
             P(@"privacy", L(@"Data & Privacy"), @"hand.raised", ph, NO),
             P(@"settings", L(@"Settings"), @"gearshape", OVSettingsPage.class, NO),

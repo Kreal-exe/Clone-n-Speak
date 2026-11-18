@@ -48,7 +48,7 @@ mkdir -p "$APP/Contents/MacOS" "$RES" "$OUT/AppIcon.iconset"
 
 clang -fobjc-arc -O2 -mmacosx-version-min=13.0 -arch arm64 -Wall -Werror \
   -framework Cocoa -framework AVFAudio -framework AVFoundation -framework UniformTypeIdentifiers \
-  -framework NaturalLanguage -framework QuartzCore -framework CoreMedia \
+  -framework NaturalLanguage -framework QuartzCore -framework CoreMedia -framework Security \
   "$ROOT"/Sources/*.m -o "$APP/Contents/MacOS/$NAME"
 
 cp "$ROOT/Sources/Info.plist" "$APP/Contents/Info.plist"
