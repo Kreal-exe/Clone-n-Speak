@@ -5,6 +5,8 @@
 NS_ASSUME_NONNULL_BEGIN
 
 extern NSNotificationName const OVEnginesDidChangeNotification;
+/// Posted when the set of RVC voice models changes (import, delete, blend).
+extern NSNotificationName const OVRvcModelsDidChangeNotification;
 extern NSString *const OVEnginePro;    // @"pro": the shared environment with PyTorch (the name sub-plan D 8.8 asks for)
 extern NSString *const OVEngineEdge;   // @"edge"
 
