@@ -32,7 +32,7 @@ EXPECTED = {
     "cns_engines.py": (22, "pro-engine installs, started by the user: pinned HTTPS URLs (GitHub, Hugging Face) + sha256, "
                            "https-only redirects, uv/PyPI through the installer; also names edge-tts and yt-dlp as packages"),
     "cns_realtime.py": (8, "realtime voice process: one local Unix-socket client (AF_UNIX, no internet); sandboxed without network"),
-    "cns_rt_proto.py": (7, "realtime block protocol over a local Unix socket (AF_UNIX); no internet"),
+    "cns_rt_proto.py": (12, "realtime block protocol over a local Unix socket (AF_UNIX); no internet"),
     "cns_pins.py": (7, "generated pins: the requirement lines that name requests / edge-tts packages (no network code)"),
     "OVPrivacyCatalog.m": (3, "descriptions only: feature ids and the word \"requests\" in the Bridge text"),
     "cns_api.py": (4, "local API / Bridge listeners on 127.0.0.1, server side only (no outgoing calls)"),
