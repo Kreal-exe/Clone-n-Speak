@@ -252,6 +252,7 @@ static void SetEnabledDeep(NSView *v, BOOL on, NSArray<NSView *> *skip) {
     [nc addObserver:self selector:@selector(jobsChanged:) name:OVJobsDidChangeNotification object:nil];
     [nc addObserver:self selector:@selector(enginesChanged:) name:OVEnginesDidChangeNotification object:nil];
     [nc addObserver:self selector:@selector(enginesChanged:) name:OVRvcModelsDidChangeNotification object:nil];
+    [nc addObserver:self selector:@selector(tryInConvert:) name:@"OVTrainingTryInConvert" object:nil];
     self.built = YES;
     if (sLastJobID) self.job = [OVJobs.shared jobWithId:sLastJobID];
     [self reloadTargets];
@@ -261,6 +262,15 @@ static void SetEnabledDeep(NSView *v, BOOL on, NSArray<NSView *> *skip) {
 
 - (void)dealloc {
     [NSNotificationCenter.defaultCenter removeObserver:self];
+}
+
+/// Posted by the Training page ("Try in Convert", userInfo @"model" = folder name) just before it navigates here.
+- (void)tryInConvert:(NSNotification *)n {
+    NSString *m = n.userInfo[@"model"];
+    if (![m isKindOfClass:NSString.class] || !m.length) return;
+    [D() setObject:m forKey:@"convert.model"];
+    [D() removeObjectForKey:@"OVConvertPendingRvcModel"];
+    [self reloadTargets];
 }
 
 - (void)viewWillAppear {
@@ -379,6 +389,9 @@ static void SetEnabledDeep(NSView *v, BOOL on, NSArray<NSView *> *skip) {
 #pragma mark Target
 
 - (void)reloadTargets {
+    // "Try in Convert" on the Training page: the model's folder name, picked up once
+    NSString *pending = [D() stringForKey:@"OVConvertPendingRvcModel"];
+    if (pending.length) { [D() setObject:pending forKey:@"convert.model"]; [D() removeObjectForKey:@"OVConvertPendingRvcModel"]; }
     NSString *wantModel = [D() stringForKey:@"convert.model"], *wantVoice = [D() stringForKey:@"convert.voice"];
     self.models = OVRvcStore.shared.models;
     [self.modelPopup removeAllItems];
