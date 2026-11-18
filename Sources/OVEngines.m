@@ -10,13 +10,14 @@
 #import <sys/stat.h>
 
 NSNotificationName const OVEnginesDidChangeNotification = @"OVEnginesDidChangeNotification";
+NSNotificationName const OVRvcModelsDidChangeNotification = @"OVRvcModelsDidChangeNotification";
 NSString *const OVEnginePro = @"pro";
 NSString *const OVEngineEdge = @"edge";
 
 NSString *const OVProKindConvert = @"pro_convert", *const OVProKindRvcImport = @"rvc_import", *const OVProKindRvcInfo = @"rvc_info",
           *const OVProKindRvcFetch = @"rvc_fetch", *const OVProKindRvcBlend = @"rvc_blend", *const OVProKindRvcTrain = @"rvc_train",
           *const OVProKindRvcReview = @"rvc_review", *const OVProKindRealtime = @"rvc_realtime", *const OVProKindStems = @"stems",
-          *const OVProKindYouTube = @"yt_import", *const OVProKindEdge = @"edge_tts", *const OVProKindEngineInstall = @"engine_install",
+          *const OVProKindYouTube = @"yt_import", *const OVProKindEdge = @"edge_tts", *const OVProKindEdgeVoices = @"edge_voices", *const OVProKindEngineInstall = @"engine_install",
           *const OVProKindEngineWeights = @"engine_weights", *const OVProKindEngineUpdate = @"engine_update";
 
 @interface OVEngineComponent ()
@@ -71,6 +72,7 @@ static NSArray<NSDictionary *> *KindTable(void) {
             Row(OVProKindStems,         OVJobLaneCompute, YES, YES, -1, YES, NO, @"",       @[@"outputs"], FixedCmd(@"cns_stems.py", @"separate")),
             Row(OVProKindYouTube,       OVJobLaneNetwork, YES, NO,  OVNetYouTube, NO, NO, @"", @[@"outputs"], FixedCmd(@"cns_ytdl.py", @"fetch")),
             Row(OVProKindEdge,          OVJobLaneNetwork, YES, NO,  OVNetEdgeTTS, NO, NO, @"", @[@"outputs"], FixedCmd(@"cns_edge.py", @"synth")),
+            Row(OVProKindEdgeVoices,    OVJobLaneNetwork, YES, NO,  OVNetEdgeTTS, NO, NO, @"", @[@"edgecache"], FixedCmd(@"cns_edge.py", @"voices")),
             Row(OVProKindEngineInstall, OVJobLaneNetwork, YES, NO,  -1, NO, YES, @"", @[@"engines", @"uvcache", @"pythons"], FixedCmd(@"cns_engines.py", @"install")),
             Row(OVProKindEngineWeights, OVJobLaneNetwork, YES, NO,  -1, NO, YES, @"", @[@"engines", @"uvcache", @"pythons"], FixedCmd(@"cns_engines.py", @"weights")),
             Row(OVProKindEngineUpdate,  OVJobLaneNetwork, YES, NO,  OVNetYouTube, NO, YES, @"", @[@"engines", @"uvcache", @"pythons"], FixedCmd(@"cns_engines.py", @"update-ytdlp")),
@@ -83,8 +85,8 @@ static NSString *J(NSString *a, NSString *b) { return [a stringByAppendingPathCo
 
 /// Defaults of status.peak_gb (cns_engines.PEAK_GB), used until the first status arrives.
 static NSDictionary<NSString *, NSNumber *> *DefaultPeaks(void) {
-    return @{@"infer": @3.4, @"seedvc": @4.0, @"train": @10.0, @"train_b2": @8.2, @"realtime": @2.7, @"mdx": @6.5,
-             @"roformer": @6.6, @"blend": @1.0, @"ytdlp": @0.3, @"edge": @0.3};
+    return @{@"infer": @3.4, @"seedvc": @4.0, @"train": @10.0, @"train_b2": @8.2, @"realtime": @2.7, @"mdx": @7.2,
+             @"roformer": @6.6, @"demucs": @2.3, @"dereverb": @6.3, @"blend": @1.0, @"ytdlp": @0.3, @"edge": @0.3};
 }
 
 #pragma mark - OVEngines
@@ -400,9 +402,13 @@ static BOOL IsWeightId(NSString *i) { return [i hasPrefix:@"rvc-core"] || [i has
     else if ([kind isEqualToString:OVProKindRvcBlend]) key = @"blend";
     else if ([kind isEqualToString:OVProKindRvcTrain]) key = [option isEqualToString:@"batch2"] ? @"train_b2" : @"train";
     else if ([kind isEqualToString:OVProKindRealtime]) key = @"realtime";
-    else if ([kind isEqualToString:OVProKindStems]) key = [option.lowercaseString containsString:@"roformer"] ? @"roformer" : @"mdx";
+    else if ([kind isEqualToString:OVProKindStems]) {   // measured peaks of the stem models on a 16 GB M4 (Task 7.5)
+        NSString *o = option.lowercaseString ?: @"";
+        key = [o containsString:@"roformer"] ? @"roformer" : [o containsString:@"demucs"] ? @"demucs"
+            : [o containsString:@"dereverb"] ? @"dereverb" : @"mdx";
+    }
     else if ([kind isEqualToString:OVProKindYouTube]) key = @"ytdlp";
-    else if ([kind isEqualToString:OVProKindEdge]) key = @"edge";
+    else if ([kind isEqualToString:OVProKindEdge] || [kind isEqualToString:OVProKindEdgeVoices]) key = @"edge";
     else if ([kind isEqualToString:OVProKindRvcImport] || [kind isEqualToString:OVProKindRvcInfo] || [kind isEqualToString:OVProKindRvcReview]) key = @"blend";
     if (!key) return 0;
     double gb = [_peaks[key] doubleValue];
@@ -441,7 +447,7 @@ static BOOL IsWeightId(NSString *i) { return [i hasPrefix:@"rvc-core"] || [i has
     if ([kind isEqualToString:OVProKindRealtime]) return @"realtime";
     if ([kind isEqualToString:OVProKindStems]) return @"stems";
     if ([kind isEqualToString:OVProKindYouTube]) return @"ytdlp";
-    if ([kind isEqualToString:OVProKindEdge]) return OVEngineEdge;
+    if ([kind isEqualToString:OVProKindEdge] || [kind isEqualToString:OVProKindEdgeVoices]) return OVEngineEdge;
     return @"rvc";
 }
 
@@ -574,7 +580,7 @@ static OVProcessSpec *Refused(NSString *why) {
     if (!file) return Refused(L(@"Can’t start this safely: the sandbox profile is missing."));
     NSString *uvCache = NSProcessInfo.processInfo.environment[@"UV_CACHE_DIR"] ?: J(NSHomeDirectory(), @"Library/Caches/uv");
     NSDictionary *tokens = @{@"models": [OVPaths rvcModels], @"training": [OVPaths rvcTraining], @"datasets": [OVPaths rvcDatasets],
-                             @"engines": _root, @"uvcache": uvCache, @"pythons": J([OVPaths runtime], @"python")};
+                             @"engines": _root, @"edgecache": J(_root, @"edge"), @"uvcache": uvCache, @"pythons": J([OVPaths runtime], @"python")};
     NSMutableArray *roots = [NSMutableArray array];
     BOOL toOutputs = NO;
     for (NSString *t in info[@"roots"]) {

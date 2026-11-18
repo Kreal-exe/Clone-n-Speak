@@ -23,7 +23,7 @@ import cns_proto  # noqa: E402
 PATH = "/usr/bin:/bin:/opt/homebrew/bin:/usr/local/bin"
 CONSENT_MESSAGE = "Confirm that you have the rights to this recording and the speaker’s consent"
 FFMPEG_MESSAGE = "Install ffmpeg first (brew install ffmpeg)"
-URL_MESSAGE = ("Paste the link to one YouTube video (youtube.com/watch?v=… or youtu.be/…). "
+URL_MESSAGE = ("Paste the link to one YouTube video (youtube.com/watch?v=…, /shorts/…, or youtu.be/…). "
                "Playlists and channels are not supported.")
 INFO_TIMEOUT = 90
 DOWNLOAD_TIMEOUT = 1800
@@ -32,6 +32,7 @@ MAX_BYTES = 1 << 30
 DEFAULT_MINUTES = 20
 MAX_MINUTES = 240
 TITLE_LIMIT = 120
+_HOSTS = ("youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com")
 _ID = re.compile(r"^[A-Za-z0-9_-]{11}$")
 
 
@@ -51,10 +52,13 @@ def parse_url(url):
         raise YtError(URL_MESSAGE)
     if u.scheme != "https" or u.username is not None or u.password is not None or port not in (None, 443):
         raise YtError(URL_MESSAGE)
-    if host in ("www.youtube.com", "music.youtube.com") and u.path == "/watch":
+    if host in _HOSTS and u.path == "/watch":
         vals = urllib.parse.parse_qs(u.query).get("v", [])
         vid = vals[0] if len(vals) == 1 else ""
-        site = host
+        site = "music.youtube.com" if host == "music.youtube.com" else "www.youtube.com"
+    elif host in _HOSTS and re.fullmatch(r"/(?:shorts|live|embed)/[^/]+/?", u.path or ""):
+        vid = u.path.strip("/").split("/")[1]
+        site = "www.youtube.com"
     elif host == "youtu.be" and re.fullmatch(r"/[^/]+/?", u.path or ""):
         vid = u.path.strip("/")
         site = "www.youtube.com"

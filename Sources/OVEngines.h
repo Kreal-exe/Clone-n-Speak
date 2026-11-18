@@ -5,6 +5,8 @@
 NS_ASSUME_NONNULL_BEGIN
 
 extern NSNotificationName const OVEnginesDidChangeNotification;
+/// Posted on the main thread when the set of RVC voice models changes (a blend was made, a model was discarded, imported or deleted). Lists of models and the Convert page observe it.
+extern NSNotificationName const OVRvcModelsDidChangeNotification;
 extern NSString *const OVEnginePro;    // @"pro": the shared environment with PyTorch (the name sub-plan D 8.8 asks for)
 extern NSString *const OVEngineEdge;   // @"edge"
 
@@ -20,7 +22,7 @@ typedef NS_ENUM(NSInteger, OVEngineState) { OVEngineNotInstalled, OVEngineInstal
 /// Job kinds of the pro engines (they never collide with the kinds of sub-plan D: synth, train, install, …).
 extern NSString *const OVProKindConvert, *const OVProKindRvcImport, *const OVProKindRvcInfo, *const OVProKindRvcFetch,
                        *const OVProKindRvcBlend, *const OVProKindRvcTrain, *const OVProKindRvcReview, *const OVProKindRealtime,
-                       *const OVProKindStems, *const OVProKindYouTube, *const OVProKindEdge, *const OVProKindEngineInstall,
+                       *const OVProKindStems, *const OVProKindYouTube, *const OVProKindEdge, *const OVProKindEdgeVoices, *const OVProKindEngineInstall,
                        *const OVProKindEngineWeights, *const OVProKindEngineUpdate;
 
 /// Manager of the pro engines (RVC, Seed-VC, stems, Edge, yt-dlp): the state of every component, installs and

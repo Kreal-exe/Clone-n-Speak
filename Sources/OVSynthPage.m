@@ -14,6 +14,7 @@
 #import "OVEffectsView.h"
 #import "OVPlayerBar.h"
 #import "OVBatchSheet.h"
+#import "OVEdgeTTS.h"
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
 static NSString *const kAutoVoice = @"__auto__";
@@ -201,7 +202,8 @@ static void FillFormatPopup(OVPopup *popup, NSString *selectedId) {
 @property NSProgressIndicator *progress;
 @property NSTableView *table;
 @property NSLayoutConstraint *tableHeight;
-@property NSView *bannerCard, *playerBar, *emptyHistory;
+@property NSView *bannerCard, *playerBar, *emptyHistory, *omniBlock, *improveBox;
+@property OVEdgeTTS *edge;
 @property NSTextField *historyTitle, *playerTitle;
 @property OVPlayerBar *abBar;
 @property OVPopup *presetPopup, *formatPopup;
@@ -406,8 +408,11 @@ static void FillFormatPopup(OVPopup *popup, NSString *selectedId) {
     if (savedChain) self.effects.chain = savedChain;
     self.effects.onChange = ^{ [NSUserDefaults.standardUserDefaults setObject:w.effects.chain forKey:@"effectsChain"]; };
 
+    // the engine choice: OmniVoice (the controls below) or Edge TTS (OVEdgeTTS replaces them)
+    self.edge = [OVEdgeTTS new];
+    self.omniBlock = OVFillStack(@[OVColumns(@[voiceBlock, langBlock], 16), self.pronRow, moodBlock, qualitySpeed, self.styleDisclosure, self.effects], 16);
     NSView *card2 = OVStepCardWithAccessory(2, @"person.wave.2", L(@"Voice and style"), cardAccessory,
-        OVFillStack(@[OVColumns(@[voiceBlock, langBlock], 16), self.pronRow, moodBlock, qualitySpeed, self.styleDisclosure, self.effects], 16));
+        OVFillStack(@[self.edge.engineBlock, self.edge.view, self.omniBlock], 16));
 
     // ── 3 · Result
     self.improveSwitch = [OVSwitch new];
@@ -421,6 +426,7 @@ static void FillFormatPopup(OVPopup *popup, NSString *selectedId) {
     ShrinkOnly(improveTexts);
     [improveTexts setContentHuggingPriority:NSLayoutPriorityDefaultHigh forOrientation:NSLayoutConstraintOrientationHorizontal];   // beats the spacer
     NSStackView *improveBox = OVHStack(@[self.improveSwitch, OVSymbol(@"sparkles", 16, OVColor(OVRoleAccent)), improveTexts], 10);
+    self.improveBox = improveBox;
     improveBox.toolTip = L(@"Text is prepared for reading aloud (abbreviations, numbers, years), each phrase is spoken several times and the take that is clearest, sounds most native and most like the voice, with the dictionary stress, is kept. Slower, but the best result.");
 
     self.synthButton = OVPrimaryButton(L(@"Speak"), self, @selector(synthesize:));
@@ -519,6 +525,8 @@ static void FillFormatPopup(OVPopup *popup, NSString *selectedId) {
     [nc addObserver:self selector:@selector(themeChanged) name:OVThemeDidChangeNotification object:nil];
     [nc addObserver:self selector:@selector(reloadPresets) name:OVPresetsDidChangeNotification object:nil];
 
+    self.edge.onChange = ^{ [w edgeChanged]; };
+    self.edge.onFinished = ^(NSString *path) { [w edgeFinished:path]; };
     [self buildTunePopover];
     [self reloadPresets];
     self.lastAdaptAccent = [OVSettings adaptAccent];
@@ -532,6 +540,7 @@ static void FillFormatPopup(OVPopup *popup, NSString *selectedId) {
 
 - (void)viewDidAppear {
     [super viewDidAppear];
+    [self.edge refresh];
     [self.view.window makeFirstResponder:self.editor];
 }
 
@@ -677,10 +686,12 @@ static void FillFormatPopup(OVPopup *popup, NSString *selectedId) {
     if (!problem && lora && !lora.installed)
         problem = lora.downloading ? [NSString stringWithFormat:L(@"Downloading LoRA “%@” — %.0f%%"), lora.title, lora.progress * 100]
                                    : (lora.error ? [NSString stringWithFormat:L(@"LoRA “%@” isn’t downloaded: %@"), lora.title, lora.error] : [NSString stringWithFormat:L(@"LoRA “%@” isn’t downloaded"), lora.title]);
-    self.bannerCard.hidden = problem == nil;
+    BOOL edge = self.edge.selected;
+    if (edge) problem = self.edge.problem;   // Edge has its own reasons (engine, Offline mode, voice list)
+    self.bannerCard.hidden = problem == nil || edge;
     self.banner.stringValue = problem ?: @"";
     self.banner.toolTip = problem;
-    BOOL busy = self.job.active;   // a busy engine only queues the next take, so it does not disable the button
+    BOOL busy = edge ? self.edge.busy : self.job.active;   // a busy engine only queues the next take, so it does not disable the button
     self.synthButton.enabled = !busy && !self.exporting && problem == nil;
     self.batchButton.enabled = self.synthButton.enabled;
     self.stopButton.hidden = !busy;
@@ -689,6 +700,7 @@ static void FillFormatPopup(OVPopup *popup, NSString *selectedId) {
     self.tuneButton.title = lora ? [NSString stringWithFormat:L(@"LoRA · %@"), lora.title.length > 16 ? [[lora.title substringToIndex:15] stringByAppendingString:@"…"] : lora.title] : L(@"LoRA");
     self.tuneButton.toolTip = lora ? [NSString stringWithFormat:L(@"LoRA “%@” is on. LoRA and accent removal"), lora.title] : L(@"LoRA and accent removal");
     [self refreshMemory];
+    [self refreshEdgeLayout:problem];
 
     OVModel *asrDl = nil;
     for (OVModel *m in [mm modelsOfKind:OVModelASR]) if (m.downloading) asrDl = m;
@@ -1104,6 +1116,11 @@ static BOOL IsVowel(unichar c) {
 - (void)synthesize:(id)sender {
     NSString *text = [self.editor.string stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
     if (!text.length) { self.status.stringValue = L(@"Enter text to speak"); return; }
+    if (self.edge.selected) {
+        if (text.length > 20000) { self.status.stringValue = [NSString stringWithFormat:L(@"Edge takes up to 20,000 characters; this text has %lu."), (unsigned long)text.length]; return; }
+        [self.edge speak:text window:self.view.window];
+        return;
+    }
     NSString *voiceId = self.voicePopup.selectedItem.representedObject;
     OVVoice *voice = [[OVVoices shared] voiceWithId:voiceId ?: @""];
     if (!voice && ![voiceId isEqualToString:kAutoVoice]) {
@@ -1232,7 +1249,33 @@ static BOOL IsVowel(unichar c) {
     self.status.stringValue = st;
 }
 
+/// Edge: the Edge block replaces the OmniVoice controls; its status and progress go to the Result card.
+- (void)refreshEdgeLayout:(nullable NSString *)problem {
+    BOOL edge = self.edge.selected;
+    self.omniBlock.hidden = edge;
+    self.improveBox.hidden = edge;
+    self.batchButton.hidden = edge;
+    self.sampleButton.superview.hidden = edge;   // the accessory of the card header: Voice sample and LoRA
+    self.edge.view.hidden = !edge;
+    if (!edge) return;
+    BOOL busy = self.edge.busy;
+    self.progress.hidden = !busy;
+    if (self.edge.progress >= 0) self.progress.doubleValue = self.edge.progress;
+    self.status.stringValue = busy ? self.edge.statusLine : (problem ?: self.edge.statusLine);
+}
+
+- (void)edgeChanged { [self refreshState]; }
+
+/// A take of Edge (or of Edge and the voice change) is in the history: show it like an OmniVoice take.
+- (void)edgeFinished:(NSString *)path {
+    self.lastResultPath = path;
+    [self showBarForPath:path];
+    if ([NSUserDefaults.standardUserDefaults boolForKey:@"autoPlay"]) [[OVPlayer shared] play:path];
+    [self.table scrollRowToVisible:0];
+}
+
 - (void)stop:(id)s {
+    if (self.edge.selected && self.edge.busy) { [self.edge stop]; return; }
     if (self.job) [OVJobs.shared stop:self.job];
     self.status.stringValue = L(@"Stopped");
 }

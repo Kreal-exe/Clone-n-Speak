@@ -80,7 +80,9 @@ class YtTests(unittest.TestCase):
                "https://www.youtube.com/watch?v=short", "https://www.youtube.com/watch?v=" + VID + "x",
                "https://www.youtube.com/watch?v=" + VID + "&v=" + VID, "https://www.youtube.com/watch",
                "https://user@www.youtube.com/watch?v=" + VID, "https://www.youtube.com:8443/watch?v=" + VID,
-               "https://youtu.be/", "https://youtu.be/short", "https://youtu.be/" + VID + "/extra", "",
+               "https://youtu.be/", "https://youtu.be/short", "https://youtube.com/shorts/short",
+               "https://www.youtube.com/shorts/" + VID + "/x", "https://www.youtube.com/live/", "https://m.youtube.com/playlist?list=PLx",
+               "https://evil.youtube.com/shorts/" + VID, "https://music.youtube.com/shorts/" + VID + "x", "https://youtu.be/" + VID + "/extra", "",
                "https://www.youtube.com/watch?v=%2e%2e%2f%2e%2e%2fetc", None, 5]
         for u in bad:
             with self.subTest(url=u):
@@ -89,7 +91,10 @@ class YtTests(unittest.TestCase):
                     yt.fetch(self.req(url=u), run)
                 self.assertEqual(run.calls, [])
         ok = {GOOD + "&list=PL123&index=4&t=30": GOOD, "https://youtu.be/%s?list=PLx&si=abc" % VID: GOOD,
-              "https://music.youtube.com/watch?v=%s&list=RDx" % VID: "https://music.youtube.com/watch?v=" + VID}
+              "https://music.youtube.com/watch?v=%s&list=RDx" % VID: "https://music.youtube.com/watch?v=" + VID,
+              "https://youtube.com/shorts/%s?si=x" % VID: GOOD, "https://m.youtube.com/watch?v=" + VID: GOOD,
+              "https://www.youtube.com/shorts/%s/" % VID: GOOD, "https://www.youtube.com/live/" + VID: GOOD,
+              "https://youtube.com/embed/" + VID: GOOD, "https://m.youtube.com/shorts/" + VID: GOOD}
         for u, canon in ok.items():
             with self.subTest(url=u):
                 self.assertEqual(yt.parse_url(u), (VID, canon))

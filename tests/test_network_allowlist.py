@@ -54,6 +54,8 @@ EXPECTED = {
                       "checked before chmod +x), runs it with a clean environment, and stops it on Stop / quit / Offline / key change; "
                       "the markers are the program's name and path"),
     "OVBridge.h": (1, "Bridge's interface: one comment naming the tunnel program; no network code"),
+    "OVYouTubeSheet.h": (1, "names yt-dlp in the API comment; the download runs through OVProRun (yt_import kind)"),
+    "OVYouTubeSheet.m": (9, "YouTube import sheet: link check and yt-dlp version text; the download itself is the yt_import job (cns_ytdl.py)"),
     "cns_api.py": (6, "local API / Bridge listeners on 127.0.0.1, server side only (no outgoing calls); it also owns the Bridge "
                       "tunnel program (the file name and path markers) so the tunnel ends with the server, only after OVBridge "
                       "verified it and only when the app sends tunnel_start"),
