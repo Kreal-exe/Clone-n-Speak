@@ -1,0 +1,10 @@
+Dataset has 1 speakers.
+Initializing the generator with 1 speakers.
+Using HiFi-GAN vocoder
+Using AdamW optimizer
+Using Single-Scale Mel loss function
+Overriding the pretrain speaker embedding size to 1 speakers.
+realcap | epoch=1 | step=4 | time=21:52:56 | training_speed=0:00:07
+realcap | epoch=2 | step=8 | time=21:53:05 | training_speed=0:00:06 | lowest_value=28.185 (epoch 2 and step 5)
+Training has been successfully completed with 2 epoch, 8 steps and 51.379 loss gen.
+Lowest generator loss: 28.185 at epoch 2, step 5
