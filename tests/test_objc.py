@@ -14,7 +14,7 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TESTS = sorted(glob.glob(os.path.join(ROOT, "tests", "objc", "*_test.m")))
 FRAMEWORKS = ["Foundation", "Cocoa", "AVFoundation", "AVFAudio", "CoreMedia", "CoreVideo", "AudioToolbox",
-              "UniformTypeIdentifiers", "NaturalLanguage", "QuartzCore"]
+              "UniformTypeIdentifiers", "NaturalLanguage", "QuartzCore", "Security"]
 
 
 def deps_of(path):

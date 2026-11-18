@@ -24,6 +24,9 @@ NS_ASSUME_NONNULL_BEGIN
 + (NSString *)rvcModels;     // …/rvc/models (voice models: .pth + .index)
 + (NSString *)rvcTraining;   // …/rvc/training (experiment workspaces)
 + (NSString *)rvcDatasets;   // …/rvc/datasets
++ (NSString *)api;           // …/api (local API: uploads/ and out/)
++ (NSString *)apiUploads;    // …/api/uploads (the server's upload folder)
++ (NSString *)apiOut;        // …/api/out (audio the API's jobs produced)
 + (void)ensure;
 
 /// Folders of the previous version (OmniVoice UA).

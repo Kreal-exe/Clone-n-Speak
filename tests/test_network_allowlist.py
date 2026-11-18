@@ -29,6 +29,7 @@ EXPECTED = {
     "worker.py": (4, "ECAPA fetch (cached only offline), Seed-VC download (explicit_download)"),
     "cns_separate.py": (8, "music-removal model download, started by the user (pinned HTTPS URL + sha256, https-only redirects)"),
     "cns_dfn.py": (4, "DeepFilterNet binary download, started by the user (pinned URL + sha256)"),
+    "OVAPIPage.m": (3, "the Quick start text shows shell commands for the local API (127.0.0.1); the page makes no network call"),
     "cns_engines.py": (22, "pro-engine installs, started by the user: pinned HTTPS URLs (GitHub, Hugging Face) + sha256, "
                            "https-only redirects, uv/PyPI through the installer; also names edge-tts and yt-dlp as packages"),
     "cns_realtime.py": (8, "realtime voice process: one local Unix-socket client (AF_UNIX, no internet); sandboxed without network"),

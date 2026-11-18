@@ -13,6 +13,7 @@
 #import "OVPageRegistry.h"
 #import "OVDesign.h"
 #import "OVJobs.h"
+#import "OVAPI.h"
 
 @interface OVSeparatorPage (LaunchSweep)
 /// Removes decoded inputs older than a day that no running or retryable task needs (implemented in OVSeparatorPage.m).
@@ -494,6 +495,7 @@ static void OVRedrawTree(NSView *v) {
     [[OVHistory shared] reload];
     [OVJobs registerBuiltinKinds];
     [OVSeparatorPage sweepInputFolder];
+    [OVAPI.shared startIfEnabled];
     OVBatchRegister();
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(jobsChanged:) name:OVJobsDidChangeNotification object:nil];
     [self buildMenu];
@@ -876,7 +878,7 @@ static void OVWriteSnapshot(NSView *v, NSString *file) {
 /// they go on in the background with the Dock icon, and a click on it opens the window again.
 /// Work that keeps the app alive without a window. 8.6 adds the local API ([OVAPI shared].enabled) here.
 - (BOOL)hasBackgroundWork {
-    return OVJobs.shared.activeCount > 0;
+    return OVJobs.shared.activeCount > 0 || OVAPI.shared.enabled;
 }
 
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)a {
@@ -914,6 +916,7 @@ static void OVWriteSnapshot(NSView *v, NSString *file) {
 - (BOOL)applicationSupportsSecureRestorableState:(NSApplication *)a { return YES; }
 
 - (void)applicationWillTerminate:(NSNotification *)n {
+    [OVAPI.shared stop];
     [[OVWorker shared] stop];
     [[OVRuntime shared] cancelInstall];
 }
