@@ -8,6 +8,7 @@
 #import "OVLocale.h"
 #import "OVMemory.h"
 #import "OVExport.h"
+#import "OVModels.h"
 
 #pragma mark - Palette tile
 
@@ -137,6 +138,7 @@ static NSStackView *Rows(NSArray<NSView *> *rows, CGFloat gap) {
 }
 
 @interface OVSettingsPage ()
+@property NSTextField *modelPath, *modelFree, *modelWarning;
 @property NSMutableArray<OVSliderRow *> *sliders;
 @property NSMutableDictionary<NSString *, NSButton *> *checks;  // defaults key → checkbox
 @property NSTextField *seedField, *engineInfo;
@@ -476,7 +478,45 @@ static NSArray<NSArray *> *QualityChoices(NSString *formatId) {
     NSView *app = Rows(@[OVLabel(L(@"Voices, models and Python"), 14, NSFontWeightSemibold, nil),
                          MonoMuted([[OVPaths support] stringByAbbreviatingWithTildeInPath])], 6);
     NSView *files = OVStepCard(0, @"folder", L(@"Files"), nil, Rows(@[rec, app, OVHStack(@[openOut, openData, OVSpacer()], 8)], 16));
-    return CardColumn(@[files]);
+    self.modelPath = MonoMuted(@"");
+    self.modelFree = OVWrapLabel(@"", 13, OVColor(OVRoleMuted));
+    self.modelWarning = OVWrapLabel(@"", 13, OVColor(OVRoleWarn));
+    NSTextField *modelHint = OVWrapLabel(L(@"Where the speech and recognition models are stored (the Hugging Face cache). Models already downloaded there are found; new ones are saved there. Change it to keep them on an external disk."), 13, OVColor(OVRoleMuted));
+    NSButton *chooseModels = OVGhostButton(L(@"Choose…"), @"folder", self, @selector(chooseModelFolder:));
+    NSButton *resetModels = OVGhostButton(L(@"Default folder"), nil, self, @selector(resetModelFolder:));
+    NSButton *showModels = OVGhostButton(L(@"Show in Finder"), nil, self, @selector(openModelFolder:));
+    NSView *models = OVStepCard(0, @"externaldrive", L(@"Model folder"), nil,
+        Rows(@[modelHint, self.modelPath, self.modelFree, self.modelWarning, OVHStack(@[chooseModels, resetModels, showModels, OVSpacer()], 8)], 10));
+    [self refreshModelFolder];
+    return CardColumn(@[files, models]);
+}
+
+- (void)refreshModelFolder {
+    NSString *dir = [OVModels hubCache];
+    self.modelPath.stringValue = [dir stringByAbbreviatingWithTildeInPath];
+    long long free = [OVModels freeBytesForFolder:dir];
+    self.modelFree.stringValue = free >= 0 ? [NSString stringWithFormat:L(@"%@ free"), OVFormatBytes(free)] : @"";
+    self.modelFree.hidden = free < 0;
+    NSString *warn = [OVModels hubCacheWarning];
+    self.modelWarning.stringValue = warn ?: @"";
+    self.modelWarning.hidden = warn == nil;
+}
+
+- (void)chooseModelFolder:(id)s {
+    NSOpenPanel *p = [NSOpenPanel openPanel];
+    p.canChooseDirectories = YES;
+    p.canChooseFiles = NO;
+    p.canCreateDirectories = YES;
+    p.showsHiddenFiles = YES;
+    p.message = L(@"Choose the folder for the models");
+    if ([p runModal] != NSModalResponseOK) return;
+    [OVModels setHubCacheOverride:p.URL.path];
+    [self refreshModelFolder];
+}
+- (void)resetModelFolder:(id)s { [OVModels setHubCacheOverride:nil]; [self refreshModelFolder]; }
+- (void)openModelFolder:(id)s {
+    NSString *dir = [OVModels hubCache];
+    if ([NSFileManager.defaultManager fileExistsAtPath:dir]) [NSWorkspace.sharedWorkspace openURL:[NSURL fileURLWithPath:dir]];
 }
 
 - (NSView *)updatesTab {
@@ -533,6 +573,7 @@ static NSArray<NSArray *> *QualityChoices(NSString *formatId) {
 - (void)viewWillAppear {
     [super viewWillAppear];
     [self refreshControls];
+    [self refreshModelFolder];
     [self syncTiles];
     [self loadExportFormats];
 }

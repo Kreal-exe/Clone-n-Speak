@@ -8,3 +8,10 @@
 "Effects chain" = "Цепочка эффектов";
 "The list of effects comes from the engine" = "Список эффектов приходит от движка";
 "The answer was larger than expected, so it was stopped." = "Ответ оказался больше ожидаемого, поэтому загрузка остановлена.";
+"Model folder" = "Папка моделей";
+"Where the speech and recognition models are stored (the Hugging Face cache). Models already downloaded there are found; new ones are saved there. Change it to keep them on an external disk." = "Где хранятся модели речи и распознавания (кеш Hugging Face). Уже скачанные модели там находятся, новые сохраняются туда же. Смените папку, чтобы держать модели на внешнем диске.";
+"Default folder" = "Папка по умолчанию";
+"%@ free" = "Свободно: %@";
+"Choose the folder for the models" = "Выберите папку для моделей";
+"The model folder is on %@, which isn’t connected — connect it or choose another folder" = "Папка моделей на диске «%@», который не подключён: подключите его или выберите другую папку";
+"The Hugging Face address in the settings is not https, so nothing was downloaded. Fix it on the Models page." = "Адрес Hugging Face в настройках не https, поэтому ничего не загружено. Исправьте его на странице «Модели».";

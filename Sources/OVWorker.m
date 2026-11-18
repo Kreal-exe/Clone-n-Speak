@@ -108,7 +108,7 @@ NSNotificationName const OVWorkerEventNotification = @"OVWorkerEvent";
     env[@"OV_OPT_DIR"] = [[OVPaths support] stringByAppendingPathComponent:@"optimized"];
     env[@"HF_HUB_CACHE"] = [OVModels hubCache]; // fallback downloads (e.g. audio tokenizer) land in the same cache
     NSString *ep = [NSUserDefaults.standardUserDefaults stringForKey:@"hfEndpoint"];
-    if (ep.length) env[@"HF_ENDPOINT"] = ep;
+    if (ep.length && [OVModels endpointIsSecure:ep]) env[@"HF_ENDPOINT"] = ep;
     // Offline mode: the engine never fetches anything (explicit model downloads run in OVDownloader, not here).
     self.startedOffline = OVNetwork.offline;
     if (OVNetwork.offline) { env[@"OV_OFFLINE"] = @"1"; env[@"HF_HUB_OFFLINE"] = @"1"; }
