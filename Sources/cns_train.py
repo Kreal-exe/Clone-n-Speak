@@ -60,9 +60,34 @@ _WEIGHTS_RE = re.compile(r"^(?P<name>.+)_(?P<e>\d+)e_(?P<s>\d+)s\.pth$")
 _CKPT_RE = re.compile(r"^[GD]_\d+\.pth$")
 
 
-# Training runs offline. The generic profile of cns_engines also denies Unix sockets and file writes, which breaks
-# torch's DataLoader workers (torch_shm_manager), so training uses this one: no IP traffic at all, everything else open.
-NO_IP_PROFILE = "(version 1)\n(allow default)\n(deny network-outbound (remote ip))\n(deny network-inbound (local ip))\n(deny network-bind (local ip))\n"
+# Training runs offline and may write only where it must: no IP traffic, all file writes denied except the given roots,
+# the terminal/null devices and the per-user cache folders macOS hands to MPS (shader cache). The generic profile of
+# cns_engines also denies Unix sockets, which breaks torch's DataLoader workers (torch_shm_manager), so this one is own.
+NO_SANDBOX_ENV = "CNS_TRAIN_NO_SANDBOX"   # tests only; no request key can turn the sandbox off
+SANDBOX_EXEC = "/usr/bin/sandbox-exec"
+
+
+def train_profile(write_roots):
+    import cns_engines as eng
+    allow = ['(literal "/dev/null")', '(regex #"^/dev/tty")', '(regex #"^/dev/dtracehelper$")']
+    for r in write_roots:
+        allow.append("(subpath %s)" % eng._sb_quote(os.path.realpath(r)))
+    for d in _darwin_cache_dirs():
+        allow.append("(subpath %s)" % eng._sb_quote(d))
+    return ("(version 1)\n(allow default)\n(deny network-outbound (remote ip))\n(deny network-inbound (local ip))\n"
+            "(deny network-bind (local ip))\n(deny file-write*)\n(allow file-write* %s)\n" % " ".join(allow))
+
+
+def _darwin_cache_dirs():
+    out = []
+    try:
+        for key in ("DARWIN_USER_CACHE_DIR", "DARWIN_USER_TEMP_DIR"):
+            r = subprocess.run(["/usr/bin/getconf", key], capture_output=True, text=True, timeout=5).stdout.strip()
+            if r.startswith("/"):
+                out.append(os.path.realpath(r))
+    except Exception:  # noqa: BLE001
+        pass
+    return out
 
 
 class TrainError(RuntimeError):
@@ -527,14 +552,19 @@ class Trainer:
         self.pm = cns_proto.ProgressMap([(s, w) for s, w in STAGE_WEIGHTS if s in self.steps])
         self.stop = threading.Event()
         self.detector = OvertrainDetector(req.get("patience") or OvertrainDetector.default_patience(self.total))
+        self.tmp = self.work or os.path.join(self.paths["training"], ".tmp")
+        self.step_epoch = {}
+        self.parent = os.getppid()
         self.epochs_seen = 0
         self.start_epoch = 0
+        if self.work:
+            self._check_work()
         self.batch = None
 
     # -- helpers
     def _env(self):
         import cns_engines as eng
-        tmp = self.work or os.path.join(self.paths["training"], ".tmp")
+        tmp = self.tmp
         os.makedirs(tmp, exist_ok=True)
         env = eng._safe_env(os.path.dirname(self.paths["training"]), {
             "TMPDIR": tmp, "APPLIO_LOGS_DIR": self.paths["training"], "APPLIO_ROOT": self.paths["applio"],
@@ -543,11 +573,18 @@ class Trainer:
             "NUMBA_CACHE_DIR": os.path.join(tmp, "numba")})
         return env
 
+    def _should_stop(self):
+        """SIGTERM, or the app that started us is gone (we were re-parented): the ~10 GB child must not live on."""
+        return self.stop.is_set() or os.getppid() != self.parent
+
     def _argv(self, script_args):
         argv = [self.paths["python"]] + script_args
-        if self.req.get("sandbox", True) and os.path.exists("/usr/bin/sandbox-exec"):
-            argv = ["/usr/bin/sandbox-exec", "-p", NO_IP_PROFILE] + argv
-        return argv
+        if os.environ.get(NO_SANDBOX_ENV) == "1":
+            return argv
+        if not os.path.exists(SANDBOX_EXEC):
+            raise TrainError("Can't start training safely: the macOS sandbox tool is missing.")
+        roots = [self.paths["training"], self.tmp]
+        return [SANDBOX_EXEC, "-p", train_profile(roots)] + argv
 
     def _run(self, stage, script_args, line_handler=None, watchdog_s=STAGE_WATCHDOG_S):
         wd = cns_proto.Watchdog(watchdog_s, lambda: None, clock=self.clock)
@@ -562,7 +599,7 @@ class Trainer:
 
         argv = self._argv([os.path.join(self.paths["applio"], *script_args[0].split("/"))] + script_args[1:])
         code = run_child(argv, self._env(), self.paths["applio"], on_line, watchdog=wd, popen=self.popen,
-                         should_stop=self.stop.is_set)
+                         should_stop=self._should_stop)
         if code != 0:
             raise TrainError("The %s step failed (exit code %s). Details are in the log." % (stage, code))
 
@@ -632,6 +669,8 @@ class Trainer:
             p = parse_progress(line)
             if p:
                 epoch, _step, b, n = p
+                if b is None:
+                    self.step_epoch[_step] = epoch
                 self.emit.progress(self.pm.at("train", frac.update(epoch, b, n)))
                 if b is None:
                     self.emit.log(line[:400])
@@ -646,6 +685,7 @@ class Trainer:
     def _detect(self):
         rows = read_epoch_losses(os.path.join(self.exp, "eval"))
         by_step = {e[1]: e[0] for e in weights_files(self.exp, self.name)}
+        by_step.update(self.step_epoch)
         new = rows[self.epochs_seen:]
         before = self.detector.state
         for i, (step, mel, gen) in enumerate(new):
@@ -656,12 +696,17 @@ class Trainer:
             if self.detector.state != "improving":
                 self.emit.log("Overtraining check: %s. The best epoch so far is %s — you can stop and use it."
                               % (self.detector.state, rep["best_epoch"]))
-            self.emit.emit("progress", value=self.pm._last, overtraining=rep)
+            self.emit.emit("progress", value=self.pm.value, overtraining=rep)
 
     def index(self):
         self.emit.status("Building the voice index")
         self._run("index", ["rvc/train/process/extract_index.py", self.exp, self.index_algorithm])
         self.emit.progress(self.pm.at("index", 1))
+
+    def _check_overwrite(self):
+        if self.models_dir and not self.req.get("overwrite") and \
+                os.path.exists(os.path.join(self.models_dir, self.name, self.name + ".pth")):
+            raise TrainError("A voice named %s already exists. Pick another name, or allow replacing it." % self.name)
 
     def export(self):
         if not self.models_dir:
@@ -678,6 +723,7 @@ class Trainer:
             raise TrainError("Training produced no voice file.")
         m = _WEIGHTS_RE.match(os.path.basename(pth))
         out = os.path.join(self.models_dir, self.name)
+        self._check_overwrite()
         os.makedirs(out, exist_ok=True)
         dst_pth = os.path.join(out, self.name + ".pth")
         shutil.copy2(pth, dst_pth)
@@ -693,6 +739,20 @@ class Trainer:
         self.emit.progress(self.pm.at("export", 1))
         return outputs, meta
 
+    def _check_work(self):
+        """The work folder is emptied at the end, so it must not be, or hold, anything we keep."""
+        w = os.path.realpath(self.work)
+        keep = [self.paths["training"], self.exp, self.paths["applio"], self.paths["weights"]]
+        for extra in (self.req.get("dataset"), self.models_dir):
+            if extra:
+                keep.append(extra)
+        for k in keep:
+            k = os.path.realpath(os.path.expanduser(str(k)))
+            if os.path.commonpath([w, k]) == w:
+                raise TrainError("The work folder overlaps a folder that must be kept.")
+        if w == os.path.realpath(os.path.expanduser("~")) or w == os.sep:
+            raise TrainError("The work folder overlaps a folder that must be kept.")
+
     def clear_work(self):
         if self.work and os.path.isdir(self.work):
             for f in os.listdir(self.work):
@@ -702,6 +762,8 @@ class Trainer:
     def run(self):
         outputs, meta = [], {}
         try:
+            if "export" in self.steps:
+                self._check_overwrite()
             for s in self.steps:
                 if self.stop.is_set():
                     raise Stopped()
@@ -768,6 +830,9 @@ def main(argv=None):
         return COMMANDS_CLI[args.command](cns_proto.read_request())
     except (TrainError, cns_proto.ProtoError) as e:
         cns_proto.fail(str(e))
+        return 1
+    except Exception as e:  # noqa: BLE001  whatever else goes wrong must still reach the app as an error event
+        cns_proto.fail("Training failed: %s: %s" % (type(e).__name__, e))
         return 1
 
 

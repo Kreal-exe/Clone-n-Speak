@@ -124,7 +124,7 @@ def fake_applio(base, train_sleep=0):
             "import os,sys,time\n"
             "name,total,exp=sys.argv[1],int(sys.argv[3]),os.path.join(os.environ['APPLIO_LOGS_DIR'],sys.argv[1])\n"
             "assert len(sys.argv)==15, sys.argv\n"
-            "os.makedirs(exp,exist_ok=True)\nstep=0\n"
+            "os.makedirs(exp,exist_ok=True)\nstep=0\nopen(os.path.join(exp,'pid'),'w').write(str(os.getpid()))\n"
             "for e in range(1,total+1):\n"
             "    for b in (7,14):\n"
             "        step+=7\n        print('%s | epoch=%d | step=%d | batch=%d/14'%(name,e,step,b),flush=True)\n"
@@ -158,9 +158,12 @@ def make_world(train_sleep=0):
     return base, req
 
 
-def run_cli(command, req, signal_after=None, timeout=60):
+def run_cli(command, req, signal_after=None, timeout=60, sandbox=False):
+    env = dict(os.environ)
+    if not sandbox:
+        env["CNS_TRAIN_NO_SANDBOX"] = "1"   # the fake engine is not what the sandbox tests are about
     p = subprocess.Popen([sys.executable, str(HERE.parent / "Sources" / "cns_train.py"), command], stdin=subprocess.PIPE,
-                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
     p.stdin.write(json.dumps(req) + "\n")
     p.stdin.close()
     events = []
@@ -203,6 +206,49 @@ class RunTests(unittest.TestCase):
         self.assertTrue(exp.is_dir())
         self.assertTrue((exp / "G_2333333.pth").exists())
         self.assertEqual(list((base / "work").iterdir()), [])
+        pid = int((exp / "pid").read_text())
+        time.sleep(0.5)
+        with self.assertRaises(ProcessLookupError):   # the child did not outlive the wrapper
+            os.kill(pid, 0)
+
+    def test_work_folder_must_not_hold_kept_folders(self):
+        base, req = make_world()
+        req["work_dir"] = str(base)   # contains training, dataset and models
+        code, events, _ = run_cli("run", req)
+        self.assertEqual(code, 1)
+        self.assertIn("work folder", [e for e in events if e["event"] == "error"][0]["msg"])
+        self.assertTrue((base / "ds").is_dir())
+
+    def test_export_refuses_to_overwrite_a_voice(self):
+        base, req = make_world()
+        self.assertEqual(run_cli("run", req)[0], 0)
+        shutil_rmtree(base / "training")
+        (base / "training").mkdir()
+        code, events, _ = run_cli("run", req)
+        self.assertEqual(code, 1)
+        self.assertIn("already exists", [e for e in events if e["event"] == "error"][0]["msg"])
+        req["overwrite"] = True
+        self.assertEqual(run_cli("run", req)[0], 0)
+
+    def test_sandbox_cannot_be_disabled_by_the_request(self):
+        if not os.path.exists("/usr/bin/sandbox-exec"):
+            self.skipTest("no sandbox-exec")
+        base, req = make_world()
+        req["sandbox"] = False
+        trainer = tr.Trainer(req)
+        self.assertEqual(trainer._argv(["x"])[0], "/usr/bin/sandbox-exec") if "CNS_TRAIN_NO_SANDBOX" not in os.environ else None
+
+    def test_missing_sandbox_tool_is_an_error_not_an_unsandboxed_run(self):
+        base, req = make_world()
+        trainer = tr.Trainer(req)
+        old = tr.SANDBOX_EXEC
+        tr.SANDBOX_EXEC = "/nonexistent/sandbox-exec"
+        os.environ.pop("CNS_TRAIN_NO_SANDBOX", None)
+        try:
+            with self.assertRaises(tr.TrainError):
+                trainer._argv(["x"])
+        finally:
+            tr.SANDBOX_EXEC = old
 
     def test_resume_requires_checkpoints(self):
         base, req = make_world()
@@ -220,7 +266,7 @@ class RunTests(unittest.TestCase):
         base, req = make_world()
         req["total_epoch"] = 2
         self.assertEqual(run_cli("run", req)[0], 0)
-        req.update(resume=True, total_epoch=3)
+        req.update(resume=True, total_epoch=3, overwrite=True)
         code, events, err = run_cli("run", req)
         self.assertEqual(code, 0, err)
         # the fake train.py counts from 1 again, but the wrapper starts the bar at 0 for the one epoch left
@@ -259,6 +305,37 @@ class RunTests(unittest.TestCase):
         code, events, _ = run_cli("run", req)
         self.assertEqual(code, 1)
         self.assertIn("not installed", [e for e in events if e["event"] == "error"][0]["msg"])
+
+
+@unittest.skipUnless(os.path.exists("/usr/bin/sandbox-exec"), "needs macOS sandbox-exec")
+class SandboxProfileTests(unittest.TestCase):
+    def test_writes_outside_the_allowed_roots_fail(self):
+        root = tempfile.mkdtemp()
+        prof = tr.train_profile([root])
+        elsewhere = "/tmp/cns-train-probe-%d" % random.randrange(10 ** 9)
+        ok = os.path.join(root, "ok")
+        r = subprocess.run(["/usr/bin/sandbox-exec", "-p", prof, "/bin/sh", "-c", "echo x > '%s'; echo y > '%s'" % (ok, elsewhere)],
+                           capture_output=True, text=True)
+        self.assertTrue(os.path.exists(ok))
+        self.assertFalse(os.path.exists(elsewhere))
+        self.assertNotEqual(r.returncode, 0)
+
+    def test_no_ip_traffic(self):
+        import socket
+        srv = socket.socket()
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(1)
+        port = srv.getsockname()[1]
+        code = "import socket,sys\ntry:\n socket.create_connection(('127.0.0.1',%d),2)\n print('connected')\nexcept OSError:\n print('blocked')" % port
+        r = subprocess.run(["/usr/bin/sandbox-exec", "-p", tr.train_profile([tempfile.mkdtemp()]), sys.executable, "-c", code],
+                           capture_output=True, text=True)
+        srv.close()
+        self.assertIn("blocked", r.stdout)
+
+
+def shutil_rmtree(p):
+    import shutil
+    shutil.rmtree(p)
 
 
 class DetectorTests(unittest.TestCase):
