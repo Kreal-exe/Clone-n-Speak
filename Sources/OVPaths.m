@@ -27,6 +27,8 @@ static NSString *J(NSString *a, NSString *b) { return [a stringByAppendingPathCo
 + (NSString *)engines     { return J([self support], @"engines"); }
 + (NSString *)proEngine    { return J([self engines], @"pro"); }
 + (NSString *)edgeEngine   { return J([self engines], @"edge"); }
++ (NSString *)plugins      { return J([self support], @"plugins"); }
++ (NSString *)pluginData   { return J([self support], @"plugin-data"); }
 + (NSString *)rvc          { return J([self support], @"rvc"); }
 + (NSString *)rvcModels    { return J([self rvc], @"models"); }
 + (NSString *)rvcTraining  { return J([self rvc], @"training"); }

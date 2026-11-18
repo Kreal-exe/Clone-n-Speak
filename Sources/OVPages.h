@@ -53,6 +53,7 @@ extern NSNotificationName const OVSeparatorUseInToolsNotification;   // userInfo
 @interface OVBlenderPage : NSViewController @end
 /// Data & Privacy: what goes online, where files live, voice rights.
 @interface OVPrivacyPage : NSViewController @end
+@interface OVPluginsPage : NSViewController @end
 /// Developer-only page with every OVDesign component (not in the sidebar; OVNavigate(@"gallery") or -OVStartPage gallery).
 @interface OVGalleryPage : NSViewController @end
 

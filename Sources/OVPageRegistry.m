@@ -9,7 +9,7 @@ static NSDictionary *P(NSString *pid, NSString *title, NSString *symbol, Class c
 }
 
 + (NSArray<NSDictionary *> *)groups {
-    Class ph = OVPlaceholderPage.class;
+    __unused Class ph = OVPlaceholderPage.class;
     return @[
         @{@"title": L(@"VOICE"), @"pages": @[
             P(@"synth", L(@"Speech"), @"waveform", OVSynthPage.class, NO),
@@ -26,7 +26,7 @@ static NSDictionary *P(NSString *pid, NSString *title, NSString *symbol, Class c
         @{@"title": L(@"SYSTEM"), @"pages": @[
             P(@"jobs", L(@"Jobs"), @"clock.arrow.circlepath", OVJobsPage.class, NO),
             P(@"api", L(@"API & Bridge"), @"chevron.left.forwardslash.chevron.right", OVAPIPage.class, NO),
-            P(@"plugins", L(@"Plugins"), @"puzzlepiece.extension", ph, YES),
+            P(@"plugins", L(@"Plugins"), @"puzzlepiece.extension", OVPluginsPage.class, YES),
             P(@"privacy", L(@"Data & Privacy"), @"hand.raised", OVPrivacyPage.class, NO),
             P(@"settings", L(@"Settings"), @"gearshape", OVSettingsPage.class, NO),
             P(@"setup", L(@"Setup"), @"checklist", OVSetupPage.class, NO)]},

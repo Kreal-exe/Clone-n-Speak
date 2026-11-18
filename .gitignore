@@ -5,3 +5,4 @@ xcuserdata/
 *.xcworkspace/
 __pycache__/
 *.pyc
+.task-report*.md
