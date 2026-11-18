@@ -26,6 +26,8 @@ static void testDryOutNextToResult(void) {
 }
 
 static void testStyleRoundTrip(void) {
+    NSString *domain = NSBundle.mainBundle.bundleIdentifier ?: NSProcessInfo.processInfo.processName;   // the test binary's own defaults domain
+    [NSUserDefaults.standardUserDefaults removePersistentDomainForName:domain];
     [OVSettings registerDefaults];
     NSDictionary *style = @{@"intonation": @0.4, @"energy": @-0.2, @"pitch": @1.5, @"tone": @0.1, @"pauses": @1.2, @"volume": @3};
     [OVSettings applyStyle:style];
@@ -33,6 +35,7 @@ static void testStyleRoundTrip(void) {
     ASSERT([OVSettings.generationParams[@"style"] isEqualToDictionary:style]);
     ASSERT([[OVSettings exportFormatId] isEqualToString:@"wav"]);
     ASSERT([OVSettings exportQuality] == -1);
+    [NSUserDefaults.standardUserDefaults removePersistentDomainForName:domain];
 }
 
 int main(void) {

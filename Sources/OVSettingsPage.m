@@ -149,6 +149,7 @@ static NSStackView *Rows(NSArray<NSView *> *rows, CGFloat gap) {
 @property NSTextField *previewValue;
 @property NSStackView *engineEnvs;
 @property OVPopup *exportFormatPopup, *exportQualityPopup;
+@property NSTextField *exportHint;
 @end
 
 @implementation OVSettingsPage
@@ -374,8 +375,11 @@ static NSStackView *Rows(NSArray<NSView *> *rows, CGFloat gap) {
 
 /// Quality choices of a format: @[@[title, value]]; empty when the format has no quality (WAV, FLAC, ALAC).
 static NSArray<NSArray *> *QualityChoices(NSString *formatId) {
-    if ([formatId isEqualToString:@"m4a"] || [formatId isEqualToString:@"mp3"])
-        return @[@[L(@"Default (192 kbps)"), @-1], @[@"128 kbps", @128], @[@"192 kbps", @192], @[@"256 kbps", @256], @[@"320 kbps", @320]];
+    if ([formatId isEqualToString:@"m4a"] || [formatId isEqualToString:@"mp3"]) {
+        NSMutableArray *c = [@[@[L(@"Default (192 kbps)"), @-1], @[@"128 kbps", @128], @[@"192 kbps", @192], @[@"256 kbps", @256]] mutableCopy];
+        if ([formatId isEqualToString:@"mp3"]) [c addObject:@[@"320 kbps", @320]];   // recordings are mono: M4A tops out at 256
+        return c;
+    }
     if ([formatId isEqualToString:@"ogg"])
         return @[@[L(@"Default (5)"), @-1], @[L(@"3 · smaller"), @3], @[@"5", @5], @[L(@"7 · better"), @7], @[L(@"10 · best"), @10]];
     return @[];
@@ -393,11 +397,12 @@ static NSArray<NSArray *> *QualityChoices(NSString *formatId) {
     self.exportQualityPopup.target = self;
     self.exportQualityPopup.action = @selector(exportQualityPicked:);
     self.exportQualityPopup.accessibilityLabel = L(@"Export quality");
-    [self loadExportFormats];
+    self.exportHint = OVWrapLabel(@"", 13, OVColor(OVRoleMuted));
+    self.exportHint.hidden = YES;
     return OVStepCard(0, @"square.and.arrow.down", L(@"Export"),
         L(@"New recordings are kept as WAV, and a copy in this format is saved next to each one. Greyed formats need ffmpeg."),
         Rows(@[OVColumns(@[OVFieldBlock(L(@"Export format"), nil, OVFillPopup(self.exportFormatPopup)),
-                           OVFieldBlock(L(@"Quality"), nil, OVFillPopup(self.exportQualityPopup))], 16)], 16));
+                           OVFieldBlock(L(@"Quality"), nil, OVFillPopup(self.exportQualityPopup))], 16), self.exportHint], 16));
 }
 
 /// The ffmpeg lookup can block for a moment, so the list is read off the main thread (and again each time the page appears).
@@ -417,6 +422,15 @@ static NSArray<NSArray *> *QualityChoices(NSString *formatId) {
                 me.exportFormatPopup.lastItem.enabled = ok;
                 me.exportFormatPopup.lastItem.toolTip = ok ? nil : f[@"reason"];
             }
+            NSString *saved = [OVSettings exportFormatId];
+            NSInteger si = [me.exportFormatPopup indexOfItemWithRepresentedObject:saved];
+            BOOL missing = si >= 0 && !me.exportFormatPopup.itemArray[si].enabled;
+            if (missing) {
+                [NSUserDefaults.standardUserDefaults setObject:@"wav" forKey:@"exportFormat"];
+                [NSUserDefaults.standardUserDefaults setInteger:-1 forKey:@"exportQuality"];
+            }
+            me.exportHint.stringValue = missing ? [NSString stringWithFormat:L(@"%@ isn’t available now (ffmpeg is missing), so WAV is used."), saved.uppercaseString] : @"";
+            me.exportHint.hidden = !missing;
             [me syncExportControls];
         });
     });

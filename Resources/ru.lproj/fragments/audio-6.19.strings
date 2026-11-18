@@ -34,3 +34,4 @@
 "The preset could not be saved" = "Не удалось сохранить пресет";
 "The voice style and the effects stay as they are now." = "Стиль голоса и эффекты останутся такими, как сейчас.";
 "This is not a preset file." = "Это не файл пресета.";
+"%@ isn’t available now (ffmpeg is missing), so WAV is used." = "%@ сейчас недоступен (нет ffmpeg), поэтому используется WAV.";

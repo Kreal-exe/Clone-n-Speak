@@ -116,6 +116,12 @@ static void FillFormatPopup(OVPopup *popup, NSString *selectedId) {
                 popup.lastItem.toolTip = ok ? nil : f[@"reason"];
             }
             NSInteger i = [popup indexOfItemWithRepresentedObject:selectedId];
+            if (i >= 0 && !popup.itemArray[i].enabled) {   // saved format that cannot be made now (no ffmpeg): WAV
+                [NSUserDefaults.standardUserDefaults setObject:@"wav" forKey:@"exportFormat"];
+                [NSUserDefaults.standardUserDefaults setInteger:-1 forKey:@"exportQuality"];
+                popup.toolTip = [NSString stringWithFormat:L(@"%@ isn’t available now (ffmpeg is missing), so WAV is used."), [selectedId uppercaseString]];
+                i = [popup indexOfItemWithRepresentedObject:@"wav"];
+            }
             [popup selectItemAtIndex:MAX(0, i)];
         });
     });
@@ -198,6 +204,7 @@ static void FillFormatPopup(OVPopup *popup, NSString *selectedId) {
 @property NSTextField *historyTitle, *playerTitle;
 @property OVPlayerBar *abBar;
 @property OVPopup *presetPopup, *formatPopup;
+@property BOOL exporting;   // a copy in the chosen format is being written: no new synth until it is done
 @property NSButton *presetRename, *presetDelete, *saveAsButton, *batchButton;
 @property OVEffectsView *effects;
 @property (copy) NSString *presetId, *lastResultPath;
@@ -384,7 +391,6 @@ static void FillFormatPopup(OVPopup *popup, NSString *selectedId) {
     self.presetDelete = OVButtonHeight(OVGhostButton(L(@"Delete"), nil, self, @selector(presetDelete:)), 28);
     NSButton *presetImport = OVButtonHeight(OVGhostButton(L(@"Import…"), nil, self, @selector(presetImport:)), 28);
     NSButton *presetExport = OVButtonHeight(OVGhostButton(L(@"Export…"), nil, self, @selector(presetExport:)), 28);
-    presetExport.tag = 1;
     [presetButtons setItems:@[presetSave, self.presetRename, self.presetDelete, presetImport, presetExport]];
     NSView *presetBlock = OVFieldBlock(L(@"Preset"), L(@"A preset keeps the voice style, the file format and the effects chain."),
                                        OVFillStack(@[OVFillPopup(self.presetPopup), presetButtons], 8));
@@ -672,7 +678,8 @@ static void FillFormatPopup(OVPopup *popup, NSString *selectedId) {
     self.banner.stringValue = problem ?: @"";
     self.banner.toolTip = problem;
     BOOL busy = [OVWorker shared].busy;
-    self.synthButton.enabled = !busy && problem == nil;
+    self.synthButton.enabled = !busy && !self.exporting && problem == nil;
+    self.batchButton.enabled = self.synthButton.enabled;
     self.stopButton.hidden = !busy;
     self.progress.hidden = !busy && self.progress.doubleValue <= 0;
     // a ghost pill cannot be tinted, so an active adapter is shown by name
@@ -1035,7 +1042,8 @@ static BOOL IsVowel(unichar c) {
     if (!p) { self.status.stringValue = L(@"Pick a preset to export"); return; }
     NSSavePanel *panel = [NSSavePanel savePanel];
     panel.allowedContentTypes = @[UTTypeJSON];
-    panel.nameFieldStringValue = [p.name stringByAppendingPathExtension:@"json"];
+    NSString *safe = [[p.name componentsSeparatedByCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@"/:"]] componentsJoinedByString:@"-"];
+    panel.nameFieldStringValue = [safe stringByAppendingPathExtension:@"json"];
     if ([panel runModal] != NSModalResponseOK || !panel.URL) return;
     NSError *err = nil;
     if (![[[OVPresets shared] exportData:p] writeToURL:panel.URL options:NSDataWritingAtomic error:&err])
@@ -1058,10 +1066,15 @@ static BOOL IsVowel(unichar c) {
     NSString *fid = self.formatPopup.selectedItem.representedObject ?: @"wav";
     OVExportFormat fmt = [OVExport formatForIdentifier:fid];
     NSSavePanel *panel = [NSSavePanel savePanel];
-    panel.nameFieldStringValue = g.path.lastPathComponent.stringByDeletingPathExtension;
+    NSString *ext = [fid isEqualToString:@"alac"] ? @"m4a" : fid;
+    UTType *type = ext.length ? [UTType typeWithFilenameExtension:ext] : nil;
+    if (type) panel.allowedContentTypes = @[type];
+    panel.nameFieldStringValue = [g.path.lastPathComponent.stringByDeletingPathExtension stringByAppendingPathExtension:ext ?: @"wav"];
     panel.message = [NSString stringWithFormat:L(@"Save as %@"), fid.uppercaseString];
     if ([panel runModal] != NSModalResponseOK || !panel.URL) return;
     NSString *dst = panel.URL.path.stringByDeletingPathExtension, *src = g.path;
+    // the panel already asked about overwriting; OVExport never overwrites ("name 2"), so the confirmed target goes to the Trash first
+    if ([NSFileManager.defaultManager fileExistsAtPath:panel.URL.path]) [NSFileManager.defaultManager trashItemAtURL:panel.URL resultingItemURL:nil error:nil];
     NSInteger quality = [OVSettings exportQuality];
     self.status.stringValue = [NSString stringWithFormat:L(@"Saving as %@…"), fid.uppercaseString];
     __weak typeof(self) w = self;
@@ -1175,12 +1188,14 @@ static BOOL IsVowel(unichar c) {
         [w.table scrollRowToVisible:0];
     };
     if (fmt == OVExportWAV) { finish(nil, nil); return; }
+    self.exporting = YES;
+    [self refreshState];
     self.status.stringValue = [NSString stringWithFormat:L(@"Saving as %@…"), formatId.uppercaseString];
     NSInteger quality = [OVSettings exportQuality];
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         NSError *err = nil;
         NSString *out = [OVExport exportFile:master to:master.stringByDeletingPathExtension format:fmt quality:quality error:&err];
-        dispatch_async(dispatch_get_main_queue(), ^{ finish(out, out ? nil : (err.localizedDescription ?: L(@"unknown error"))); });
+        dispatch_async(dispatch_get_main_queue(), ^{ w.exporting = NO; finish(out, out ? nil : (err.localizedDescription ?: L(@"unknown error"))); });
     });
 }
 
@@ -1266,7 +1281,7 @@ static BOOL IsVowel(unichar c) {
     [cell setFormat:g.formatId effects:g.originalPath != nil];
     cell.improve.enabled = self.synthButton.enabled;
     OVPlayer *p = [OVPlayer shared];
-    BOOL playing = [p.currentPath isEqualToString:g.path] && p.playing;
+    BOOL playing = ([p.currentPath isEqualToString:g.path] || (g.originalPath && [p.currentPath isEqualToString:g.originalPath])) && p.playing;
     cell.play.image = [NSImage imageWithSystemSymbolName:playing ? @"pause.fill" : @"play.fill" accessibilityDescription:nil];
     cell.play.accessibilityLabel = playing ? L(@"Pause") : L(@"Listen");
     return cell;
