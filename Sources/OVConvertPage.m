@@ -12,6 +12,7 @@
 #import "OVPaths.h"
 #import "OVStore.h"
 #import "OVExport.h"
+#import "OVYouTubeSheet.h"
 
 static const NSUInteger kMaxBatch = 200;
 static const NSTimeInterval kMaxSeconds = 2 * 3600;
@@ -21,10 +22,10 @@ static NSString *sLastJobID;   // the page is rebuilt when the user comes back; 
 #pragma mark - RVC models on disk
 
 /// Minimal reader of rvc/models/<id>/meta.json (task 7.14 replaces it with the shared OVRvcModels).
-@interface OVRvcStore : NSObject
+@interface OVConvertModelReader : NSObject
 + (NSArray<NSDictionary *> *)models;   // @{id, name, folder, info}
 @end
-@implementation OVRvcStore
+@implementation OVConvertModelReader
 + (NSArray<NSDictionary *> *)models {
     NSFileManager *fm = NSFileManager.defaultManager;
     NSString *root = [OVPaths rvcModels];
@@ -153,8 +154,7 @@ static void SetEnabledDeep(NSView *v, BOOL on, NSArray<NSView *> *skip) {
     self.batchBox = OVFillStack(@[self.batchCount, self.batchList, self.batchNote,
                                   OVHStack(@[OVGhostButton(L(@"Clear list"), @"trash", self, @selector(clearBatch:)), OVSpacer()], 8)], 8);
     NSMutableArray *topRow = [NSMutableArray arrayWithObjects:self.modePicker, OVSpacer(), nil];
-    if (NSClassFromString(@"OVYouTubeSheet"))   // task 7.10; the button exists only when that class is in the build
-        [topRow insertObject:OVGhostButton(L(@"From YouTube…"), @"play.rectangle", self, @selector(fromYouTube:)) atIndex:1];
+    [topRow insertObject:OVGhostButton(L(@"From YouTube…"), @"play.rectangle", self, @selector(fromYouTube:)) atIndex:1];
     NSView *c1 = OVFillStack(@[OVHStack(topRow, 8), zone, self.singleBox, self.batchBox], 12);
 
     // 2 Target voice
@@ -388,24 +388,11 @@ static void SetEnabledDeep(NSView *v, BOOL on, NSArray<NSView *> *skip) {
         : L(@"No files yet. Drop several recordings above.");
 }
 
-/// OVYouTubeSheet (task 7.10) is looked up by name so this file builds without it.
 - (void)fromYouTube:(id)sender {
-    Class c = NSClassFromString(@"OVYouTubeSheet");
-    SEL sel = NSSelectorFromString(@"presentOnWindow:destinationDirectory:completion:");
-    if (!c || ![c respondsToSelector:sel]) return;
     __weak typeof(self) w = self;
-    void (^done)(NSURL *) = ^(NSURL *file) { if (file.path.length) [w addFiles:@[file]]; };
-    NSWindow *win = self.view.window;
-    NSString *dir = [OVConvertPage previewFolder];
-    NSMethodSignature *sig = [c methodSignatureForSelector:sel];
-    NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
-    inv.target = c;
-    inv.selector = sel;
-    [inv setArgument:&win atIndex:2];
-    [inv setArgument:&dir atIndex:3];
-    [inv setArgument:&done atIndex:4];
-    [inv retainArguments];
-    [inv invoke];
+    [OVYouTubeSheet presentOnWindow:self.view.window destinationDirectory:[OVConvertPage previewFolder] completion:^(NSURL *file) {
+        if (file.path.length) [w addFiles:@[file]];
+    }];
 }
 
 - (void)removeBatchRow:(NSButton *)b {
@@ -419,7 +406,7 @@ static void SetEnabledDeep(NSView *v, BOOL on, NSArray<NSView *> *skip) {
 
 - (void)reloadTargets {
     NSString *wantModel = [D() stringForKey:@"convert.model"], *wantVoice = [D() stringForKey:@"convert.voice"];
-    self.models = [OVRvcStore models];
+    self.models = [OVConvertModelReader models];
     [self.modelPopup removeAllItems];
     if (!self.models.count) {
         [self.modelPopup addItemWithTitle:L(@"No voice models yet")];
