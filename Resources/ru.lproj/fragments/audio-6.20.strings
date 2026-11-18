@@ -1,0 +1,16 @@
+/* LoRA по ссылке Hugging Face (task 6.20). */
+"Enter a LoRA as “author/name” or a huggingface.co link." = "Введите LoRA как «автор/название» или ссылку huggingface.co.";
+"Offline mode is on, so the repository can’t be checked. Turn it off in Settings to add a LoRA by link." = "Включён автономный режим, поэтому репозиторий не проверить. Выключите его в настройках, чтобы добавить LoRA по ссылке.";
+"Couldn’t reach Hugging Face for “%@”: %@" = "Не удалось связаться с Hugging Face для «%@»: %@";
+"Repository “%@” was not found on Hugging Face. Check the link." = "Репозиторий «%@» не найден на Hugging Face. Проверьте ссылку.";
+"This repository has no LoRA adapter files (adapter_config.json). Pick a repository made with PEFT." = "В этом репозитории нет файлов LoRA-адаптера (adapter_config.json). Выберите репозиторий, сделанный через PEFT.";
+"This repository is already in the list as a different kind of model." = "Этот репозиторий уже есть в списке как модель другого типа.";
+"https://huggingface.co/author/lora-name" = "https://huggingface.co/автор/название-lora";
+"Hugging Face link" = "Ссылка Hugging Face";
+"Add LoRA" = "Добавить LoRA";
+"Add LoRA from a Hugging Face link" = "Добавить LoRA по ссылке Hugging Face";
+"Paste a Hugging Face link to a LoRA made with PEFT. It is checked first, then downloaded." = "Вставьте ссылку Hugging Face на LoRA, сделанный через PEFT. Сначала репозиторий проверяется, потом скачивается.";
+"Checking the repository…" = "Проверяю репозиторий…";
+"Couldn’t add this LoRA." = "Не удалось добавить этот LoRA.";
+"The Hugging Face address in the settings is not https, so the repository isn’t checked (your token must not go over an unencrypted connection)." = "Адрес Hugging Face в настройках не https, поэтому репозиторий не проверяется (токен нельзя отправлять по незащищённому соединению).";
+".bin adapters aren’t supported — the repository needs adapter_model.safetensors." = "Адаптеры .bin не поддерживаются: в репозитории нужен файл adapter_model.safetensors.";
