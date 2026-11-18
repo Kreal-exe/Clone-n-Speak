@@ -1023,7 +1023,7 @@ static BOOL IsVowel(unichar c) {
     panel.allowedContentTypes = @[UTTypeJSON];
     panel.message = L(@"Choose a preset exported from Clone’n’Speak");
     if ([panel runModal] != NSModalResponseOK || !panel.URL) return;
-    NSData *data = [NSData dataWithContentsOfURL:panel.URL];
+    NSData *data = [NSData dataWithContentsOfFile:panel.URL.path];
     __weak typeof(self) w = self;
     [[OVPresets shared] importData:data ?: [NSData data] completion:^(OVPreset *preset, NSArray<NSString *> *warnings, NSString *error) {
         if (!preset) { w.status.stringValue = error ?: L(@"This is not a preset file."); return; }

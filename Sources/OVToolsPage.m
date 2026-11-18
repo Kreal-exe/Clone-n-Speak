@@ -577,7 +577,7 @@ static NSString *const kKeyRatio = @"OVToolsFormantRatio", *const kKeySemis = @"
     __weak typeof(self) w = self;
     [p beginSheetModalForWindow:self.view.window completionHandler:^(NSModalResponse r) {
         if (r != NSModalResponseOK || !p.URL) return;
-        NSData *data = [NSData dataWithContentsOfURL:p.URL];
+        NSData *data = [NSData dataWithContentsOfFile:p.URL.path];
         if (!data) { [w showPresetNote:L(@"This file could not be read.")]; return; }
         [OVPresets.shared importData:data completion:^(OVPreset *preset, NSArray<NSString *> *warnings, NSString *error) {
             typeof(self) s = w;
