@@ -369,7 +369,7 @@ class InstallTests(Base):
     def test_seedvc_warmup_timeout_fails_install(self):
         def slow(*a, **k):
             raise eng.subprocess.TimeoutExpired("x", 1)
-        with mock.patch.object(eng.subprocess, "run", slow):
+        with mock.patch.object(eng, "_run_group", slow):
             with self.assertRaises(eng.EngineError) as cm:
                 self.install(["seedvc"])
         self.assertIn("Install again", str(cm.exception))
@@ -415,17 +415,30 @@ class InstallTests(Base):
         cons = open(os.path.join(self.root, "edge", "constraints.txt")).read()
         self.assertIn("aiohttp==", cons)
 
-    def test_ytdlp_update_clears_ready_and_restores_only_on_success(self):
+    def test_ytdlp_update_keeps_previous_ready_marker_on_failure(self):
         self.install(["ytdlp"])
         comp = eng._by_id("shared")["ytdlp"]
         self.assertTrue(eng.is_ready(self.root, "ytdlp"))
         with self.assertRaises(eng.EngineError):
             eng.update_ytdlp(self.root, self.uv, {"FAKE_UV_FAIL": "yt-dlp"}, self.emit)
-        self.assertFalse(eng.is_ready(self.root, "ytdlp"))
-        self.assertTrue(os.path.exists(eng.installing_path(self.root, comp)))
+        self.assertTrue(eng.is_ready(self.root, "ytdlp"))   # the old install still works: stays ready
+        self.assertFalse(os.path.exists(eng.installing_path(self.root, comp)))
         eng.update_ytdlp(self.root, self.uv, {}, self.emit)
         self.assertTrue(eng.is_ready(self.root, "ytdlp"))
         self.assertIn("version", json.load(open(eng.marker_path(self.root, comp))))
+
+    def test_safe_env_turns_uv_config_off(self):
+        self.assertEqual(eng._safe_env(self.root)["UV_NO_CONFIG"], "1")
+
+    def test_timeout_kills_the_whole_process_group(self):
+        marker = os.path.join(self.tmp.name, "grandchild.pid")
+        code = "import subprocess,sys,time; p=subprocess.Popen(['/bin/sleep','60']); open(sys.argv[1],'w').write(str(p.pid)); time.sleep(60)"
+        with self.assertRaises(eng.subprocess.TimeoutExpired):
+            eng._run_group([sys.executable, "-c", code, marker], 2)
+        pid = int(open(marker).read())
+        time.sleep(0.3)
+        with self.assertRaises(ProcessLookupError):
+            os.kill(pid, 0)
 
     def test_ytdlp_update_respects_offline_mode(self):
         self.install(["ytdlp"])

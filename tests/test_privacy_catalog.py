@@ -13,7 +13,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 import test_network_allowlist as allowlist  # noqa: E402
 
 # Files that other tasks add (7.1, 7.6, 6.20, 8.7, 8.8); rows are ready for them. Remove a name when its file lands.
-PENDING = {"OVBridge.m", "OVBridge.h", "OVPlugins.m", "cns_ytdl.py", "cns_edge.py"}
+PENDING = {"OVBridge.m", "OVBridge.h", "OVPlugins.m"}
 
 CATALOG = (SOURCES / "OVPrivacyCatalog.m").read_text()
 
