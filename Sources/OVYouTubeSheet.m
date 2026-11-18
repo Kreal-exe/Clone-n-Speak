@@ -29,7 +29,7 @@ BOOL OVYouTubeCheckURL(NSString *url, NSString **canonical, NSString **reason) {
     NSURLComponents *c = u.length && u.length <= 400 ? [NSURLComponents componentsWithString:u] : nil;
     NSString *host = c.host.lowercaseString;
     NSString *path = c.percentEncodedPath ?: @"";
-    BOOL watchHost = [host isEqualToString:@"www.youtube.com"] || [host isEqualToString:@"music.youtube.com"];
+    BOOL watchHost = [@[@"youtube.com", @"www.youtube.com", @"m.youtube.com", @"music.youtube.com"] containsObject:host ?: @""];
     BOOL shortHost = [host isEqualToString:@"youtu.be"];
     BOOL playlistLike = [path hasPrefix:@"/playlist"] || [path hasPrefix:@"/@"] || [path hasPrefix:@"/channel"] || [path hasPrefix:@"/c/"] || [path hasPrefix:@"/user/"];
     BOOL hasList = NO;
@@ -41,16 +41,20 @@ BOOL OVYouTubeCheckURL(NSString *url, NSString **canonical, NSString **reason) {
     else if (![c.scheme.lowercaseString isEqualToString:@"https"]) why = L(@"The link must start with https://");
     else if (c.user || c.password || (c.port && c.port.integerValue != 443)) why = L(@"Use the plain video link, without a user name or a port.");
     else if (!watchHost && !shortHost)
-        why = [host hasSuffix:@"youtube.com"] ? L(@"Use a link that starts with https://www.youtube.com/watch?v= or https://youtu.be/")
+        why = [host hasSuffix:@"youtube.com"] ? L(@"Use a YouTube video link (youtube.com/watch?v=, /shorts/, youtu.be/).")
                                               : L(@"Only YouTube links work here (youtube.com or youtu.be).");
     else if (watchHost) {
-        if (![path isEqualToString:@"/watch"])
-            why = playlistLike ? L(@"One video only. Playlists and channels are not supported.") : L(@"Paste the link to one video (youtube.com/watch?v=…).");
+        NSArray<NSString *> *seg = [path componentsSeparatedByString:@"/"];   // "", "shorts", "<id>", maybe ""
+        BOOL idPath = (seg.count == 3 || (seg.count == 4 && !seg[3].length)) && !seg[0].length && seg[2].length > 0 &&
+                      ([seg[1] isEqualToString:@"shorts"] || [seg[1] isEqualToString:@"live"] || [seg[1] isEqualToString:@"embed"]);
+        if (idPath) { vid = seg[2]; site = @"www.youtube.com"; }
+        else if (![path isEqualToString:@"/watch"])
+            why = playlistLike ? L(@"One video only. Playlists and channels are not supported.") : L(@"Paste the link to one video (youtube.com/watch?v=…, /shorts/…).");
         else {
             NSMutableArray *vals = [NSMutableArray array];
             for (NSURLQueryItem *q in c.queryItems) if ([q.name isEqualToString:@"v"]) [vals addObject:q.value ?: @""];
             vid = vals.count == 1 ? vals[0] : @"";
-            site = host;
+            site = [host isEqualToString:@"music.youtube.com"] ? host : @"www.youtube.com";
         }
     } else {   // youtu.be/<id> or youtu.be/<id>/ : exactly one path segment
         NSString *p = path.length > 1 ? [path substringFromIndex:1] : @"";
@@ -64,6 +68,22 @@ BOOL OVYouTubeCheckURL(NSString *url, NSString **canonical, NSString **reason) {
     return YES;
 }
 
+/// YES while `t` could still become a valid link by typing more (so no error shows mid-typing).
+static BOOL IsLinkPrefix(NSString *t) {
+    NSMutableArray *stems = [NSMutableArray array];
+    for (NSString *h in @[@"youtube.com", @"www.youtube.com", @"m.youtube.com", @"music.youtube.com"]) {
+        [stems addObject:[NSString stringWithFormat:@"https://%@/watch?v=", h]];
+        for (NSString *k in @[@"shorts", @"live", @"embed"]) [stems addObject:[NSString stringWithFormat:@"https://%@/%@/", h, k]];
+    }
+    [stems addObject:@"https://youtu.be/"];
+    for (NSString *st in stems) {
+        NSString *full = [st stringByAppendingString:@"aaaaaaaaaaa"];
+        if ([full hasPrefix:t]) return YES;
+        if ([t hasPrefix:st] && [t length] - st.length < 11 && IsVideoId([[t substringFromIndex:st.length] stringByAppendingString:[@"aaaaaaaaaaa" substringFromIndex:[t length] - st.length]])) return YES;
+    }
+    return NO;
+}
+
 #pragma mark - Sheet
 
 @interface OVYouTubeSheet () <NSTextFieldDelegate>
@@ -74,7 +94,9 @@ BOOL OVYouTubeCheckURL(NSString *url, NSString **canonical, NSString **reason) {
 @property NSButton *rightsBox, *consentBox, *goButton, *stopButton, *cancelButton, *updateButton;
 @property NSProgressIndicator *bar;
 @property (weak) OVJob *job, *updateJob;
-@property BOOL gateReady, finished;
+@property BOOL gateReady, finished, starting, urlTouched;
+@property (copy) NSString *cachedVersion;
+@property BOOL versionCached;
 @end
 
 static OVYouTubeSheet *shown;   // one sheet at a time; this keeps the controller alive
@@ -94,6 +116,14 @@ static OVYouTubeSheet *shown;   // one sheet at a time; this keeps the controlle
         [s deliver:nil];   // no-op when a file was delivered already
     }];
     [s.window makeFirstResponder:s.urlField];
+    [NSNotificationCenter.defaultCenter addObserverForName:NSWindowWillCloseNotification object:w queue:nil usingBlock:^(NSNotification *n) {
+        if (shown != s) return;   // the parent closed without ending the sheet
+        if (s.job.active) [OVJobs.shared stop:s.job];
+        if (s.updateJob.active) [OVJobs.shared stop:s.updateJob];
+        [NSNotificationCenter.defaultCenter removeObserver:s];
+        shown = nil;
+        [s deliver:nil];
+    }];
 }
 
 /// A notice block: symbol + text on a tinted plate (never colour alone: the symbol and the words say it too).
@@ -101,6 +131,7 @@ static NSView *Notice(NSString *symbol, NSString *text, OVRole tone) {
     OVBoxView *box = [OVBoxView boxWithFill:OVColorAlpha(tone, 0.10) border:OVColorAlpha(tone, 0.45) radius:10];
     NSTextField *t = OVWrapLabel(text, 13, OVColor(OVRoleText));
     NSImageView *icon = OVSymbol(symbol, 15, OVColor(tone));
+    icon.accessibilityElement = NO;
     NSStackView *row = OVHStack(@[icon, t], 10);
     row.alignment = NSLayoutAttributeTop;
     row.translatesAutoresizingMaskIntoConstraints = NO;
@@ -145,6 +176,7 @@ static NSView *Notice(NSString *symbol, NSString *text, OVRole tone) {
     self.rightsBox.accessibilityLabel = L(@"I own this recording or have the rights to use it");
     self.consentBox.accessibilityLabel = L(@"The speaker has agreed that their voice is used for this");
     NSStackView *perm = OVVStack(@[self.rightsBox, self.consentBox], 10);
+    OVFillWidth(@[self.rightsBox, self.consentBox], perm);   // a long (Russian) title gets the full card width
 
     // 3. Progress
     self.bar = OVProgressBar();
@@ -191,6 +223,7 @@ static NSView *Notice(NSString *symbol, NSString *text, OVRole tone) {
     NSNotificationCenter *nc = NSNotificationCenter.defaultCenter;
     [nc addObserver:self selector:@selector(jobChanged:) name:OVJobsDidChangeNotification object:nil];
     [nc addObserver:self selector:@selector(refresh) name:OVNetworkModeDidChangeNotification object:nil];
+    [nc addObserver:self selector:@selector(enginesChanged:) name:OVEnginesDidChangeNotification object:nil];
     [nc addObserver:self selector:@selector(windowActive:) name:NSWindowDidBecomeKeyNotification object:self.window];
     [OVExport resetFFmpegCache];
     [self refresh];
@@ -204,15 +237,22 @@ static NSView *Notice(NSString *symbol, NSString *text, OVRole tone) {
     BOOL offline = OVNetwork.offline;
     BOOL ffmpeg = [OVExport ffmpegPath] != nil;
     NSString *reason = nil;
-    NSString *typed = self.urlField.stringValue;
-    BOOL typedSomething = [typed stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet].length > 0;
+    NSString *typed = [self.urlField.stringValue stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
     BOOL urlOK = OVYouTubeCheckURL(typed, nil, &reason);
-    BOOL busy = self.running || self.updateJob.active;
+    // the reason shows after the field was left, or while the text is long enough not to be a prefix of a link still being typed
+    BOOL typedSomething = typed.length > 0 && (self.urlTouched || !IsLinkPrefix(typed));
+    BOOL busy = self.running || self.starting || self.updateJob.active;
     self.offlineNotice.hidden = !offline;
     self.ffmpegNotice.hidden = ffmpeg;
+    BOOL wasHidden = self.urlError.hidden;
     self.urlError.hidden = urlOK || !typedSomething;
-    if (!self.urlError.hidden) self.urlError.stringValue = reason ?: @"";
-    BOOL formOn = self.gateReady && !self.running;
+    if (!self.urlError.hidden && ![self.urlError.stringValue isEqualToString:reason ?: @""]) {
+        self.urlError.stringValue = reason ?: @"";
+        NSAccessibilityPostNotificationWithUserInfo(self.urlError, NSAccessibilityAnnouncementRequestedNotification,
+            @{NSAccessibilityAnnouncementKey: self.urlError.stringValue, NSAccessibilityPriorityKey: @(NSAccessibilityPriorityMedium)});
+    }
+    (void)wasHidden;
+    BOOL formOn = self.gateReady && !self.running && !self.starting;
     self.urlField.enabled = formOn;
     self.rightsBox.enabled = formOn;
     self.consentBox.enabled = formOn;
@@ -226,7 +266,16 @@ static NSView *Notice(NSString *symbol, NSString *text, OVRole tone) {
 }
 
 /// Version of the installed yt-dlp, from its dist-info folder in the pro environment (the same place cns_engines.py reads).
+- (void)enginesChanged:(NSNotification *)n { self.versionCached = NO; [self refresh]; }
+
 - (NSString *)ytDlpVersion {
+    if (self.versionCached) return self.cachedVersion;
+    self.cachedVersion = [self readYtDlpVersion];
+    self.versionCached = YES;
+    return self.cachedVersion;
+}
+
+- (NSString *)readYtDlpVersion {
     NSString *py = [OVEngines pythonForEngine:@"ytdlp"];
     if (!py) return nil;
     NSString *venv = [[py stringByDeletingLastPathComponent] stringByDeletingLastPathComponent];
@@ -242,12 +291,17 @@ static NSView *Notice(NSString *symbol, NSString *text, OVRole tone) {
 }
 
 - (void)setStatusText:(NSString *)t error:(BOOL)err {
+    BOOL changed = ![self.status.stringValue isEqualToString:t ?: @""];
     self.status.stringValue = t ?: @"";
     self.status.textColor = OVColor(err ? OVRoleErr : OVRoleMuted);
+    if (changed && t.length && (err || ![t hasPrefix:@"Downloading"]))
+        NSAccessibilityPostNotificationWithUserInfo(self.status, NSAccessibilityAnnouncementRequestedNotification,
+            @{NSAccessibilityAnnouncementKey: t, NSAccessibilityPriorityKey: @(err ? NSAccessibilityPriorityHigh : NSAccessibilityPriorityLow)});
 }
 
 - (void)windowActive:(NSNotification *)n { [OVExport resetFFmpegCache]; [self refresh]; }   // the user may have just installed ffmpeg
 - (void)controlTextDidChange:(NSNotification *)n { [self refresh]; }
+- (void)controlTextDidEndEditing:(NSNotification *)n { self.urlTouched = YES; [self refresh]; }
 - (void)boxChanged:(id)sender { [self refresh]; }
 - (void)fieldAction:(id)sender { if (self.goButton.enabled) [self start:nil]; }
 
@@ -264,9 +318,11 @@ static NSView *Notice(NSString *symbol, NSString *text, OVRole tone) {
     self.bar.hidden = NO;
     self.bar.indeterminate = YES;
     [self.bar startAnimation:nil];
-    self.goButton.enabled = NO;
+    self.starting = YES;
+    [self refresh];
     [OVProRun submitKind:OVProKindYouTube request:req feature:L(@"YouTube import") window:self.window network:OVNetYouTube
               completion:^(OVJob *job, NSString *error) {
+        self.starting = NO;
         if (!job) {   // declined (no text) or refused
             [self endProgress];
             [self setStatusText:error ?: L(@"Nothing was downloaded.") error:error != nil];
@@ -283,8 +339,9 @@ static NSView *Notice(NSString *symbol, NSString *text, OVRole tone) {
     if (self.job.active) { [OVJobs.shared stop:self.job]; [self setStatusText:L(@"Stopping…") error:NO]; }
 }
 
-- (void)cancel:(id)sender {
+- (void)cancel:(id)sender {   // Cancel also stops a running yt-dlp update
     if (self.job.active) [OVJobs.shared stop:self.job];
+    if (self.updateJob.active) [OVJobs.shared stop:self.updateJob];
     [self.window.sheetParent endSheet:self.window];
 }
 
@@ -309,7 +366,7 @@ static NSView *Notice(NSString *symbol, NSString *text, OVRole tone) {
     if (job && job.active) {
         self.bar.hidden = NO;
         if (job.progress < 0) { self.bar.indeterminate = YES; [self.bar startAnimation:nil]; }
-        else { [self.bar stopAnimation:nil]; self.bar.indeterminate = NO; self.bar.doubleValue = job.progress; }
+        else { [self.bar stopAnimation:nil]; self.bar.indeterminate = NO; self.bar.doubleValue = job.progress; self.bar.accessibilityValueDescription = [NSString stringWithFormat:@"%d%%", (int)round(job.progress * 100)]; }
         [self setStatusText:job.status.length ? job.status : L(@"Downloading…") error:NO];
     } else if (job && !self.finished) {
         self.job = nil;
@@ -331,6 +388,7 @@ static NSView *Notice(NSString *symbol, NSString *text, OVRole tone) {
         [self endProgress];
         NSString *msg = up.state == OVJobSucceeded ? L(@"yt-dlp is up to date.") : (up.state == OVJobStopped ? L(@"Stopped.") : (up.error ?: L(@"yt-dlp could not be updated.")));
         [self setStatusText:msg error:up.state == OVJobFailed];
+        self.versionCached = NO;
         [OVEngines.shared refresh];
         [self refresh];
     } else if (up) {

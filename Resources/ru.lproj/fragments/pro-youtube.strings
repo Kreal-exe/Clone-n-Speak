@@ -6,10 +6,10 @@
 "This doesn’t look like a link. Paste the address of one YouTube video." = "Это не похоже на ссылку. Вставьте адрес одного видео YouTube.";
 "The link must start with https://" = "Ссылка должна начинаться с https://";
 "Use the plain video link, without a user name or a port." = "Нужна обычная ссылка на видео, без имени пользователя и порта.";
-"Use a link that starts with https://www.youtube.com/watch?v= or https://youtu.be/" = "Нужна ссылка вида https://www.youtube.com/watch?v= или https://youtu.be/";
+"Use a YouTube video link (youtube.com/watch?v=, /shorts/, youtu.be/)." = "Нужна ссылка на видео YouTube (youtube.com/watch?v=, /shorts/, youtu.be/).";
 "Only YouTube links work here (youtube.com or youtu.be)." = "Здесь работают только ссылки YouTube (youtube.com или youtu.be).";
 "One video only. Playlists and channels are not supported." = "Только одно видео. Плейлисты и каналы не поддерживаются.";
-"Paste the link to one video (youtube.com/watch?v=…)." = "Вставьте ссылку на одно видео (youtube.com/watch?v=…).";
+"Paste the link to one video (youtube.com/watch?v=…, /shorts/…)." = "Вставьте ссылку на одно видео (youtube.com/watch?v=…, /shorts/…).";
 "The video ID in this link is missing or wrong. Copy the link again." = "В ссылке нет идентификатора видео или он неверный. Скопируйте ссылку ещё раз.";
 "YouTube import needs ffmpeg — install it with Homebrew (brew install ffmpeg)" = "Для импорта из YouTube нужен ffmpeg — установите его через Homebrew (brew install ffmpeg)";
 "https://www.youtube.com/watch?v=…" = "https://www.youtube.com/watch?v=…";
