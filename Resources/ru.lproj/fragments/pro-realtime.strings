@@ -76,3 +76,13 @@
 "The voice engine sent something unexpected. Press Start to run it again." = "Голосовой движок прислал что-то неожиданное. Нажмите «Старт», чтобы запустить снова.";
 "No microphone found" = "Микрофон не найден";
 "No output device found" = "Устройство выхода не найдено";
+"Monitoring is off while the output is the built-in speakers: it would feed back into the microphone." = "Прослушивание выключено: выход — встроенные динамики, звук пошёл бы обратно в микрофон.";
+"Monitoring is off while the input and the output are the same device: it would feed back." = "Прослушивание выключено: вход и выход — одно устройство, возник бы свист.";
+"Use headphones" = "Наденьте наушники";
+"The output is the built-in speakers. Your converted voice will play into the microphone and can howl. Headphones are strongly recommended." = "Выход — встроенные динамики. Преобразованный голос пойдёт в микрофон и может свистеть. Настоятельно советуем наушники.";
+"Start anyway" = "Всё равно начать";
+"Cancel" = "Отмена";
+"The microphone stopped delivering sound (error %d). Press Start again." = "Микрофон перестал передавать звук (ошибка %d). Нажмите «Старт» ещё раз.";
+"Microphone access was turned off. Allow it in Privacy settings and press Start." = "Доступ к микрофону отключён. Разрешите его в настройках конфиденциальности и нажмите «Старт».";
+"No sound from the microphone for 2 s. Check the microphone and press Start again." = "От микрофона нет звука уже 2 с. Проверьте микрофон и нажмите «Старт» ещё раз.";
+"The microphone changed its format. Press Start again." = "Микрофон изменил формат. Нажмите «Старт» ещё раз.";

@@ -39,6 +39,8 @@ NS_ASSUME_NONNULL_BEGIN
 /// {"set": changes} to the engine (pitch, index_rate, protect, silent_threshold).
 - (void)sendSet:(NSDictionary<NSString *, NSNumber *> *)changes;
 
+/// Call from a timer while running: ends the session (onError) when the microphone delivers nothing for 2 s, its capture fails or its permission is revoked.
+- (void)checkHealth;
 /// Peak of the microphone since the last call, 0...1 (resets).
 - (float)takeInputLevel;
 /// p50 / p95 of capture -> playback in ms (block time included), the sample count, our own dropped blocks plus the

@@ -18,7 +18,7 @@ static NSNotificationName const OVRtSessionDidChange = @"OVRtSessionDidChange";
 static NSString *const kPreset = @"OVRtPreset", *const kBlock = @"OVRtBlock", *const kExtra = @"OVRtExtra", *const kCross = @"OVRtCrossfade",
                        *const kF0 = @"OVRtF0", *const kThreshold = @"OVRtSilentThreshold", *const kVad = @"OVRtVad", *const kVadSens = @"OVRtVadSensitivity",
                        *const kPitch = @"OVRtPitch", *const kIndex = @"OVRtIndexRate", *const kProtect = @"OVRtProtect",
-                       *const kMonitor = @"OVRtMonitor", *const kModel = @"OVRtModel", *const kInUID = @"OVRtInputUID", *const kOutUID = @"OVRtOutputUID";
+                       *const kSpeakerOK = @"OVRtSpeakersConfirmed", *const kModel = @"OVRtModel", *const kInUID = @"OVRtInputUID", *const kOutUID = @"OVRtOutputUID";
 
 typedef NS_ENUM(NSInteger, OVRtState) { OVRtIdle, OVRtStarting, OVRtLoading, OVRtConnecting, OVRtRunning, OVRtStopping };
 
@@ -168,11 +168,11 @@ static NSArray<NSArray<NSNumber *> *> *Presets(void) { return @[@[@0.15, @0.10, 
 @property (nonatomic) OVDisclosure *advanced;
 @property (nonatomic) NSButton *startButton;
 @property (nonatomic) NSStackView *badgeHost;
-@property (nonatomic) NSTextField *statusLine, *errorLine, *latencyBig, *latencyDetail, *latencyAdvice, *counters, *f0Note, *levelNote;
+@property (nonatomic) NSTextField *statusLine, *errorLine, *monitorNote, *latencyBig, *latencyDetail, *latencyAdvice, *counters, *f0Note, *levelNote;
 @property (nonatomic) NSArray<OVAudioDevice *> *inputs, *outputs;
 @property (nonatomic) NSArray<NSDictionary *> *models;
 @property (nonatomic) NSMutableArray *lockables;   // controls that cannot change while a session runs
-@property (nonatomic) BOOL gateReady, built;
+@property (nonatomic) BOOL gateReady, built, monitorBlocked;
 @property (nonatomic) NSTimer *timer;
 @property (nonatomic) NSInteger tick;
 @property (nonatomic) float levelValue;
@@ -199,7 +199,7 @@ static NSArray<NSArray<NSNumber *> *> *Presets(void) { return @[@[@0.15, @0.10, 
 - (void)loadView {
     NSUserDefaults *ud = NSUserDefaults.standardUserDefaults;
     [ud registerDefaults:@{kPreset: @0, kBlock: @0.15, kExtra: @0.10, kCross: @0.03, kF0: @"rmvpe", kThreshold: @(-60), kVad: @YES, kVadSens: @2,
-                           kPitch: @0, kIndex: @0.3, kProtect: @0.33, kMonitor: @NO}];
+                           kPitch: @0, kIndex: @0.3, kProtect: @0.33}];
     self.lockables = [NSMutableArray array];
     __weak typeof(self) w = self;
 
@@ -212,8 +212,10 @@ static NSArray<NSArray<NSNumber *> *> *Presets(void) { return @[@[@0.15, @0.10, 
     self.outputPopup = [OVPopup popup]; self.outputPopup.accessibilityLabel = L(@"Output");
     self.outputPopup.target = self; self.outputPopup.action = @selector(devicePicked:);
     self.speakerWarning = OVWrapLabel(L(@"Use headphones — speakers will feed back into the microphone"), 13, OVColor(OVRoleWarn));
-    self.bluetoothNote = OVWrapLabel(L(@"Bluetooth adds 100–200 ms. A wired headset keeps the delay low."), 13, OVColor(OVRoleMuted));
-    self.monitorSwitch = [OVSwitch new]; self.monitorSwitch.on = [ud boolForKey:kMonitor];
+    self.bluetoothNote = OVWrapLabel(L(@"Bluetooth adds 100–200 ms. A wired headset keeps the delay low."), 13, OVColor(OVRoleWarn));
+    self.monitorNote = OVWrapLabel(@"", 13, OVColor(OVRoleWarn));
+    self.monitorNote.hidden = YES;
+    self.monitorSwitch = [OVSwitch new]; self.monitorSwitch.on = NO;   // feedback guard: never restored across launches
     self.monitorSwitch.target = self; self.monitorSwitch.action = @selector(monitorToggled:);
     self.meter = [OVMeterBar new]; self.meter.accessibilityLabel = L(@"Input level");
     self.levelNote = OVWrapLabel(L(@"The level shows while Realtime runs."), 13, OVColor(OVRoleMuted));
@@ -223,7 +225,7 @@ static NSArray<NSArray<NSNumber *> *> *Presets(void) { return @[@[@0.15, @0.10, 
     NSView *devices = OVFillStack(@[OVColumns(@[OVFieldBlock(L(@"Input"), nil, OVFillPopup(self.inputPopup)),
                                                OVFieldBlock(L(@"Output"), nil, OVFillPopup(self.outputPopup))], 16),
                                     self.speakerWarning, self.bluetoothNote,
-                                    [self switchRow:L(@"Monitor my own voice") hint:L(@"Plays your unprocessed voice into the output too. Off by default.") sw:self.monitorSwitch],
+                                    [self switchRow:L(@"Monitor my own voice") hint:L(@"Plays your unprocessed voice into the output too. Off by default.") sw:self.monitorSwitch], self.monitorNote,
                                     OVFieldBlock(L(@"Input level"), nil, OVFillStack(@[self.meter, self.levelNote], 6)),
                                     self.virtualFound, self.blackHoleBlock], 14);
     [self.lockables addObjectsFromArray:@[self.inputPopup, self.outputPopup]];
@@ -386,6 +388,15 @@ static NSString *DeviceTitle(OVAudioDevice *d) {
     OVAudioDevice *o = [self selectedOutput], *i = [self selectedInput];
     self.speakerWarning.hidden = !(o && o.isBuiltInSpeaker);
     self.bluetoothNote.hidden = !((o && o.transport == OVAudioTransportBluetooth) || (i && i.transport == OVAudioTransportBluetooth));
+    // monitoring your own voice into speakers (or into the microphone's own device) feeds back
+    NSString *why = nil;
+    if (o && o.isBuiltInSpeaker) why = L(@"Monitoring is off while the output is the built-in speakers: it would feed back into the microphone.");
+    else if (o && i && o.deviceID == i.deviceID) why = L(@"Monitoring is off while the input and the output are the same device: it would feed back.");
+    self.monitorBlocked = why != nil;
+    if (why) { self.monitorSwitch.on = NO; OVRtSession.shared.io.monitorOwnVoice = NO; }
+    self.monitorNote.stringValue = why ?: @"";
+    self.monitorNote.hidden = !why;
+    if (self.built) self.monitorSwitch.enabled = self.gateReady && !self.monitorBlocked;
 }
 
 - (void)devicePicked:(id)sender {
@@ -451,7 +462,6 @@ static NSString *DeviceTitle(OVAudioDevice *d) {
 }
 
 - (void)monitorToggled:(id)sender {
-    [NSUserDefaults.standardUserDefaults setBool:self.monitorSwitch.on forKey:kMonitor];
     OVRtSession.shared.io.monitorOwnVoice = self.monitorSwitch.on;
 }
 - (void)vadToggled:(id)sender { [NSUserDefaults.standardUserDefaults setBool:self.vadSwitch.on forKey:kVad]; [self updateUI]; }
@@ -489,6 +499,16 @@ static NSString *DeviceTitle(OVAudioDevice *d) {
         __weak typeof(self) w = self;
         [OVRealtimeIO requestMicrophoneAccess:^(BOOL granted) { [w checkMicrophone]; if (granted) [w beginSession]; }];
         return;
+    }
+    OVAudioDevice *outDev = [self selectedOutput];
+    if (outDev.isBuiltInSpeaker && ![NSUserDefaults.standardUserDefaults boolForKey:kSpeakerOK]) {
+        NSAlert *a = [NSAlert new];
+        a.messageText = L(@"Use headphones");
+        a.informativeText = L(@"The output is the built-in speakers. Your converted voice will play into the microphone and can howl. Headphones are strongly recommended.");
+        [a addButtonWithTitle:L(@"Start anyway")];
+        [a addButtonWithTitle:L(@"Cancel")];
+        if ([a runModal] != NSAlertFirstButtonReturn) return;
+        [NSUserDefaults.standardUserDefaults setBool:YES forKey:kSpeakerOK];   // asked once
     }
     [self beginSession];
 }
@@ -531,7 +551,7 @@ static NSString *DeviceTitle(OVAudioDevice *d) {
     // lock what a running session cannot change
     for (id c in self.lockables) { if ([c respondsToSelector:@selector(setEnabled:)]) [c setEnabled:idle && self.gateReady]; }
     for (OVSliderRow *r in @[self.pitchRow, self.indexRow, self.protectRow, self.thresholdRow]) r.enabled = self.gateReady;
-    self.monitorSwitch.enabled = self.gateReady;
+    self.monitorSwitch.enabled = self.gateReady && !self.monitorBlocked;
     self.vadSensitivity.enabled = idle && self.gateReady && self.vadSwitch.on;
     self.startButton.enabled = self.gateReady && s.state != OVRtStopping;
     self.startButton.title = idle ? L(@"Start") : L(@"Stop");
@@ -596,6 +616,7 @@ static NSString *DeviceTitle(OVAudioDevice *d) {
         self.levelValue = v > self.levelValue ? v : self.levelValue * 0.85f;   // fast attack, slow release
         self.meter.doubleValue = self.levelValue;
         self.levelNote.hidden = YES;
+        [io checkHealth];
         if (++self.tick % 10 == 0) [self updateMetrics];
     } else if (self.levelValue > 0) {
         self.levelValue = 0; self.meter.doubleValue = 0; self.levelNote.hidden = NO;

@@ -19,7 +19,8 @@ typedef struct OVRtShared {
     uint32_t blockFrame, maxFill, target;
     _Atomic uint32_t levelBits;
     _Atomic bool monitorOn, needPrime, live;
-    _Atomic uint64_t serverDropped, replies;
+    _Atomic uint64_t serverDropped, replies, heartbeat;
+    _Atomic int32_t captureError;   // OSStatus of a failed AudioUnitRender, 0 = none
     dispatch_semaphore_t blockReady;
     // seq -> capture time (sender writes, receiver reads); stored as seq + 1 so 0 means empty
     _Atomic uint64_t capSeq[kStampSlots], capNs[kStampSlots];
@@ -60,10 +61,11 @@ static OSStatus ConverterInput(AudioConverterRef conv, UInt32 *ioPackets, AudioB
 /// Real-time thread: the input AUHAL has samples. No locks, no allocation, no Objective-C.
 static OSStatus CaptureProc(void *ref, AudioUnitRenderActionFlags *flags, const AudioTimeStamp *ts, UInt32 bus, UInt32 frames, AudioBufferList *unused) {
     OVRtShared *c = ref;
+    atomic_fetch_add_explicit(&c->heartbeat, 1, memory_order_relaxed);
     if (!atomic_load_explicit(&c->live, memory_order_relaxed) || frames > c->maxFrames) return noErr;
     for (UInt32 i = 0; i < c->channels; i++) c->abl->mBuffers[i].mDataByteSize = frames * sizeof(float);
     OSStatus st = AudioUnitRender(c->au, flags, ts, bus, frames, c->abl);
-    if (st != noErr) return st;
+    if (st != noErr) { atomic_store_explicit(&c->captureError, (int32_t)st, memory_order_relaxed); return st; }
     float *mono = c->mono;
     if (c->channels == 1) {
         memcpy(mono, c->abl->mBuffers[0].mData, frames * sizeof(float));
@@ -163,6 +165,11 @@ static uint32_t Get32(const uint8_t *p) { return (uint32_t)p[0] | (uint32_t)p[1]
     dispatch_semaphore_t _senderDone, _receiverDone;
     id _inWatch, _outWatch;
     id _configObserver;
+    BOOL _leak;                  // a thread did not end in time: the shared state is never freed
+    BOOL _retriedOutput;
+    NSDate *_startedAt;
+    uint64_t _lastBeat; NSDate *_lastBeatAt;
+    id _rateListener; AudioObjectPropertyAddress _rateAddr[2];
     NSLock *_sendLock;      // one writer on the socket at a time: audio frames and control frames never interleave
     _Atomic bool _stopping, _failed;
 }
@@ -185,6 +192,7 @@ static uint32_t Get32(const uint8_t *p) { return (uint32_t)p[0] | (uint32_t)p[1]
     if ((self = [super init])) {
         _input = input; _output = output; _fd = -1;
         _sendLock = [NSLock new];
+        OVRtNowNs(); OVRtTicksToNs(1);   // the first call sets up the mach timebase: not on the audio thread
         _inputHardwareMs = [input latencyMsForInput:YES];
         _outputHardwareMs = [output latencyMsForInput:NO];
         _c = calloc(1, sizeof(OVRtShared));
@@ -206,7 +214,8 @@ static uint32_t Get32(const uint8_t *p) { return (uint32_t)p[0] | (uint32_t)p[1]
 
 - (void)dealloc {
     [self stopNow];
-    if (_c) {
+    if (_c && _leak) { NSLog(@"Realtime: a worker thread did not end in time; its buffers are left allocated."); }
+    else if (_c) {
         OVRtAssemblerFree(_c->assembler); OVRtRingFree(_c->outRing); OVRtRingFree(_c->monRing);
         free(_c);
     }
@@ -313,22 +322,67 @@ static uint32_t Get32(const uint8_t *p) { return (uint32_t)p[0] | (uint32_t)p[1]
         return NO;
     }
     __weak typeof(self) w = self;
-    _configObserver = [NSNotificationCenter.defaultCenter addObserverForName:AVAudioEngineConfigurationChangeNotification object:_outEngine queue:nil usingBlock:^(NSNotification *n) {
-        [w failWith:L(@"The output device changed. Press Start again.")];
+    _configObserver = [NSNotificationCenter.defaultCenter addObserverForName:AVAudioEngineConfigurationChangeNotification object:_outEngine queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) {
+        [w outputConfigurationChanged];
     }];
     return YES;
+}
+
+/// A configuration change right after start is the Bluetooth profile switch (AirPods): rebuild the output once. Later ones end the session.
+- (void)outputConfigurationChanged {
+    if (atomic_load(&_stopping) || !_outEngine) return;
+    if (!_retriedOutput && _startedAt && -[_startedAt timeIntervalSinceNow] < 2.0) {
+        _retriedOutput = YES;
+        if (_configObserver) { [NSNotificationCenter.defaultCenter removeObserver:_configObserver]; _configObserver = nil; }
+        [_outEngine stop];
+        _outEngine = nil; _sourceNode = nil;
+        NSString *err = nil;
+        if (![self setupOutput:&err]) [self failWith:err ?: L(@"The output device changed. Press Start again.")];
+        return;
+    }
+    [self failWith:L(@"The output device changed. Press Start again.")];
+}
+
+/// Called by the page's poll timer: a dead microphone, a failed capture or revoked permission ends the session with a reason.
+- (void)checkHealth {
+    if (!self.running || atomic_load(&_stopping)) return;
+    OVRtShared *c = _c;
+    int32_t ce = atomic_load(&c->captureError);
+    if (ce) { [self failWith:[NSString stringWithFormat:L(@"The microphone stopped delivering sound (error %d). Press Start again."), ce]]; return; }
+    uint64_t beat = atomic_load(&c->heartbeat);
+    NSDate *now = [NSDate date];
+    if (!_lastBeatAt || beat != _lastBeat) { _lastBeat = beat; _lastBeatAt = now; }
+    else if ([now timeIntervalSinceDate:_lastBeatAt] > 2.0) {
+        AVAuthorizationStatus st = OVRealtimeIO.microphoneStatus;
+        if (st == AVAuthorizationStatusDenied || st == AVAuthorizationStatusRestricted)
+            [self failWith:L(@"Microphone access was turned off. Allow it in Privacy settings and press Start.")];
+        else [self failWith:L(@"No sound from the microphone for 2 s. Check the microphone and press Start again.")];
+    }
+}
+
+- (void)watchInputFormat {
+    __weak typeof(self) w = self;
+    AudioObjectPropertyListenerBlock b = ^(UInt32 n, const AudioObjectPropertyAddress *a) {
+        [w failWith:L(@"The microphone changed its format. Press Start again.")];
+    };
+    _rateAddr[0] = (AudioObjectPropertyAddress){kAudioDevicePropertyNominalSampleRate, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain};
+    _rateAddr[1] = (AudioObjectPropertyAddress){kAudioDevicePropertyStreamFormat, kAudioDevicePropertyScopeInput, kAudioObjectPropertyElementMain};
+    for (int i = 0; i < 2; i++) AudioObjectAddPropertyListenerBlock(_input.deviceID, &_rateAddr[i], dispatch_get_main_queue(), b);
+    _rateListener = [b copy];
 }
 
 - (BOOL)startAudio:(NSString **)error {
     if (_fd < 0) { if (error) *error = L(@"Not connected to the voice engine."); return NO; }
     NSString *err = nil;
-    if (![self setupOutput:&err] || ![self setupCapture:&err]) { if (error) *error = err; [self stopNow]; return NO; }
+    if (![self setupCapture:&err] || ![self setupOutput:&err]) { if (error) *error = err; [self stopNow]; return NO; }
     OVRtShared *c = _c;
     atomic_store(&c->live, true);
     if (AudioOutputUnitStart(c->au) != noErr) {
         if (error) *error = L(@"The microphone could not be started. Check Privacy settings or choose another input.");
         [self stopNow]; return NO;
     }
+    _startedAt = [NSDate date];
+    [self watchInputFormat];
     __weak typeof(self) w = self;
     _inWatch = [OVAudioDevices watchDevice:_input.deviceID onGone:^{ [w failWith:L(@"The microphone was unplugged. Plug it back in and press Start.")]; }];
     _outWatch = [OVAudioDevices watchDevice:_output.deviceID onGone:^{ [w failWith:L(@"The output device was disconnected. Choose another output and press Start.")]; }];
@@ -418,17 +472,17 @@ done:
 #pragma mark Control and stats
 
 - (void)sendSet:(NSDictionary<NSString *, NSNumber *> *)changes {
-    if (_fd < 0 || !self.running || !changes.count) return;
+    if (atomic_load(&_stopping) || !self.running || !changes.count) return;
     NSData *json = [NSJSONSerialization dataWithJSONObject:@{@"set": changes} options:0 error:nil];
     if (!json || json.length > 4096) return;
-    int fd = _fd;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         uint8_t h[kHeader];
         PutHeader(h, kTypeCtl, 0, (uint32_t)json.length);
         NSMutableData *all = [NSMutableData dataWithBytes:h length:kHeader];
         [all appendData:json];
         [self->_sendLock lock];
-        SendAll(fd, all.bytes, all.length);
+        int fd = self->_fd;   // read under the lock: stopNow clears it under the same lock before close()
+        if (fd >= 0 && !atomic_load(&self->_stopping)) SendAll(fd, all.bytes, all.length);
         [self->_sendLock unlock];
     });
 }
@@ -460,6 +514,10 @@ done:
     if (_outWatch) [OVAudioDevices stopWatching:_outWatch];
     _inWatch = _outWatch = nil;
     if (_configObserver) { [NSNotificationCenter.defaultCenter removeObserver:_configObserver]; _configObserver = nil; }
+    if (_rateListener) {
+        for (int i = 0; i < 2; i++) AudioObjectRemovePropertyListenerBlock(_input.deviceID, &_rateAddr[i], dispatch_get_main_queue(), _rateListener);
+        _rateListener = nil;
+    }
     if (c) atomic_store(&c->live, false);
     if (c && c->au) {
         AudioOutputUnitStop(c->au);
@@ -469,7 +527,9 @@ done:
     }
     [_outEngine stop];
     _outEngine = nil; _sourceNode = nil;
+    [_sendLock lock];
     int fd = _fd;
+    [_sendLock unlock];
     if (fd >= 0) {
         // quit control frame first: the engine ends the session cleanly (result with stats) instead of by SIGTERM
         NSData *q = [@"{\"cmd\":\"quit\"}" dataUsingEncoding:NSUTF8StringEncoding];
@@ -477,14 +537,20 @@ done:
         PutHeader(h, kTypeCtl, 0, (uint32_t)q.length);
         NSMutableData *all = [NSMutableData dataWithBytes:h length:kHeader];
         [all appendData:q];
+        // If the sender is stuck in send() (a full socket buffer) tryLock fails and the quit frame is skipped on purpose:
+        // shutdown() below still ends the session (the engine sees the client leave and returns its stats).
         if (self.running && [_sendLock tryLock]) { SendAll(fd, all.bytes, all.length); [_sendLock unlock]; }
         shutdown(fd, SHUT_RDWR);
     }
     if (c) dispatch_semaphore_signal(c->blockReady);
-    if (_sender) dispatch_semaphore_wait(_senderDone, dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC));
-    if (_receiver) dispatch_semaphore_wait(_receiverDone, dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC));
-    if (fd >= 0) { close(fd); _fd = -1; }
-    if (c) {
+    if (_sender && dispatch_semaphore_wait(_senderDone, dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC)) != 0) _leak = YES;
+    if (_receiver && dispatch_semaphore_wait(_receiverDone, dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC)) != 0) _leak = YES;
+    if (_leak) NSLog(@"Realtime: a worker thread did not stop within 2 s; leaving its buffers allocated instead of freeing them.");
+    [_sendLock lock];
+    _fd = -1;
+    if (fd >= 0) close(fd);
+    [_sendLock unlock];
+    if (c && !_leak) {
         if (c->converter) { AudioConverterDispose(c->converter); c->converter = NULL; }
         if (c->abl) { for (UInt32 i = 0; i < c->channels; i++) free(c->abl->mBuffers[i].mData); free(c->abl); c->abl = NULL; }
         free(c->mono); c->mono = NULL; free(c->conv); c->conv = NULL;

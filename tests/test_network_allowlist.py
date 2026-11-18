@@ -37,7 +37,7 @@ EXPECTED = {
     "cns_realtime.py": (9, "realtime voice process: one local Unix-socket client (AF_UNIX, no internet); sandboxed without network"),
     "cns_rt_proto.py": (12, "realtime block protocol over a local Unix socket (AF_UNIX); no internet"),
     "OVRealtimeIO.h": (5, "realtime audio client: talks to the local voice process over its AF_UNIX socket (no internet)"),
-    "OVRealtimeIO.m": (2, "the same: send/recv on the AF_UNIX socket of the realtime process, SO_NOSIGPIPE"),
+    "OVRealtimeIO.m": (3, "the same: send/recv on the AF_UNIX socket of the realtime process, SO_NOSIGPIPE"),
     "OVRealtimePage.m": (1, "a comment: the session's socket lives in the job folder; the page makes no network call"),
     "cns_ytdl.py": (7, "YouTube audio import, started by the user: one https youtube.com / youtu.be video through yt-dlp, "
                        "after cns_net.require_online(\"youtube\") and the rights confirmation; no cookies, no plugins"),

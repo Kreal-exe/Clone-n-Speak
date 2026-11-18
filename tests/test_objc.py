@@ -13,7 +13,7 @@ import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TESTS = sorted(glob.glob(os.path.join(ROOT, "tests", "objc", "*_test.m")))
-FRAMEWORKS = ["Foundation", "Cocoa", "AVFoundation", "AVFAudio", "CoreMedia", "CoreVideo", "AudioToolbox",
+FRAMEWORKS = ["Foundation", "Cocoa", "AVFoundation", "AVFAudio", "CoreMedia", "CoreVideo", "AudioToolbox", "CoreAudio",
               "UniformTypeIdentifiers", "NaturalLanguage", "QuartzCore", "Security"]
 
 
