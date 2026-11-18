@@ -24,11 +24,12 @@ EXPECTED = {
     "OVModels.m": (0, "catalog and downloads go through OVDownloader; no direct calls"),
     "OVRuntime.m": (0, "Setup (uv) goes through OVDownloader / uv; no direct calls"),
     "OVNetwork.h": (1, "the gate"),
-    "OVNetwork.m": (2, "the gate"),
+    "OVNetwork.m": (1, "the gate"),
     "cns_net.py": (3, "the gate for Python processes"),
     "worker.py": (4, "ECAPA fetch (cached only offline), Seed-VC download (explicit_download)"),
     "cns_separate.py": (8, "music-removal model download, started by the user (pinned HTTPS URL + sha256, https-only redirects)"),
     "cns_dfn.py": (4, "DeepFilterNet binary download, started by the user (pinned URL + sha256)"),
+    "OVPrivacyCatalog.m": (3, "descriptions only: feature ids and the word \"requests\" in the Bridge text"),
     "cns_api.py": (4, "local API / Bridge listeners on 127.0.0.1, server side only (no outgoing calls)"),
 }
 
