@@ -8,6 +8,8 @@ extern NSErrorDomain const OVAnalyzerErrorDomain;
 @interface OVAnalyzerView : NSView
 /// result is the dictionary of the `analyze_audio` command; the .u8 path is inside it. The file size must equal cols * rows.
 /// On failure the view keeps what it showed before and `error` says why.
+/// Forgets the loaded result (a new input is coming).
+- (void)clear;
 - (BOOL)loadResult:(NSDictionary *)result error:(NSError *_Nullable *_Nullable)error;
 @property (nonatomic) BOOL showsPitch, showsCentroid;                 // curves over the spectrogram (pitch on, centroid off by default)
 @property (nonatomic) NSTimeInterval position;                        // playback line
