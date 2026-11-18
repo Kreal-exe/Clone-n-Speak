@@ -80,6 +80,8 @@ NSNotificationName const OVPrivacyWillDeleteAppDataNotification = @"OVPrivacyWil
         Src(@"OVBridge.m", @"bridge", @"downloads the tunnel program once from GitHub (pinned address, checksums, signer) and runs it while Bridge is on; the traffic of approved devices passes through Cloudflare"),
         Src(@"OVBridge.h", @"bridge", @"Bridge's interface; sends nothing by itself"),
         Src(@"OVPlugins.m", @"plugin_network", @"plugins, only with the network permission"),
+        Src(@"OVYouTubeSheet.m", @"youtube", @"the YouTube import sheet; the download runs as a job you start"),
+        Src(@"OVYouTubeSheet.h", @"youtube", @"the YouTube import sheet"),
         Src(@"cns_ytdl.py", @"youtube", @"video downloader, only for the link you paste"),
         Src(@"cns_edge.py", @"edge_tts", @"Edge speech service, only for the text you speak"),
         Src(@"cns_rvc.py", dl, @"voice-model files, only from the link you paste"),
