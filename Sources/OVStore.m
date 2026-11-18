@@ -264,7 +264,20 @@ void OVSynthApplyChain(NSMutableDictionary *req, NSArray<NSDictionary *> *chain,
     NSString *text = [job.request[@"text"] isKindOfClass:NSString.class] ? job.request[@"text"] : nil;
     if (!path.length || !text) return;
     NSString *vid = [job.request[@"_voiceId"] isKindOfClass:NSString.class] ? job.request[@"_voiceId"] : nil;
-    [self record:path text:text voice:vid ? [[OVVoices shared] voiceWithId:vid] : nil result:job.result ?: @{}];
+    NSMutableDictionary *r = [job.result ?: @{} mutableCopy];
+    NSString *dry = [job.request[@"dry_out"] isKindOfClass:NSString.class] ? job.request[@"dry_out"] : nil;   // the unprocessed take of an effects chain run
+    if (dry.length && [NSFileManager.defaultManager fileExistsAtPath:dry]) r[@"dry_path"] = dry;
+    [self record:path text:text voice:vid ? [[OVVoices shared] voiceWithId:vid] : nil result:r];
+}
+
+- (void)attachExport:(NSString *)exported format:(NSString *)formatId toPath:(NSString *)path {
+    NSString *plist = [path.stringByDeletingPathExtension stringByAppendingPathExtension:@"plist"];
+    NSMutableDictionary *meta = [NSMutableDictionary dictionaryWithContentsOfFile:plist];
+    if (!meta || !exported.length) return;
+    meta[@"exportedPath"] = exported;
+    if (formatId.length) meta[@"formatId"] = formatId;
+    [meta writeToFile:plist atomically:YES];
+    [self reload];
 }
 
 - (void)remove:(OVGeneration *)g {

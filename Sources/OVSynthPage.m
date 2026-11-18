@@ -4,6 +4,7 @@
 #import "OVRuntime.h"
 #import "OVModels.h"
 #import "OVWorker.h"
+#import "OVJobs.h"
 #import "OVStore.h"
 #import "OVPaths.h"
 #import "OVLocale.h"
@@ -204,6 +205,7 @@ static void FillFormatPopup(OVPopup *popup, NSString *selectedId) {
 @property NSTextField *historyTitle, *playerTitle;
 @property OVPlayerBar *abBar;
 @property OVPopup *presetPopup, *formatPopup;
+@property (strong) OVJob *job;   // the running or queued synth job of this page (nil when none)
 @property BOOL exporting;   // a copy in the chosen format is being written: no new synth until it is done
 @property NSButton *presetRename, *presetDelete, *saveAsButton, *batchButton;
 @property OVEffectsView *effects;
@@ -511,6 +513,7 @@ static void FillFormatPopup(OVPopup *popup, NSString *selectedId) {
     [nc addObserver:self selector:@selector(refreshState) name:OVModelsDidChangeNotification object:nil];
     [nc addObserver:self selector:@selector(reloadLoRAs) name:OVModelsDidChangeNotification object:nil];
     [nc addObserver:self selector:@selector(refreshState) name:OVWorkerDidChangeNotification object:nil];
+    [nc addObserver:self selector:@selector(jobChanged:) name:OVJobsDidChangeNotification object:nil];
     [nc addObserver:self selector:@selector(refreshMemory) name:OVWorkerMemoryDidChangeNotification object:nil];
     [nc addObserver:self selector:@selector(syncControls) name:NSUserDefaultsDidChangeNotification object:nil];
     [nc addObserver:self selector:@selector(themeChanged) name:OVThemeDidChangeNotification object:nil];
@@ -677,7 +680,7 @@ static void FillFormatPopup(OVPopup *popup, NSString *selectedId) {
     self.bannerCard.hidden = problem == nil;
     self.banner.stringValue = problem ?: @"";
     self.banner.toolTip = problem;
-    BOOL busy = [OVWorker shared].busy;
+    BOOL busy = self.job.active;   // a busy engine only queues the next take, so it does not disable the button
     self.synthButton.enabled = !busy && !self.exporting && problem == nil;
     self.batchButton.enabled = self.synthButton.enabled;
     self.stopButton.hidden = !busy;
@@ -1111,7 +1114,7 @@ static BOOL IsVowel(unichar c) {
 }
 
 - (void)synthesizeText:(NSString *)text voice:(OVVoice *)voice improve:(BOOL)improve {
-    if ([OVWorker shared].busy || !self.synthButton.enabled) return;
+    if (!self.synthButton.enabled) return;
     NSDictionary *spec = [OVSettings modelSpec];
     if (!spec) { OVNavigate(@"setup"); return; }
     if (improve && ![OVModels shared].asrModel) {
@@ -1131,8 +1134,7 @@ static BOOL IsVowel(unichar c) {
     NSMutableDictionary *req = [@{@"cmd": @"synth", @"model": spec, @"text": text, @"out": out,
                                   @"language": language, @"params": [OVSettings generationParams]} mutableCopy];
     OVSynthApplyChain(req, self.effects.activeChain, out);
-    NSString *dryOut = req[@"dry_out"];
-    if (voice) req[@"voice"] = [voice workerSpecForLanguage:language];
+    if (voice) { req[@"voice"] = [voice workerSpecForLanguage:language]; req[@"_voiceId"] = voice.identifier; }   // _voiceId: a note for the history entry, not sent to the engine
     // accent removal picks its best take with Whisper when it is there (it works without, too)
     if ([voice adaptsToLanguage:language] && [OVModels shared].asrModel) req[@"asr_path"] = [OVModels shared].asrModel.localPath;
     if (improve) {
@@ -1142,43 +1144,57 @@ static BOOL IsVowel(unichar c) {
     }
 
     [[OVPlayer shared] stop];
+    NSString *submitError = nil;
+    __weak typeof(self) w = self;
+    OVJob *job = [OVJobs.shared submitKind:OVJobKindSynth request:req origin:@"app" onFinish:^(OVJob *j) { [w jobFinished:j]; } error:&submitError];
+    if (!job) { self.status.stringValue = submitError ?: L(@"The task could not be started."); return; }
+    self.job = job;
     self.progress.doubleValue = 0;
     self.progress.hidden = NO;
     self.started = CFAbsoluteTimeGetCurrent();
-    self.status.stringValue = L(@"Starting…");
+    self.status.stringValue = job.status.length ? job.status : L(@"Starting…");
     self.status.toolTip = nil;
     [self.timer invalidate];
-    __weak typeof(self) w = self;
-    __block NSString *lastStatus = L(@"Starting…");
     self.timer = [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *t) {
-        w.status.stringValue = [NSString stringWithFormat:@"%@  %@", lastStatus, OVFormatDuration(CFAbsoluteTimeGetCurrent() - w.started)];
+        OVJob *j = w.job;
+        if (!j.active) return;
+        w.status.stringValue = [NSString stringWithFormat:@"%@  %@", j.status.length ? j.status : L(@"Starting…"), OVFormatDuration(CFAbsoluteTimeGetCurrent() - w.started)];
     }];
-    [[OVWorker shared] request:req status:^(NSString *msg) {
-        lastStatus = msg;
-    } progress:^(double v) {
-        w.progress.doubleValue = v;
-    } done:^(NSDictionary *data, NSString *error) {
-        [w.timer invalidate];
-        w.progress.doubleValue = 0;
-        w.progress.hidden = YES;
-        if (error) {
-            w.status.stringValue = error;
-            return;
-        }
-        NSMutableDictionary *rec = [data mutableCopy];
-        if (dryOut && [NSFileManager.defaultManager fileExistsAtPath:dryOut]) rec[@"dry_path"] = dryOut;
-        [w finishSynth:rec text:text voice:voice];
-    }];
+    [self refreshState];
 }
 
-/// Writes the history entry (with the copy in the chosen format next to the WAV master) and shows the result.
-- (void)finishSynth:(NSMutableDictionary *)rec text:(NSString *)text voice:(OVVoice *)voice {
+/// Status and progress of this page's job come from the job manager, so they survive leaving the page.
+- (void)jobChanged:(NSNotification *)n {
+    OVJob *j = n.object;
+    if (j && j == self.job && j.active) {
+        if (j.progress >= 0) self.progress.doubleValue = j.progress;
+        [self refreshState];
+    }
+}
+
+/// Runs after the synth kind has written the history entry (OVHistory recordJob:).
+- (void)jobFinished:(OVJob *)j {
+    if (j != self.job) return;
+    self.job = nil;
+    [self.timer invalidate];
+    self.progress.doubleValue = 0;
+    self.progress.hidden = YES;
+    if (j.state != OVJobSucceeded) {
+        self.status.stringValue = j.state == OVJobStopped ? L(@"Stopped") : (j.error ?: L(@"Speech failed."));
+        [self refreshState];
+        return;
+    }
+    [self finishSynth:[j.result mutableCopy] ?: [NSMutableDictionary dictionary]];
+}
+
+/// Writes the copy in the chosen format next to the WAV master (and adds it to the history entry) and shows the result.
+- (void)finishSynth:(NSMutableDictionary *)rec {
     NSString *master = rec[@"path"], *formatId = [OVSettings exportFormatId];
     OVExportFormat fmt = [OVExport formatForIdentifier:formatId];
     __weak typeof(self) w = self;
     void (^finish)(NSString *, NSString *) = ^(NSString *exported, NSString *exportError) {
         if (exported) { rec[@"exported_path"] = exported; rec[@"format"] = formatId; }
-        [[OVHistory shared] record:master text:text voice:voice result:rec];
+        if (exported) [[OVHistory shared] attachExport:exported format:formatId toPath:master];
         [w showResult:rec];
         if (exportError) w.status.stringValue = [w.status.stringValue stringByAppendingFormat:L(@" · not saved as %@: %@"), formatId.uppercaseString, exportError];
         w.lastResultPath = master;
@@ -1217,7 +1233,7 @@ static BOOL IsVowel(unichar c) {
 }
 
 - (void)stop:(id)s {
-    [[OVWorker shared] stop];
+    if (self.job) [OVJobs.shared stop:self.job];
     self.status.stringValue = L(@"Stopped");
 }
 

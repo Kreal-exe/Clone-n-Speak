@@ -78,6 +78,8 @@ extern NSNotificationName const OVHistoryDidChangeNotification;
 - (void)remove:(OVGeneration *)g;
 /// The history entry of a finished synth job: its text, voice (request[@"_voiceId"]) and result.
 - (void)recordJob:(OVJob *)job;
+/// Adds the copy in another format to the entry of `path` (the WAV master) and reloads.
+- (void)attachExport:(NSString *)exported format:(NSString *)formatId toPath:(NSString *)path;
 @end
 
 #pragma mark - Synth request helpers
