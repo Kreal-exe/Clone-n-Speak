@@ -8,7 +8,7 @@ The weights' license is what matters, not the code's. A model is `verified` only
 license for the weights; a re-upload carrying a license tag is no evidence (see docs/superpowers/notes/
 2026-11-09-stem-licenses.md, which has one row per id here; a test keeps the two in step).
 
-Two entries ship without a verified license on the user's decision (2026-11-18): Kim_Vocal_2 and BS-Roformer. They are
+Three entries ship without a verified license on the user's decision (2026-11-18): Kim_Vocal_2, BS-Roformer and the dereverb model fine-tuned from Kim. They are
 marked license "unverified" with `accepted_by_user` and a caveat the UI and the README must show. Everything else
 needs verified True and an open-source SPDX license. denoise has no entry here: DeepFilterNet (Task 6.8) does it.
 """
@@ -51,12 +51,12 @@ _BASE = [
          verified=True, accepted_by_user=False, peak_gb=2.3, outputs=["vocals", "drums", "bass", "other"],
          note="The licensed fallback for vocals and the only four-stem split."),
     dict(id="dereverb-anvuew", title="Remove reverb (Mel-Band Roformer, anvuew)", kind="dereverb", arch="roformer",
-         file="dereverb_mel_band_roformer_anvuew_sdr_19.1729.ckpt", license="GPL-3.0-only",
+         file="dereverb_mel_band_roformer_anvuew_sdr_19.1729.ckpt", license=UNVERIFIED,
          license_url="https://huggingface.co/anvuew/dereverb_mel_band_roformer",
-         license_evidence="The author's own Hugging Face repository carries license:gpl-3.0 (revision cef05ad2).",
-         verified=True, accepted_by_user=False, peak_gb=6.3, outputs=["dry", "reverb"],
-         note="GPL-3.0 weights, downloaded on request, never bundled. Fine-tuned by the author from Kim's vocal "
-              "model, whose own license is unverified."),
+         license_evidence="The author's own Hugging Face repository carries license:gpl-3.0 (revision cef05ad2), but the card says it was fine-tuned from Kim's vocal model, so it carries Kim's unverified license.",
+         verified=False, accepted_by_user=True, peak_gb=6.3, outputs=["dry", "reverb"],
+         note="License unverified: fine-tuned from Kim_Vocal_2 (license unverified); the author's repository says "
+              "GPL-3.0. Accepted with Kim's decision; downloaded on request, never bundled."),
 ]
 
 

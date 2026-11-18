@@ -25,7 +25,7 @@ except ImportError:  # the system 3.9 has none; those tests are skipped there
     np = None
 
 NOTES = ROOT / "docs" / "superpowers" / "notes" / "2026-11-09-stem-licenses.md"
-UNVERIFIED_ACCEPTED = {"kim-vocal-2", "bs-roformer"}   # the user's decision of 2026-11-18
+UNVERIFIED_ACCEPTED = {"kim-vocal-2", "bs-roformer", "dereverb-anvuew"}   # user decision 2026-11-18 (the last is Kim-derived)
 
 
 def touch(path, data=b"\0" * 4000):
@@ -108,8 +108,39 @@ class Request(unittest.TestCase):
             self.assertIn(msg, str(cm.exception))
 
     def test_output_outside_roots_refused(self):
+        roots = [os.path.realpath(self.tmp.name)]
+        for bad in ("/etc", os.path.join(self.tmp.name, ".."), self.tmp.name + "-evil", ""):
+            with self.assertRaises(cns_proto.ProtoError, msg=bad):
+                stems.validate_request({"input": self.wav, "outputs_dir": bad}, roots=roots)
+        link = os.path.join(self.tmp.name, "link")
+        os.symlink("/etc", link)   # a symlink inside the root that leads out
         with self.assertRaises(cns_proto.ProtoError):
-            stems.validate_request({"input": self.wav, "outputs_dir": "/etc"}, roots=[self.tmp.name])
+            stems.validate_request({"input": self.wav, "outputs_dir": link}, roots=roots)
+        ok = stems.validate_request({"input": self.wav, "outputs_dir": os.path.join(self.tmp.name, "sub")}, roots=roots)
+        self.assertTrue(ok["outputs_dir"].startswith(roots[0]))
+
+    def test_allowed_roots_come_from_the_app_environment(self):
+        from unittest import mock
+        with mock.patch.dict(os.environ, {"CNS_ALLOWED_ROOTS": os.pathsep.join(["/a/one", "/b/two"])}):
+            self.assertEqual(stems.allowed_roots("/x/engines", "/w"), [os.path.realpath("/a/one"), os.path.realpath("/b/two")])
+        env = {k: v for k, v in os.environ.items() if k != "CNS_ALLOWED_ROOTS"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            self.assertEqual(stems.allowed_roots("/x/engines", "/w"), [os.path.realpath("/x/outputs"), os.path.realpath("/w")])
+
+    def test_no_runtime_fetch_by_the_separator(self):
+        class Fake:
+            called = False
+
+            def download_file_if_not_exists(self, url, output_path):
+                Fake.called = True
+        stems.forbid_fetch(Fake)
+        present = os.path.join(self.tmp.name, "there.json")
+        touch(present)
+        Fake().download_file_if_not_exists("https://example.invalid/x", present)   # present: fine
+        with self.assertRaises(stems.StemError) as cm:
+            Fake().download_file_if_not_exists("https://example.invalid/x", os.path.join(self.tmp.name, "gone.json"))
+        self.assertIn("Reinstall", str(cm.exception))
+        self.assertFalse(Fake.called)
 
     def test_instrumental_is_derived_for_demucs_only(self):
         self.assertEqual(stems.wanted_stems(cat.get("htdemucs"), "instrumental"), ["instrumental"])
@@ -261,9 +292,19 @@ class Separate(unittest.TestCase):
         os.makedirs(self.work)
         os.makedirs(self.out)
         self.io = MemIO()
+        from unittest import mock
+        patcher = mock.patch.dict(os.environ, {"CNS_ALLOWED_ROOTS": os.pathsep.join([self.out, self.work])})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        pinned = {sp["path"]: sp["sha256"] for specs in pins.STEMS.values() for sp in specs}
+        self.sha_patch = mock.patch.object(stems, "_sha256", side_effect=lambda p: pinned[os.path.basename(p)])
+        self.sha_patch.start()   # the sparse test files cannot hash to the pins
         FakeSeparator.created = []
         self.input = os.path.join(t, "mix.wav")
         touch(self.input)
+
+    def tearDown(self):
+        self.sha_patch.stop()
 
     def install(self, model_id):
         folder = cat.model_dir(self.engines, model_id)
@@ -303,6 +344,30 @@ class Separate(unittest.TestCase):
         self.go({"model": "htdemucs", "stems": "vocals"}, names=("Vocals", "Drums", "Bass", "Other"))
         self.assertEqual(FakeSeparator.created[-1].loaded, "htdemucs.yaml")   # Demucs is loaded by its config name
 
+    def test_outputs_dir_outside_allowed_roots_refused_in_separate(self):
+        self.audio(5)
+        self.install("kim-vocal-2")
+        with self.assertRaises(stems.StemError):
+            self.go({"outputs_dir": os.path.join(self.tmp.name, "elsewhere")})
+        self.assertEqual(FakeSeparator.created, [])
+
+    def test_sha256_checked_once_then_remembered(self):
+        from unittest import mock
+        self.audio(5)
+        self.install("kim-vocal-2")
+        self.sha_patch.stop()
+        with self.assertRaises(stems.StemError) as cm:   # sparse test files do not hash to the pin
+            self.go()
+        self.sha_patch.start()
+        self.assertIn("damaged", str(cm.exception))
+        pinned = {s["path"]: s["sha256"] for s in pins.STEMS["kim-vocal-2"]}
+        with mock.patch.object(stems, "_sha256", side_effect=lambda p: pinned[os.path.basename(p)]) as h:
+            self.go()
+            first = h.call_count
+            self.go()
+        self.assertGreater(first, 0)
+        self.assertEqual(h.call_count, first)   # the second run only stats the files
+
     def test_wrong_size_file_counts_as_not_installed(self):
         self.audio(5)
         self.install("kim-vocal-2")
@@ -318,7 +383,7 @@ class Separate(unittest.TestCase):
         names = sorted(os.path.basename(p) for p in res["outputs"])
         self.assertEqual(names, ["mix_instrumental.wav", "mix_vocals.wav"])
         for p in res["outputs"]:
-            self.assertTrue(p.startswith(self.out))
+            self.assertTrue(p.startswith(os.path.realpath(self.out)))
         self.assertEqual(self.io.files[res["outputs"][0]][0].shape, (5 * 44100, 2))
         self.assertEqual(os.listdir(self.work), [])   # chunk and stem scratch files are gone
 

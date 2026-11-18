@@ -68,16 +68,16 @@ EDGE_REQUIREMENT = "edge-tts==7.3.1"
 # sha256, size)], every file of the model, hashed from the published bytes on 2026-11-18. Config files go next to
 # the weights because the separator is given a model folder, never a model name to download.
 _UVR = "https://github.com/TRvlvr/model_repo/releases/download/all_public_uvr_models/"
-_JSD = "https://cdn.jsdelivr.net/gh/TRvlvr/application_data@main/mdx_model_data/mdx_c_configs/"
+_JSD = "https://cdn.jsdelivr.net/gh/TRvlvr/application_data@3826b05b570dbd4fbedbc807758803b35348ba1b/mdx_model_data/mdx_c_configs/"
 _DRV = "https://huggingface.co/anvuew/dereverb_mel_band_roformer/resolve/cef05ad2b5b3145ea5c149d3ad5d1f8439b34d06/"
 # audio-separator fetches these three lists into the model folder when they are missing, which is a hidden network call;
 # every model folder gets pinned snapshots (identical to the files it would fetch, 2026-11-18), so it never does.
 _META = [
-    ("download_checks.json", "https://cdn.jsdelivr.net/gh/TRvlvr/application_data@main/filelists/download_checks.json",
+    ("download_checks.json", "https://cdn.jsdelivr.net/gh/TRvlvr/application_data@3826b05b570dbd4fbedbc807758803b35348ba1b/filelists/download_checks.json",
      "d3622e1fa19c161d3cf704927711b453d593a3f1eb0f2e0838c3136907935151", 28267),
-    ("mdx_model_data.json", "https://cdn.jsdelivr.net/gh/TRvlvr/application_data@main/mdx_model_data/model_data_new.json",
+    ("mdx_model_data.json", "https://cdn.jsdelivr.net/gh/TRvlvr/application_data@3826b05b570dbd4fbedbc807758803b35348ba1b/mdx_model_data/model_data_new.json",
      "1aca8f9bcc57233bc714029663a9ec2345d9c7721f91e5e08f46392a879c6a9a", 15358),
-    ("vr_model_data.json", "https://cdn.jsdelivr.net/gh/TRvlvr/application_data@main/vr_model_data/model_data_new.json",
+    ("vr_model_data.json", "https://cdn.jsdelivr.net/gh/TRvlvr/application_data@3826b05b570dbd4fbedbc807758803b35348ba1b/vr_model_data/model_data_new.json",
      "6a2021b9aa355c10f845b68c73944d47bd9e1fdf37b8a584b14ce8f88b09bb2f", 4380),
 ]
 _STEM_MODELS = {

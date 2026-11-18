@@ -9,7 +9,8 @@ work_dir, outputs_dir, chunk_s (optional, 10..900, default 300). Result: outputs
 Models are never downloaded by audio-separator: fetch-model/cns_engines.install put the pinned files in
 <engines>/stems/<id>/ (url + sha256 from cns_pins.STEMS), and the Separator is pointed at that folder. Long input is cut
 into chunks that overlap by 2 s and are cross-faded back together, so memory is bounded by the chunk, not the song.
-No heavy imports at module load (audio-separator, numpy and soundfile are imported inside functions).
+Memory: the app's job layer unloads OmniVoice/Whisper before any pro job (Task 7.7 preflight), so this process loads
+nothing else. Output folders must be inside CNS_ALLOWED_ROOTS (set by the app). No heavy imports at module load (audio-separator, numpy and soundfile are imported inside functions).
 """
 import argparse
 import os
@@ -90,8 +91,30 @@ def validate_request(req, roots=None):
     stems = wanted_stems(entry, str(req.get("stems") or "all").lower())
     out = {"input": real, "entry": entry, "format": fmt, "stems": stems, "chunk_s": chunk_s}
     if roots is not None:
-        out["outputs_dir"] = cns_proto.safe_output_dir(req.get("outputs_dir") or "", roots)
+        out["outputs_dir"] = check_output_dir(req.get("outputs_dir") or "", roots)
     return out
+
+
+def allowed_roots(root, work_dir):
+    """Where results may be written: the app sets CNS_ALLOWED_ROOTS (os.pathsep-separated); without it (CLI, tests) only
+    <engines>/../outputs and the work folder. Never taken from the request."""
+    env = os.environ.get("CNS_ALLOWED_ROOTS")
+    roots = [r for r in env.split(os.pathsep) if r] if env else [os.path.join(os.path.dirname(root), "outputs"), work_dir]
+    return [os.path.realpath(r) for r in roots]
+
+
+def check_output_dir(path, roots):
+    """realpath + commonpath: the folder must be one of the roots or inside one."""
+    if not str(path).strip():
+        raise StemError("Output folder is outside the app folders")
+    real = os.path.realpath(os.path.expanduser(str(path)))
+    for r in roots:
+        try:
+            if os.path.commonpath([real, r]) == r:
+                return real
+        except ValueError:
+            continue
+    raise StemError("Output folder is outside the app folders")
 
 
 def check_audio(frames, samplerate, peak):
@@ -197,15 +220,26 @@ def sandbox_write_roots(work_dir, outputs_dir):
     """What a sandboxed (network denied) separation may write: its work and output folders, plus the per-user temp and
     cache folders, because onnxruntime's CoreML provider writes its compiled model there whatever TMPDIR says."""
     import subprocess
-    roots = [work_dir, outputs_dir]
+    roots = [os.path.realpath(work_dir), os.path.realpath(outputs_dir)]
     for name in ("DARWIN_USER_TEMP_DIR", "DARWIN_USER_CACHE_DIR"):
         try:
             p = subprocess.run(["/usr/bin/getconf", name], capture_output=True, text=True, timeout=10).stdout.strip()
         except (OSError, subprocess.SubprocessError):
             p = ""
         if p.startswith("/"):
-            roots.append(p)
+            roots.append(os.path.realpath(p))
     return roots
+
+
+def forbid_fetch(cls):
+    """audio-separator downloads whatever it misses (model lists, configs, weights) through one helper. Models and lists
+    are installed and pinned by fetch-model; a missing file means a reinstall, never a runtime download."""
+    def no_fetch(self, url, output_path):
+        if os.path.isfile(output_path):
+            return
+        raise StemError("Model file missing. Reinstall it in Separation.")
+    cls.download_file_if_not_exists = no_fetch
+    return cls
 
 
 def _real_separator(model_dir, work_dir, fmt):
@@ -214,6 +248,7 @@ def _real_separator(model_dir, work_dir, fmt):
     # librosa's numba functions are cached next to the package, which a sandboxed process cannot write.
     os.environ.setdefault("NUMBA_CACHE_DIR", os.path.join(work_dir, ".numba"))
     from audio_separator.separator import Separator
+    forbid_fetch(Separator)
     return Separator(model_file_dir=model_dir, output_dir=work_dir, output_format=fmt.upper(),
                      log_level=logging.WARNING)
 
@@ -223,13 +258,44 @@ def _root_from_prefix():
     return os.path.dirname(os.path.dirname(os.path.abspath(sys.prefix)))   # sys.prefix is <engines>/pro/.venv
 
 
+def _sha256(path):
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
 def _installed(root, entry):
-    """The model folder, after checking every pinned file is there with the pinned size."""
+    """The model folder, after checking every pinned file is there with the pinned size and sha256. A passed check is
+    remembered in .verified.json by (size, mtime), so later runs only stat the files; a changed file is hashed again."""
+    import json
     folder = catalog.model_dir(root, entry["id"])
+    marker = os.path.join(folder, ".verified.json")
+    try:
+        with open(marker) as f:
+            known = json.load(f)
+    except (OSError, ValueError):
+        known = {}
+    changed = False
     for spec in pins.STEMS.get(entry["id"], []):
         p = os.path.join(folder, spec["path"])
         if not os.path.isfile(p) or os.path.getsize(p) != spec["size"]:
             raise StemError("The %s model is not installed. Open Engines and install it first." % entry["title"])
+        st = os.stat(p)
+        stamp = [spec["sha256"], st.st_size, st.st_mtime_ns]
+        if known.get(spec["path"]) != stamp:
+            if _sha256(p) != spec["sha256"]:
+                raise StemError("The %s model file %s is damaged. Reinstall it in Separation." % (entry["title"], spec["path"]))
+            known[spec["path"]] = stamp
+            changed = True
+    if changed:
+        try:
+            with open(marker, "w") as f:
+                json.dump(known, f)
+        except OSError:
+            pass   # read-only engines folder: the next run hashes again
     return folder
 
 
@@ -237,12 +303,12 @@ def separate(req, emit=None, root=None, io=None, separator_factory=None):
     """Runs one separation. Returns {"outputs": [paths], ...}. `io`, `separator_factory` are test seams."""
     emit = emit or cns_proto
     work = os.path.abspath(req.get("work_dir") or "")
-    outputs_dir = os.path.abspath(req.get("outputs_dir") or "")
     if not work or not os.path.isdir(work):
         raise StemError("No work folder given.")
-    v = validate_request(req, roots=[outputs_dir, work] if req.get("outputs_dir") else None)
-    entry = v["entry"]
     root = root or req.get("engines_root") or _root_from_prefix()
+    v = validate_request(req, roots=allowed_roots(root, work))
+    entry = v["entry"]
+    outputs_dir = v["outputs_dir"]
     folder = _installed(root, entry)
     io = io or SoundFileIO()
     frames, sr, _ = io.info(v["input"])
