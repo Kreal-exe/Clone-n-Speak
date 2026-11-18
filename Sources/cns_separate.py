@@ -357,12 +357,12 @@ def _limit(x):
 
 
 def sep_vocals(req):
-    """req: audio, out, stem ("vocals" | "music"), id?, dir?. Writes the stem at the rate of the input: mono stays
+    """req: audio, out, stem ("vocals" | "music"), model_id?, dir? ("id" is the protocol request number). Writes the stem at the rate of the input: mono stays
     mono, everything else (stereo and multichannel, which is mixed down first) comes out as stereo. -> {"path", "seconds", "stem"}."""
     stem = req.get("stem", "vocals")
     if stem not in ("vocals", "music"):
         raise core.AudioInputError("bad_param", 'Choose what to keep: "vocals" or "music".')
-    entry = _entry(req.get("id"))
+    entry = _entry(req.get("model_id"))
     model_path = _prepare(entry, _models_dir(req))
     wav, rate = core.read_audio(req["audio"], mono=False, allow_silent=False)
     channels = 1 if wav.ndim == 1 else min(2, wav.shape[1])
@@ -377,7 +377,7 @@ def sep_vocals(req):
 
 
 def sep_status(req):
-    entry = _entry((req or {}).get("id"))
+    entry = _entry((req or {}).get("model_id"))
     directory = _models_dir(req)
     info = {k: v for k, v in entry.items() if k != "url"}
     return {"onnxruntime": _onnxruntime_present(), "model_ready": _model_ready(entry, directory),
@@ -385,7 +385,7 @@ def sep_status(req):
 
 
 def sep_install_model(req):
-    entry = _entry((req or {}).get("id"))
+    entry = _entry((req or {}).get("model_id"))
     directory = _models_dir(req)
     if not _model_ready(entry, directory):
         core.emit_status("Downloading the voice extractor…")
@@ -394,7 +394,7 @@ def sep_install_model(req):
 
 
 def sep_remove_model(req):
-    entry = _entry((req or {}).get("id"))
+    entry = _entry((req or {}).get("model_id"))
     path = _model_path(entry, _models_dir(req))
     _silent_remove(path)
     _silent_remove(path + ".part")

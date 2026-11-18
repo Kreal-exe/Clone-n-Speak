@@ -228,13 +228,13 @@ class SeparateTests(unittest.TestCase):
         with mock.patch.object(sep, "CATALOG", [e]), \
                 mock.patch.object(sep, "_open_url", lambda url: io.BytesIO(payload)):
             self.assertFalse(sep.sep_status({"dir": self.dir})["model_ready"])
-            out = sep.sep_install_model({"id": e["id"], "dir": self.dir})
+            out = sep.sep_install_model({"model_id": e["id"], "dir": self.dir})
             self.assertEqual(out, {"model_ready": True})
             self.assertTrue(sep.sep_status({"dir": self.dir})["model_ready"])
             self.assertFalse(os.path.exists(os.path.join(self.dir, e["file"] + ".part")))
             sep._download(e, self.dir + "/x", seen.append)
             self.assertEqual(seen[-1], 1.0)
-            sep.sep_remove_model({"id": e["id"], "dir": self.dir})
+            sep.sep_remove_model({"model_id": e["id"], "dir": self.dir})
             self.assertFalse(sep.sep_status({"dir": self.dir})["model_ready"])
 
     def test_model_checksum(self):
@@ -245,7 +245,7 @@ class SeparateTests(unittest.TestCase):
         with mock.patch.object(sep, "CATALOG", [e]), \
                 mock.patch.object(sep, "_open_url", lambda url: io.BytesIO(bytes(bad))):
             with self.assertRaises(sep.ModelDownloadError) as cm:
-                sep.sep_install_model({"id": e["id"], "dir": self.dir})
+                sep.sep_install_model({"model_id": e["id"], "dir": self.dir})
         self.assertIn("checksum", str(cm.exception))
         self.assertEqual(os.listdir(self.dir), [])
 
@@ -354,7 +354,8 @@ class SeparateTests(unittest.TestCase):
             sep.sep_vocals({"audio": "a", "out": "b", "stem": "drums"})
         self.assertEqual(cm.exception.code, "bad_param")
         with self.assertRaises(core.AudioInputError):
-            sep.sep_status({"id": "nope"})
+            sep.sep_status({"model_id": "nope"})
+        self.assertIn("model", sep.sep_status({"id": 7, "dir": self.dir}))   # the protocol request number is not a model id
 
     def test_status_reports_without_url(self):
         st = sep.sep_status({"dir": self.dir})

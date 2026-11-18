@@ -95,7 +95,7 @@ static const NSTimeInterval kMaxSeconds = 20 * 60;   // the 20-minute limit
     NSView *remove = OVFillStack(@[engine,
                                    OVFieldBlock(L(@"What to keep"), L(@"Each result takes one pass of the model."), OVHStack(@[self.voiceCheck, self.musicCheck, OVSpacer()], 18)),
                                    self.memoryNote, OVHStack(@[self.runButton, self.stopButton, OVSpacer()], 8), self.runBar, self.runStatus], 14);
-    NSView *c2 = OVStepCard(2, @"music.note.slash", L(@"Remove music"), L(@"Keeps the voice and takes the music out, or the other way round. Runs on this Mac."), remove);
+    NSView *c2 = OVStepCard(2, @"waveform.path.badge.minus", L(@"Remove music"), L(@"Keeps the voice and takes the music out, or the other way round. Runs on this Mac."), remove);
 
     // 3 Result
     self.resultPicker = [OVSegmented segmentedWithItems:@[@[L(@"Voice only"), @""], @[L(@"Music only"), @""]]];

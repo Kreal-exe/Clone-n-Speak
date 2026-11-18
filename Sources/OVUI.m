@@ -273,7 +273,12 @@ NSButton *OVCheckbox(NSString *title, NSString *key) {
 }
 
 NSImageView *OVSymbol(NSString *name, CGFloat size, NSColor *tint) {
-    NSImageView *v = [NSImageView imageViewWithImage:[NSImage imageWithSystemSymbolName:name accessibilityDescription:nil]];
+    NSImage *img = [NSImage imageWithSystemSymbolName:name accessibilityDescription:nil];
+    if (!img) {   // a symbol this macOS doesn't have must not take the page down
+        NSLog(@"OVSymbol: no system symbol %@", name);
+        img = [NSImage imageWithSystemSymbolName:@"circle" accessibilityDescription:nil] ?: [NSImage new];
+    }
+    NSImageView *v = [NSImageView imageViewWithImage:img];
     v.symbolConfiguration = [NSImageSymbolConfiguration configurationWithPointSize:size weight:NSFontWeightMedium];
     v.contentTintColor = tint ?: NSColor.secondaryLabelColor;
     [v setContentHuggingPriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
