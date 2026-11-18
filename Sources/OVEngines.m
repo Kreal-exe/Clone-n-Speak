@@ -10,6 +10,7 @@
 #import <sys/stat.h>
 
 NSNotificationName const OVEnginesDidChangeNotification = @"OVEnginesDidChangeNotification";
+NSNotificationName const OVRvcModelsDidChangeNotification = @"OVRvcModelsDidChangeNotification";
 NSString *const OVEnginePro = @"pro";
 NSString *const OVEngineEdge = @"edge";
 
