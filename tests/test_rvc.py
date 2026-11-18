@@ -47,9 +47,12 @@ class Tmp(unittest.TestCase):
     def setUp(self):
         self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="cns-rvc-test-")).resolve()
         self.addCleanup(shutil.rmtree, self.tmp, True)
+        patch = mock.patch.dict(os.environ, {"CNS_ALLOWED_ROOTS": str(self.tmp)})   # what the app passes to every process
+        patch.start()
+        self.addCleanup(patch.stop)
 
 
-class InferRequest(unittest.TestCase):
+class InferRequest(Tmp):
     def test_infer_request_validation(self):
         ok = rvc.validate_infer_request({})
         self.assertEqual((ok["pitch"], ok["f0_method"], ok["embedder"], ok["export_format"]), (0, "rmvpe", "contentvec", "WAV"))
@@ -72,7 +75,53 @@ class InferRequest(unittest.TestCase):
                                         "cleanup": {"mode": "light", "strength": 10}, "formant": {"on": True}})
         kw = rvc.applio_kwargs(p)
         self.assertEqual((kw["pitch"], kw["f0_method"], kw["f0_autotune"], kw["f0_autotune_strength"]), (3, "fcpe", True, 0.5))
-        self.assertEqual((kw["cleanup_mode"], kw["formant_shifting"], kw["export_format"], kw["sid"]), ("light", True, "WAV", 0))
+        self.assertEqual((kw["cleanup_mode"], kw["formant_shifting"], kw["sid"]), ("light", True, 0))
+        # Applio always writes a WAV; the chosen export format is applied by final_output, never by Applio's converter
+        mp3 = rvc.applio_kwargs(rvc.validate_infer_request({"export_format": "mp3"}))
+        self.assertEqual(mp3["export_format"], "WAV")
+
+    def test_export_formats_are_encoded_after_the_conversion(self):
+        out = self.tmp / "outputs"
+        out.mkdir()
+        for fmt, ext, codec in (("WAV", ".wav", None), ("MP3", ".mp3", "libmp3lame"), ("FLAC", ".flac", "flac"),
+                                ("OGG", ".ogg", "libvorbis"), ("M4A", ".m4a", "aac")):
+            with self.subTest(fmt):
+                wav = self.tmp / ("p-%s.wav" % fmt)
+                make_wav(wav, 1.0)
+                calls = []
+
+                def fake_run(cmd, timeout=0):
+                    calls.append(cmd)
+                    pathlib.Path(cmd[-1]).write_bytes(b"encoded")
+                    return subprocess.CompletedProcess(cmd, 0, "", "")
+
+                params = rvc.validate_infer_request({"export_format": fmt})
+                with mock.patch.object(rvc, "_tool", lambda n: "/x/" + n):
+                    dest = rvc.final_output(str(wav), params, str(out), "voice", str(self.tmp / "work"), run=fake_run)
+                self.assertTrue(dest.endswith("voice" + ext) and os.path.isfile(dest))
+                if codec:
+                    self.assertIn(codec, calls[0])
+                    self.assertEqual(open(dest, "rb").read(), b"encoded")
+                else:
+                    self.assertEqual(calls, [])
+                    self.assertFalse(wav.exists())
+        # no encoder: a plain error, nothing half-written
+        wav = self.tmp / "q.wav"
+        make_wav(wav, 1.0)
+        with mock.patch.object(rvc, "_tool", lambda n: None):
+            with self.assertRaises(rvc.RvcError) as cm:
+                rvc.final_output(str(wav), rvc.validate_infer_request({"export_format": "MP3"}), str(out), "v2", str(self.tmp))
+        self.assertIn("Choose WAV", str(cm.exception))
+
+    @unittest.skipUnless(shutil.which("ffmpeg"), "needs ffmpeg")
+    def test_real_ffmpeg_encodes_mp3_and_flac(self):
+        out = self.tmp / "outputs"
+        out.mkdir()
+        for fmt in ("MP3", "FLAC", "OGG", "M4A"):
+            wav = self.tmp / ("r-%s.wav" % fmt)
+            make_wav(wav, 1.0, rate=16000)
+            dest = rvc.final_output(str(wav), rvc.validate_infer_request({"export_format": fmt}), str(out), "r", str(self.tmp))
+            self.assertGreater(os.path.getsize(dest), 100, fmt)
 
 
 class Inputs(Tmp):
@@ -216,10 +265,52 @@ class Models(Tmp):
             rvc.output_dir({"outputs_dir": str(out), "output_dir": str(out / "escape")})
         with self.assertRaises(rvc.RvcError):
             rvc.output_dir({})
+        # outputs_dir itself must lie inside the roots the app passed
+        elsewhere = pathlib.Path(tempfile.mkdtemp(prefix="cns-rvc-else-")).resolve()
+        self.addCleanup(shutil.rmtree, elsewhere, True)
+        with self.assertRaises(rvc.RvcError):
+            rvc.output_dir({"outputs_dir": str(elsewhere)})
+        with mock.patch.dict(os.environ, {"CNS_ALLOWED_ROOTS": os.pathsep.join([str(self.tmp), str(elsewhere)])}):
+            self.assertEqual(rvc.output_dir({"outputs_dir": str(elsewhere)}), str(elsewhere))
+        # a sibling whose name starts like a root is not inside it
+        with self.assertRaises(rvc.RvcError):
+            rvc.output_dir({"outputs_dir": str(self.tmp) + "-evil"})
         # a hostile file name cannot leave the folder either
         self.assertEqual(rvc.safe_stem("../../etc/passwd.wav"), "passwd")
         self.assertEqual(rvc.safe_stem("/"), "converted")
         self.assertEqual(os.path.dirname(rvc.unique_path(str(out), rvc.safe_stem("../../x"), ".wav")), str(out))
+
+    def test_roots_fallback_without_the_app_env(self):
+        env = {k: v for k, v in os.environ.items() if k != "CNS_ALLOWED_ROOTS"}
+        eng = self.tmp / "app" / "engines"
+        eng.mkdir(parents=True)
+        (self.tmp / "app" / "outputs").mkdir()
+        with mock.patch.dict(os.environ, env, clear=True), mock.patch.dict(os.environ, {"CNS_ENGINES_ROOT": str(eng)}):
+            ok = {"outputs_dir": str(self.tmp / "app" / "outputs")}
+            self.assertEqual(rvc.output_dir(ok), str((self.tmp / "app" / "outputs").resolve()))
+            work = {"outputs_dir": str(self.tmp / "w" / "o"), "work_dir": str(self.tmp / "w")}
+            (self.tmp / "w" / "o").mkdir(parents=True)
+            self.assertTrue(rvc.output_dir(work))   # the work dir is allowed too
+            for bad in ({"outputs_dir": str(self.tmp)}, {"outputs_dir": "/tmp"}, {"outputs_dir": str(eng)}):
+                with self.assertRaises(rvc.RvcError, msg=str(bad)):
+                    rvc.output_dir(bad)
+            with self.assertRaises(rvc.RvcError):
+                rvc.models_root({"models_dir": "/tmp/x"})
+            with self.assertRaises(rvc.RvcError):
+                rvc.engine_root({"engines_root": "/tmp/x"})
+            self.assertEqual(rvc.models_root({}), os.path.join(str(self.tmp / "app"), "rvc", "models"))
+
+    def test_models_and_engines_roots_come_from_the_allowed_roots(self):
+        inside = self.tmp / "models"
+        self.assertEqual(rvc.models_root({"models_dir": str(inside)}), str(inside))
+        for bad in ("/tmp/evil", str(self.tmp) + "-x/models", "/"):
+            with self.assertRaises(rvc.RvcError, msg=bad):
+                rvc.models_root({"models_dir": bad})
+            with self.assertRaises(rvc.RvcError, msg=bad):
+                rvc.engine_root({"engines_root": bad})
+        with mock.patch.dict(os.environ, {"CNS_RVC_MODELS": "/tmp/evil"}):
+            with self.assertRaises(rvc.RvcError):
+                rvc.models_root({})
 
 
 def good_checkpoint(**over):
@@ -292,6 +383,52 @@ class Checkpoints(Tmp):
         self.assertEqual(rvc.load_checkpoint(pth)["version"], "v2")
 
 
+class Indexes(Tmp):
+    def test_index_files_need_suffix_size_and_faiss_magic(self):
+        for magic in (b"IxF2", b"IwFl", b"IwPQ", b"IHNf", b"IxFI"):
+            p = self.tmp / ("ok-%s.index" % magic.decode())
+            p.write_bytes(magic + b"\0" * 16)
+            self.assertEqual(rvc.check_index_file(str(p)), str(p))
+        bad = {"wrong.bin": b"IwFl" + b"\0" * 8, "text.index": b"hello world", "pickle.index": b"\x80\x04\x95abcd",
+               "short.index": b"Iw", "empty.index": b"", "lower.index": b"iwfl0000", "ctrl.index": b"I\0\0\0rest"}
+        for name, body in bad.items():
+            (self.tmp / name).write_bytes(body)
+            with self.assertRaises(rvc.RvcError, msg=name):
+                rvc.check_index_file(str(self.tmp / name))
+        big = self.tmp / "big.index"
+        big.write_bytes(b"IwFl" + b"\0" * 64)
+        with mock.patch.object(rvc, "MAX_INDEX_BYTES", 32):
+            with self.assertRaises(rvc.RvcError) as cm:
+                rvc.check_index_file(str(big))
+        self.assertIn("1 GB", str(cm.exception))
+
+    def test_import_refuses_bad_index_loose_and_in_zip(self):
+        pth = self.tmp / "m.pth"
+        with zipfile.ZipFile(pth, "w") as z:
+            z.writestr("archive/data.pkl", b"w")
+        bad = self.tmp / "bad.index"
+        bad.write_bytes(b"not faiss at all")
+        loader = lambda p: good_checkpoint()
+        with self.assertRaises(rvc.RvcError):
+            rvc.import_model(str(self.tmp / "models"), "x", pth=str(pth), index=str(bad), loader=loader)
+        notindex = self.tmp / "idx.bin"
+        notindex.write_bytes(b"IwFl" + b"\0" * 8)
+        with self.assertRaises(rvc.RvcError):
+            rvc.import_model(str(self.tmp / "models"), "x", pth=str(pth), index=str(notindex), loader=loader)
+        zp = self.tmp / "m.zip"
+        with zipfile.ZipFile(zp, "w") as z:
+            z.writestr("a/m.pth", b"w")
+            z.writestr("a/m.index", b"<html>nope</html>")
+        with self.assertRaises(rvc.RvcError):
+            rvc.import_model(str(self.tmp / "models"), "x", zip_path=str(zp), loader=loader)
+        self.assertEqual(os.listdir(self.tmp / "models"), [])
+        with zipfile.ZipFile(zp, "w") as z:
+            z.writestr("a/m.pth", b"w")
+            z.writestr("a/m.index", b"IwFl" + b"\0" * 8)
+        res = rvc.import_model(str(self.tmp / "models"), "x", zip_path=str(zp), loader=loader)
+        self.assertTrue(res["info"]["has_index"])
+
+
 class ImportFlow(Tmp):
     def fake_loader(self, path):
         return good_checkpoint()
@@ -306,7 +443,7 @@ class ImportFlow(Tmp):
         models = self.tmp / "models"
         pth = self.make_pth()
         idx = self.tmp / "m.index"
-        idx.write_bytes(b"faiss")
+        idx.write_bytes(b"IwFl" + b"\0" * 20)
         res = rvc.import_model(str(models), "My Voice", pth=str(pth), index=str(idx), loader=self.fake_loader,
                                source_url="https://example.com/m.pth")
         self.assertRegex(res["id"], r"^my-voice-[0-9a-f]{8}$")
@@ -318,6 +455,45 @@ class ImportFlow(Tmp):
         self.assertTrue(again["already"])
         other = rvc.import_model(str(models), "My Voice", pth=str(self.make_pth("n.pth", b"weights-2")), loader=self.fake_loader)
         self.assertNotEqual(other["id"], res["id"])
+
+    def test_same_model_imported_twice_concurrently_is_safe(self):
+        import threading
+        models = self.tmp / "models"
+        pth = self.make_pth()
+        results, errors = [], []
+
+        def go():
+            try:
+                results.append(rvc.import_model(str(models), "Same", pth=str(pth), loader=self.fake_loader))
+            except Exception as e:   # noqa: BLE001
+                errors.append(e)
+
+        threads = [threading.Thread(target=go) for _ in range(6)]
+        [t.start() for t in threads]
+        [t.join() for t in threads]
+        self.assertEqual(errors, [])
+        self.assertEqual(len({r["model_dir"] for r in results}), 1)
+        self.assertEqual(sum(1 for r in results if not r["already"]), 1)
+        self.assertEqual(len(os.listdir(models)), 1)   # no stage folders left
+        self.assertTrue(os.path.isfile(os.path.join(results[0]["model_dir"], "meta.json")))
+
+    def test_infer_verifies_the_recorded_sha256_and_caches_it(self):
+        models = self.tmp / "models"
+        res = rvc.import_model(str(models), "V", pth=str(self.make_pth()), loader=self.fake_loader)
+        folder = res["model_dir"]
+        rvc.resolve_model(folder, str(models), verify=True)
+        self.assertTrue(os.path.isfile(os.path.join(folder, ".verified")))
+        with mock.patch.object(rvc, "file_sha256", side_effect=AssertionError("cached by mtime+size")):
+            rvc.resolve_model(folder, str(models), verify=True)
+        pth = os.path.join(folder, "v.pth")
+        with open(pth, "ab") as f:   # swapped after the import
+            f.write(b"tamper")
+        with self.assertRaises(rvc.RvcError) as cm:
+            rvc.resolve_model(folder, str(models), verify=True)
+        self.assertIn("changed after it was imported", str(cm.exception))
+        os.remove(os.path.join(folder, "meta.json"))
+        with self.assertRaises(rvc.RvcError):
+            rvc.resolve_model(folder, str(models), verify=True)
 
     def test_failed_import_leaves_nothing(self):
         models = self.tmp / "models"
@@ -355,11 +531,21 @@ class ImportFlow(Tmp):
         # a traversal name hidden among ignored files still rejects the whole archive
         with self.assertRaises(rvc.RvcError):
             rvc.extract_model_zip(build("h.zip", {"ok.pth": b"x", "../readme.txt": b"x"}), str(self.tmp / "d2"))
-        # too many files
-        many = {"f%d.txt" % i: b"x" for i in range(21)}
+        # too many model files; other files (and __MACOSX / dotfiles) do not count towards that cap...
+        many = {"f%d.index" % i: b"x" for i in range(20)}
         many["m.pth"] = b"x"
         with self.assertRaises(rvc.RvcError) as cm:
             rvc.extract_model_zip(build("many.zip", many), str(self.tmp / "d3"))
+        self.assertIn("too many", str(cm.exception))
+        noise = {"readme%d.txt" % i: b"x" for i in range(60)}
+        noise.update({"__MACOSX/._m%d.pth" % i: b"j" for i in range(30)})
+        noise["m.pth"] = b"x"
+        rvc.extract_model_zip(build("noise.zip", noise), str(self.tmp / "d3b"))
+        # ...but the whole archive is capped
+        flood = {"n%d.txt" % i: b"x" for i in range(201)}
+        flood["m.pth"] = b"x"
+        with self.assertRaises(rvc.RvcError) as cm:
+            rvc.extract_model_zip(build("flood.zip", flood), str(self.tmp / "d3c"))
         self.assertIn("too many", str(cm.exception))
         # size: the declared size and the bytes really read both count
         big = build("big.zip", {"m.pth": b"\0" * 5000})
@@ -447,6 +633,27 @@ class Fetch(Tmp):
         self.assertEqual(kind, "zip")
 
 
+class FetchCommand(Tmp):
+    def test_fetch_command_only_downloads_and_returns_the_path(self):
+        events = []
+        body = b"PK-model"
+
+        def fake(url, work, emit_fn=None, **kw):
+            p = os.path.join(work, "fetch", "m.pth")
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            open(p, "wb").write(body)
+            return p, "pth"
+
+        models = self.tmp / "models"
+        with mock.patch.object(rvc, "fetch_model", fake), mock.patch.object(rvc.cns_proto, "emit", lambda ev, **kw: events.append((ev, kw))), \
+                mock.patch.object(rvc, "import_model", side_effect=AssertionError("fetch must not import")):
+            rvc.cmd_fetch({"url": "https://example.com/a/Cool.pth", "work_dir": str(self.tmp), "models_dir": str(models)})
+        res = [kw for ev, kw in events if ev == "result"][0]["data"]
+        self.assertEqual((res["kind"], res["name"], res["size_bytes"]), ("pth", "Cool", len(body)))
+        self.assertTrue(os.path.isfile(res["path"]))
+        self.assertFalse(models.exists())
+
+
 class Batch(Tmp):
     def test_batch_collects_failures_and_continues(self):
         events = []
@@ -480,7 +687,8 @@ class Batch(Tmp):
 class Protocol(Tmp):
     def run_cli(self, command, req):
         r = subprocess.run([sys.executable, str(HERE.parent / "Sources" / "cns_rvc.py"), command], input=json.dumps(req),
-                           capture_output=True, text=True, timeout=60, cwd=str(self.tmp))
+                           capture_output=True, text=True, timeout=60, cwd=str(self.tmp),
+                           env=dict(os.environ, CNS_ALLOWED_ROOTS=str(self.tmp)))
         events = [json.loads(l) for l in r.stdout.splitlines() if l.strip()]
         return r.returncode, events
 
@@ -557,6 +765,19 @@ class SeedVC(Tmp):
         env = seedvc.child_env(str(self.tmp), str(self.tmp))
         self.assertEqual(env["HF_HUB_OFFLINE"], "1")
         self.assertNotIn("HF_TOKEN", env)
+
+    def test_seedvc_wraps_itself_unless_the_app_sandboxed_it(self):
+        base = ["/py/python", "inference.py"]
+        wrapped = seedvc.wrap_command(str(self.tmp), base, str(self.tmp), env={})
+        self.assertEqual(wrapped[0], "/usr/bin/sandbox-exec")
+        # both markers of the app's own sandbox are needed to skip ours
+        for env in ({"CNS_SANDBOXED": "1"}, {"CNS_SANDBOX_FILE": "/x/p.sb"}, {"CNS_SANDBOXED": "0", "CNS_SANDBOX_FILE": "/x/p.sb"}):
+            self.assertEqual(seedvc.wrap_command(str(self.tmp), base, str(self.tmp), env=env)[0], "/usr/bin/sandbox-exec")
+        self.assertEqual(seedvc.wrap_command(str(self.tmp), base, str(self.tmp),
+                                             env={"CNS_SANDBOXED": "1", "CNS_SANDBOX_FILE": "/x/p.sb"}), base)
+        with self.assertRaises(rvc.RvcError) as cm:   # no sandbox-exec: never run unsandboxed
+            seedvc.wrap_command(str(self.tmp), base, str(self.tmp), env={}, exists=lambda p: False)
+        self.assertIn("sandbox", str(cm.exception))
 
     def test_trim_wav_keeps_at_most_25_seconds(self):
         src = self.tmp / "long.wav"

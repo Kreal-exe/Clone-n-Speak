@@ -73,6 +73,18 @@ def sandboxed_command(root, cmd, tmp):
     return [SANDBOX_EXEC, "-p", profile] + list(cmd)
 
 
+def wrap_command(root, cmd, tmp, env=None, exists=os.path.exists):
+    """The app starts this script already inside its sandbox (CNS_SANDBOXED=1 and CNS_SANDBOX_FILE both set): then the
+    child inherits it and is not wrapped again. Otherwise it is wrapped here, and without sandbox-exec Seed-VC
+    does not run (it must never run with network access)."""
+    env = os.environ if env is None else env
+    if env.get("CNS_SANDBOXED") == "1" and env.get("CNS_SANDBOX_FILE"):
+        return list(cmd)
+    if not exists(SANDBOX_EXEC):
+        raise RvcError("Seed-VC needs the macOS sandbox (sandbox-exec), which is missing, so it was not started.")
+    return sandboxed_command(root, cmd, tmp)
+
+
 def child_env(root, tmp):
     # numba (librosa) caches compiled code on disk and fails without a writable cache folder: it gets one inside the
     # Seed-VC folder, which the sandbox allows writes to
@@ -117,7 +129,7 @@ def cmd_convert(req):
     out_dir = os.path.join(tmp, "out")
     os.makedirs(out_dir)
     cmd = [py] + build_args(source, ref, out_dir, **params)
-    cmd = sandboxed_command(root, cmd, tmp) if os.path.exists(SANDBOX_EXEC) else cmd
+    cmd = wrap_command(root, cmd, tmp)
     cns_proto.status("Converting with Seed-VC…")
     cns_proto.progress(0.05)
     t0 = time.time()

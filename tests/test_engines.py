@@ -349,8 +349,12 @@ class InstallTests(Base):
         snap = os.path.join(sv, "hf", "checkpoints", "models--org--dit", "snapshots", "a" * 40, "dit.pth")
         self.assertEqual(open(snap, "rb").read(), self.srv.files["/m/dit.pth"])
         self.assertEqual(open(os.path.join(sv, "hf", "checkpoints", "models--org--dit", "refs", "main")).read(), "a" * 40)
-        self.assertTrue(os.path.isfile(os.path.join(sv, "hf", "hub", "models--org--voc", "snapshots", "b" * 40,
+        self.assertTrue(os.path.isfile(os.path.join(sv, "hf", "checkpoints", "hf_cache", "models--org--voc", "snapshots", "b" * 40,
                                                     "sub", "config.json")))
+        self.assertEqual(eng.seedvc_env(self.root)["HF_HUB_CACHE"], os.path.join(sv, "hf", "checkpoints", "hf_cache"))
+        # inference.py forces HF_HUB_CACHE=./checkpoints/hf_cache: the 'hub' models must be visible there
+        self.assertTrue(os.path.isfile(os.path.join(sv, "seed-vc", "checkpoints", "hf_cache", "models--org--voc",
+                                                    "snapshots", "b" * 40, "sub", "config.json")))
         self.assertTrue(os.path.isfile(os.path.join(sv, "seed-vc", "checkpoints", "models--org--dit", "snapshots",
                                                     "a" * 40, "dit.pth")))
         # the first run happens offline

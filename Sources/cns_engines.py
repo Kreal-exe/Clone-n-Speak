@@ -143,22 +143,29 @@ def seedvc_dir(root):
     return os.path.join(root, "seedvc")
 
 
+# Seed-VC's inference.py sets HF_HUB_CACHE = ./checkpoints/hf_cache itself, whatever the environment says, so the
+# pins' 'hub' models (BigVGAN, Whisper) must sit there (seed-vc/checkpoints points to hf/checkpoints).
+HUB_CACHE_REL = os.path.join("checkpoints", "hf_cache")
+
+
 def seedvc_env(root):
     """Environment of every Seed-VC process: its Hugging Face cache lives inside the engine folder and it never
     goes online (every model it needs is installed and pinned by install())."""
     hf = os.path.join(seedvc_dir(root), "hf")
-    return {"HF_HOME": hf, "HF_HUB_CACHE": os.path.join(hf, "hub"), "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1",
+    return {"HF_HOME": hf, "HF_HUB_CACHE": os.path.join(hf, HUB_CACHE_REL), "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1",
             "PYTORCH_ENABLE_MPS_FALLBACK": "1"}
 
 
 def seedvc_model_files(root):
     """[(blob path, snapshot link path, pinned entry)] for the Seed-VC models, laid out as a Hugging Face cache:
     <cache>/models--org--name/{blobs/<sha256>, refs/main, snapshots/<rev>/<file> -> blob}. The 'checkpoints' cache
-    is what Seed-VC's load_custom_model_from_hf reads (seed-vc/checkpoints points to it), 'hub' is HF_HUB_CACHE."""
+    is what Seed-VC's load_custom_model_from_hf reads (seed-vc/checkpoints points to it); 'hub' models go to
+    checkpoints/hf_cache, the HF_HUB_CACHE that inference.py forces."""
     out = []
     hf = os.path.join(seedvc_dir(root), "hf")
     for m in pins.SEEDVC_MODELS:
-        repo_dir = os.path.join(hf, m["cache"], "models--" + m["repo"].replace("/", "--"))
+        cache = HUB_CACHE_REL if m["cache"] == "hub" else m["cache"]
+        repo_dir = os.path.join(hf, cache, "models--" + m["repo"].replace("/", "--"))
         for e in m["files"]:
             out.append((os.path.join(repo_dir, "blobs", e["sha256"]),
                         os.path.join(repo_dir, "snapshots", m["rev"], e["path"]), e, repo_dir, m["rev"]))

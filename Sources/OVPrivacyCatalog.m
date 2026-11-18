@@ -79,6 +79,7 @@ NSNotificationName const OVPrivacyWillDeleteAppDataNotification = @"OVPrivacyWil
         Src(@"OVPlugins.m", @"plugin_network", @"plugins, only with the network permission"),
         Src(@"cns_ytdl.py", @"youtube", @"video downloader, only for the link you paste"),
         Src(@"cns_edge.py", @"edge_tts", @"Edge speech service, only for the text you speak"),
+        Src(@"cns_rvc.py", dl, @"voice-model files, only from the link you paste"),
     ];
 }
 

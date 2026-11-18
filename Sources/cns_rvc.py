@@ -37,7 +37,9 @@ import cns_net  # noqa: E402
 import cns_proto  # noqa: E402
 
 MAX_MODEL_BYTES = 2 << 30
-MAX_ZIP_FILES = 20
+MAX_ZIP_FILES = 20          # wanted files (.pth/.index) in an archive
+MAX_ZIP_MEMBERS = 200       # every member, ignored ones included
+MAX_INDEX_BYTES = 1 << 30
 MAX_BATCH = 200
 MAX_RATE = 48000
 MAX_SECONDS = 2 * 3600
@@ -143,24 +145,58 @@ def applio_kwargs(params):
 
 # ------------------------------------------------------------------------------------------------------ locations
 
-def engine_root(req=None):
-    """The engines folder (…/engines): request `engines_root`, else CNS_ENGINES_ROOT, else the parent of the Applio
-    working directory (the app starts cns_rvc.py inside <engines>/applio)."""
-    if req and req.get("engines_root"):
-        return str(req["engines_root"])
+def _default_engine_root():
+    """CNS_ENGINES_ROOT, else the parent of the Applio working directory (the app starts cns_rvc.py inside <engines>/applio)."""
     if os.environ.get("CNS_ENGINES_ROOT"):
         return os.environ["CNS_ENGINES_ROOT"]
     cwd = os.getcwd()
     return os.path.dirname(cwd) if os.path.basename(cwd) == "applio" else cwd
 
 
+def allowed_roots(req=None):
+    """The folders a request may name (real paths). The app passes them in CNS_ALLOWED_ROOTS (os.pathsep-joined: outputs,
+    models, engines). Without it (CLI, tests): <engines root>/../outputs, the default models folder and the job's work dir."""
+    env = os.environ.get("CNS_ALLOWED_ROOTS")
+    if env:
+        raw = [p for p in env.split(os.pathsep) if p]
+    else:
+        app = os.path.dirname(_default_engine_root())
+        raw = [os.path.join(app, "outputs"), os.path.join(app, "rvc", "models")]
+        if req and req.get("work_dir"):
+            raw.append(str(req["work_dir"]))
+    return [os.path.realpath(os.path.expanduser(r)) for r in raw]
+
+
+def inside_roots(path, roots):
+    real = os.path.realpath(os.path.expanduser(str(path)))
+    for r in roots:
+        try:
+            if os.path.commonpath([real, r]) == r:
+                return True
+        except ValueError:   # different drives / mixed absolute and relative
+            continue
+    return False
+
+
+def require_inside(path, req, what):
+    if not path or not inside_roots(path, allowed_roots(req)):
+        raise RvcError("%s is outside the app folders." % what)
+    return os.path.realpath(os.path.expanduser(str(path)))
+
+
+def engine_root(req=None):
+    """The engines folder (…/engines). A request's `engines_root` must lie inside the allowed roots."""
+    if req and req.get("engines_root"):
+        return require_inside(req["engines_root"], req, "The engines folder")
+    return _default_engine_root()
+
+
 def models_root(req=None):
-    """Where imported voice models live: request `models_dir`, else CNS_RVC_MODELS, else <app data>/rvc/models, the
-    sibling of the engines folder."""
-    if req and req.get("models_dir"):
-        return str(req["models_dir"])
-    if os.environ.get("CNS_RVC_MODELS"):
-        return os.environ["CNS_RVC_MODELS"]
+    """Where imported voice models live: request `models_dir`, else CNS_RVC_MODELS, else <app data>/rvc/models. Either
+    source must lie inside the allowed roots."""
+    value = (req or {}).get("models_dir") or os.environ.get("CNS_RVC_MODELS")
+    if value:
+        return require_inside(value, req, "The models folder")
     return os.path.join(os.path.dirname(engine_root(req)), "rvc", "models")
 
 
@@ -169,7 +205,34 @@ def _inside(path, root):
     return path == root or path.startswith(root.rstrip(os.sep) + os.sep)
 
 
-def resolve_model(model, models_dir):
+def verify_model(pth, folder):
+    """The imported .pth must still be the file whose sha256 meta.json recorded (a model folder is user-writable). The
+    result is cached next to it by mtime+size, so only the first conversion after an import pays the hash."""
+    try:
+        with open(os.path.join(folder, "meta.json")) as f:
+            want = json.load(f)["sha256"]
+        st = os.stat(pth)
+    except (OSError, ValueError, KeyError, TypeError):
+        raise RvcError("The voice model has no valid record. Import it again on the Models page.")
+    cache = os.path.join(folder, ".verified")
+    try:
+        with open(cache) as f:
+            c = json.load(f)
+        if c == {"mtime_ns": st.st_mtime_ns, "size": st.st_size, "sha256": want}:
+            return True
+    except (OSError, ValueError):
+        pass
+    if file_sha256(pth) != want:
+        raise RvcError("The voice model file changed after it was imported. Import it again on the Models page.")
+    try:
+        with open(cache, "w") as f:
+            json.dump({"mtime_ns": st.st_mtime_ns, "size": st.st_size, "sha256": want}, f)
+    except OSError:
+        pass   # read-only folder or sandbox: the next run hashes again
+    return True
+
+
+def resolve_model(model, models_dir, verify=False):
     """(pth path, index path or "", folder) of an installed voice model. `model` is its folder (or just its id); the
     folder must be inside models_dir, whatever symlinks lead there."""
     if not isinstance(model, str) or not model.strip():
@@ -191,6 +254,8 @@ def resolve_model(model, models_dir):
             pth = os.path.join(real, n)
             break
     index = os.path.join(real, os.path.splitext(os.path.basename(pth))[0] + ".index")
+    if verify:
+        verify_model(pth, real)
     return pth, (index if os.path.isfile(index) else (os.path.join(real, idx[0]) if idx else "")), real
 
 
@@ -220,9 +285,10 @@ def check_embedder_installed(applio, embedder):
 
 
 def output_dir(req):
-    """The folder results go to: `output_dir` (optional) or `outputs_dir`; always inside `outputs_dir`."""
+    """The folder results go to: `output_dir` (optional) or `outputs_dir`; `outputs_dir` must lie inside the allowed
+    roots and `output_dir` inside `outputs_dir`."""
     root = req.get("outputs_dir")
-    if not root:
+    if not root or not inside_roots(root, allowed_roots(req)):
         raise RvcError("Output folder is outside the app folders")
     target = req.get("output_dir") or root
     try:
@@ -453,6 +519,24 @@ def _bad_member(name):
             or re.match(r"^[A-Za-z]:", name) is not None)
 
 
+def check_index_file(path):
+    """A faiss index: .index suffix, at most 1 GB, and faiss's own header (4 ASCII letters starting with 'I': IxF2 flat,
+    IwFl IVF flat, IwPQ IVF-PQ, IHNf HNSW). Applio hands it to faiss.read_index, a C++ parser, never a pickle."""
+    if not str(path).lower().endswith(".index"):
+        raise RvcError("An index file ends with .index.")
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as f:
+            head = f.read(4)
+    except OSError:
+        raise RvcError("The index file can't be read.")
+    if size > MAX_INDEX_BYTES:
+        raise RvcError("The index file is larger than 1 GB.")
+    if len(head) < 4 or head[:1] != b"I" or not all(chr(c).isalnum() and c < 128 for c in head):
+        raise RvcError("This isn’t a voice model index file")
+    return path
+
+
 def check_pth_container(path, max_bytes=MAX_MODEL_BYTES):
     """A .pth must be a torch zip archive whose members have plain relative names. Legacy (non-zip) torch files are pickle
     streams with no structure to check and are refused."""
@@ -523,14 +607,18 @@ def extract_model_zip(zip_path, dest, max_total=MAX_MODEL_BYTES, max_files=MAX_Z
     except (zipfile.BadZipFile, OSError):
         raise RvcError("This isn’t a valid zip file")
     with z:
+        if len(z.infolist()) > MAX_ZIP_MEMBERS:
+            raise RvcError("The archive has too many files (more than %d)." % MAX_ZIP_MEMBERS)
         infos = [i for i in z.infolist() if not i.is_dir()]
-        if len(infos) > max_files:
-            raise RvcError("The archive has too many files (more than %d)." % max_files)
         for i in z.infolist():
             if _bad_member(i.filename) or (i.external_attr >> 16) & 0o170000 == 0o120000:
                 raise RvcError("The archive has unsafe file names, so nothing was imported.")
         wanted = [i for i in infos if i.filename.lower().endswith((".pth", ".index"))
-                  and not os.path.basename(i.filename).startswith("._") and not i.filename.startswith("__MACOSX/")]
+                  and not os.path.basename(i.filename).startswith(".") and not i.filename.startswith("__MACOSX/")]
+        if len(wanted) > max_files:
+            raise RvcError("The archive has too many files (more than %d model files)." % max_files)
+        if any(i.file_size > MAX_INDEX_BYTES for i in wanted if i.filename.lower().endswith(".index")):
+            raise RvcError("The index file is larger than 1 GB.")
         if sum(i.file_size for i in wanted) > max_total:
             raise RvcError("The archive is larger than 2 GB when unpacked.")
         pths = [i for i in wanted if i.filename.lower().endswith(".pth")]
@@ -586,9 +674,12 @@ def import_model(models_dir, name, pth=None, index=None, zip_path=None, source_u
         else:
             if not pth:
                 raise RvcError("Choose a .pth voice model file.")
-            src_pth, src_index = cns_proto.check_input_file(pth), (cns_proto.check_input_file(index) if index else None)
+            src_pth = cns_proto.check_input_file(pth)
+            src_index = check_index_file(cns_proto.check_input_file(index)) if index else None
             if not src_pth.lower().endswith(PTH_SUFFIXES):
                 raise RvcError("A voice model file ends with .pth.")
+        if src_index:
+            check_index_file(src_index)   # also the one unpacked from a zip (renamed to unpacked.index)
         copy_pth = os.path.join(stage, "model.pth")
         digest, size = _copy_hashed(src_pth, copy_pth)
         ck = loader(copy_pth)
@@ -603,16 +694,21 @@ def import_model(models_dir, name, pth=None, index=None, zip_path=None, source_u
         os.makedirs(pack)
         os.replace(copy_pth, os.path.join(pack, base + ".pth"))
         if src_index:
-            if os.path.getsize(src_index) > MAX_MODEL_BYTES:
-                raise RvcError("The index file is larger than 2 GB.")
             shutil.copyfile(src_index, os.path.join(pack, base + ".index"))
         meta = {"id": mid, "name": str(name or base)[:120], "sha256": digest, "source_url": source_url,
                 "imported_at": int(time.time()), "info": info}
         with open(os.path.join(pack, "meta.json"), "w") as f:
             json.dump(meta, f, ensure_ascii=False, indent=1)
-        if os.path.exists(final):
-            shutil.rmtree(final)   # a half-made folder from an older crash (no meta.json)
-        os.rename(pack, final)
+        if os.path.isdir(final) and not os.path.isfile(os.path.join(final, "meta.json")):
+            # a half-made folder from an older crash (a finished import always has meta.json, since it is renamed whole)
+            with contextlib.suppress(OSError):
+                os.rename(final, os.path.join(stage, "old"))
+        try:
+            os.rename(pack, final)   # atomic; stage is unique per call, so two imports never share a temporary folder
+        except OSError:
+            if os.path.isfile(os.path.join(final, "meta.json")):   # the other import of the same model won the race
+                return {"model_dir": final, "info": info, "id": mid, "already": True}
+            raise
         return {"model_dir": final, "info": info, "id": mid, "already": False}
     finally:
         shutil.rmtree(stage, ignore_errors=True)
@@ -735,15 +831,45 @@ class Converter:
         return int(self.vc.tgt_sr or 0)
 
 
-def final_output(produced_wav, params, outdir, stem, work):
-    """Moves the result into the outputs folder in the chosen format (Applio writes WAV, plus the converted file)."""
-    ext = "." + params["export_format"].lower()
-    src = produced_wav if ext == ".wav" else os.path.splitext(produced_wav)[0] + ext
-    if not os.path.isfile(src):
+def encode_commands(src, dst, fmt):
+    """Command lines (preferred first) that turn the 16-bit WAV src into dst in the export format."""
+    ffmpeg, afconvert = _tool("ffmpeg"), _tool("afconvert")
+    codecs = {"MP3": [["-c:a", "libmp3lame", "-q:a", "2"]], "FLAC": [["-c:a", "flac"]],
+              # not every ffmpeg build has libvorbis: the built-in (experimental) Vorbis encoder, then Opus in Ogg
+              "OGG": [["-c:a", "libvorbis", "-q:a", "5"], ["-c:a", "vorbis", "-strict", "-2"],
+                      ["-c:a", "libopus", "-b:a", "96k"]],
+              "M4A": [["-c:a", "aac", "-b:a", "192k"]]}[fmt]
+    cmds = []
+    if ffmpeg:
+        for codec in codecs:
+            cmds.append([ffmpeg, "-nostdin", "-y", "-v", "error", "-i", src, "-vn"] + codec + [dst])
+    if fmt == "M4A" and afconvert:
+        cmds.append([afconvert, "-f", "m4af", "-d", "aac", "-b", "192000", src, dst])
+    return cmds
+
+
+def final_output(produced_wav, params, outdir, stem, work, run=_run_quiet):
+    """Puts the result into the outputs folder in the chosen format. Applio always writes a WAV (we do not let it convert:
+    its converter cannot make M4A and fails after the conversion otherwise); the other formats are encoded here."""
+    fmt = params["export_format"]
+    if not os.path.isfile(produced_wav):
         raise RvcError("The conversion produced no audio. Try again, or pick another voice model.")
+    ext = "." + fmt.lower()
     dest = unique_path(outdir, stem, ext)
-    shutil.move(src, dest)
-    return dest
+    if fmt == "WAV":
+        shutil.move(produced_wav, dest)
+        return dest
+    enc = os.path.join(work, "encode", os.path.basename(dest))
+    os.makedirs(os.path.dirname(enc), exist_ok=True)
+    for cmd in encode_commands(produced_wav, enc, fmt):
+        try:
+            r = run(cmd, 900)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if r.returncode == 0 and os.path.isfile(enc) and os.path.getsize(enc) > 0:
+            shutil.move(enc, dest)
+            return dest
+    raise RvcError("Can't save as %s on this Mac. Choose WAV and try again." % fmt)
 
 
 def _audio_seconds(path):
@@ -757,7 +883,7 @@ def _audio_seconds(path):
 def _convert_files(req, inputs, params, emit_fn):
     work, applio = _prepare_process(req)
     check_embedder_installed(applio, params["embedder"])
-    pth, index, folder = resolve_model(req.get("model"), models_root(req))
+    pth, index, folder = resolve_model(req.get("model"), models_root(req), verify=True)
     if params["index_rate"] == 0:
         index = ""
     outdir = output_dir(req)
@@ -809,7 +935,7 @@ def cmd_batch(req):
 def cmd_info(req):
     models = models_root(req)
     if req.get("model"):
-        pth, index, _ = resolve_model(req["model"], models)
+        pth, index, _ = resolve_model(req["model"], models, verify=True)
     else:
         pth, index = cns_proto.check_input_file(req.get("pth") or ""), ""
     ck = load_checkpoint(pth)
@@ -825,15 +951,14 @@ def cmd_import(req):
 
 
 def cmd_fetch(req):
+    """Only downloads. The app then runs `import` on the returned path in a process with no network."""
     work = req.get("work_dir") or tempfile.mkdtemp(prefix="cns-rvc-")
     cns_proto.status("Downloading the voice model…")
     with heartbeat("Downloading", 10.0):   # the size is unknown up front, so there is no percentage to report
         path, kind = fetch_model(req.get("url"), work, lambda ev, **kw: cns_proto.emit(ev, **kw))
     name = req.get("name") or os.path.splitext(os.path.basename(urllib.parse.urlsplit(req["url"]).path))[0]
-    cns_proto.status("Checking the model…")
-    res = import_model(models_root(req), name, pth=path if kind == "pth" else None,
-                       zip_path=path if kind == "zip" else None, source_url=normalize_model_url(req["url"]))
-    cns_proto.result(model_dir=res["model_dir"], info=res["info"], id=res["id"], already=res["already"])
+    cns_proto.result(path=path, kind=kind, name=name, source_url=normalize_model_url(req["url"]),
+                     size_bytes=os.path.getsize(path))
 
 
 def cmd_blend(req):
@@ -844,8 +969,8 @@ def cmd_blend(req):
     if not name:
         raise RvcError("Name the new voice.")
     models = models_root(req)
-    a, _, _ = resolve_model(req.get("model_a"), models)
-    b, _, _ = resolve_model(req.get("model_b"), models)
+    a, _, _ = resolve_model(req.get("model_a"), models, verify=True)
+    b, _, _ = resolve_model(req.get("model_b"), models, verify=True)
     work, _applio = _prepare_process(req)
     from rvc.train.process.model_blender import model_blender   # weights_only=True inside
     tmp_name = "cns-blend-%d" % os.getpid()
