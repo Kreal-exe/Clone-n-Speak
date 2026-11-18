@@ -409,6 +409,7 @@ def download(url, dest, sha256, size, emit_fn=None, opener=None, max_bytes=2 << 
     """Downloads url to dest through dest + '.part', resuming a leftover .part with a Range request. The sha256 is
     checked before the file is moved into place; a mismatch deletes the .part. sha256/size may be None (a tarball
     whose files are hashed on extraction); max_bytes then bounds the download. emit_fn("progress", value=0..1)."""
+    _require_download_allowed()
     _check_url(url)
     opener = opener or _default_opener
     os.makedirs(os.path.dirname(os.path.abspath(dest)), exist_ok=True)
@@ -899,10 +900,20 @@ def _install_edge(root, comp, uv, uvenv, emit_fn, prog, python):
     return {"python": py, "version": EDGE_TTS}
 
 
-def install(root, components_, uv, env, emit_fn, opener=None, python=PYTHON_VERSION):
+_EXPLICIT = False   # install(..., explicit_download=True) for the duration of the call
+
+
+def _require_download_allowed(explicit=False):
+    """Offline mode (OV_OFFLINE=1 in the environment) blocks every engine download, unless the app says the user started
+    this one with a button (explicit_download, the same flag worker.py honors)."""
+    if cns_net.is_offline() and not (explicit or _EXPLICIT):
+        raise cns_net.OfflineError("Offline mode is on. Turn it off in Settings to use model downloads.")
+
+
+def install(root, components_, uv, env, emit_fn, opener=None, python=PYTHON_VERSION, explicit_download=False):
     """Installs the components (and what they need) in catalog order. Returns the ids installed by this call;
     components that are already ready are skipped. emit_fn(event, **data): "status" {msg}, "progress" {value}."""
-    cns_net.require_online("model_download")
+    _require_download_allowed(explicit_download)
     layout = read_layout(root)
     wanted = _closure(components_, layout)
     todo = [c for c in wanted if component_state(root, c, layout) != "ready"]
@@ -911,6 +922,15 @@ def install(root, components_, uv, env, emit_fn, opener=None, python=PYTHON_VERS
     uvenv = _safe_env(root, env)
     prog = _Progress(emit_fn, todo)
     done = []
+    global _EXPLICIT
+    _EXPLICIT = bool(explicit_download)
+    try:
+        return _install_todo(root, todo, uv, uvenv, emit_fn, opener, python, prog, done)
+    finally:
+        _EXPLICIT = False
+
+
+def _install_todo(root, todo, uv, uvenv, emit_fn, opener, python, prog, done):
     emit_fn("progress", value=0.0)
     for comp in todo:
         _clear_ready(root, comp)
@@ -1090,20 +1110,94 @@ def _sb_quote(path):
     return '"' + path.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
+SANDBOX_EXEC = "/usr/bin/sandbox-exec"
+SANDBOX_ROOTS = 4   # ROOT1..ROOT4 in engine.sb
+
+
+def sandbox_file():
+    """The one profile of every engine process: Resources/sandbox/engine.sb (CNS_SANDBOX_FILE from the app, else the
+    repository copy next to Sources). None when it cannot be found."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    for p in (os.environ.get("CNS_SANDBOX_FILE"), os.path.join(here, "sandbox", "engine.sb"),
+              os.path.join(here, "..", "Resources", "sandbox", "engine.sb")):
+        if p and os.path.isfile(p):
+            return os.path.abspath(p)
+    return None
+
+
+def already_sandboxed(env=None):
+    """True only when the app runs this process under the bundled engine.sb: CNS_SANDBOXED=1 and CNS_SANDBOX_FILE names a
+    readable engine.sb that carries the profile's marker line. Anything else (a stray variable, another file) is not
+    trusted and the caller wraps its child itself."""
+    env = os.environ if env is None else env
+    f = env.get("CNS_SANDBOX_FILE")
+    if env.get("CNS_SANDBOXED") != "1" or not f or os.path.basename(os.path.realpath(f)) != "engine.sb":
+        return False
+    try:
+        with open(f, encoding="utf-8") as h:
+            return h.readline().startswith(";; The one sandbox profile of every pro-engine process")
+    except OSError:
+        return False
+
+
+def darwin_cache_dirs():
+    out = []
+    for key in ("DARWIN_USER_CACHE_DIR", "DARWIN_USER_TEMP_DIR"):
+        try:
+            r = subprocess.run(["/usr/bin/getconf", key], capture_output=True, text=True, timeout=5).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            r = ""
+        out.append(os.path.realpath(r) if r.startswith("/") else None)
+    return out
+
+
+def sandbox_params(net, work, out=None, roots=()):
+    """The -D values of engine.sb. net: "deny-ip" or "allow". Unused roots repeat the work folder."""
+    if net not in ("deny-ip", "allow"):
+        raise EngineError("Unknown sandbox network mode: %r" % (net,))
+    roots = list(roots)
+    if len(roots) > SANDBOX_ROOTS:
+        raise EngineError("At most %d extra write folders" % SANDBOX_ROOTS)
+    for r in [work, out] + roots:
+        if r is not None:
+            _sb_quote(r)   # absolute and printable
+    work = os.path.realpath(work)
+    cache, temp = darwin_cache_dirs()
+    params = {"NET": net, "WORK": work, "OUT": os.path.realpath(out) if out else work,
+              "DCACHE": cache or work, "DTEMP": temp or work}
+    for i in range(SANDBOX_ROOTS):
+        params["ROOT%d" % (i + 1)] = os.path.realpath(roots[i]) if i < len(roots) else work
+    return params
+
+
+def sandbox_command(net, work, out=None, roots=()):
+    """["/usr/bin/sandbox-exec", "-f", engine.sb, "-D", ...] to put before a command; raises EngineError when
+    sandbox-exec or the profile is missing (the caller must not run unconfined)."""
+    f = sandbox_file()
+    if not os.path.exists(SANDBOX_EXEC):
+        raise EngineError("Can't start this safely: the macOS sandbox tool is missing.")
+    if not f:
+        raise EngineError("Can't start this safely: the sandbox profile is missing.")
+    cmd = [SANDBOX_EXEC, "-f", f]
+    for k, v in sandbox_params(net, work, out, roots).items():
+        cmd += ["-D", "%s=%s" % (k, v)]
+    return cmd
+
+
 def sandbox_profile(deny_network, write_roots):
-    """A sandbox-exec profile whose goal is: no network and no writes outside write_roots. Reads and exec stay open on
-    purpose (Python, torch and the models are read from all over the disk), so it is not a confidentiality boundary.
-    Callers must put TMPDIR (and any cache the child writes, e.g. the MPS/torch caches) into write_roots, or the child
-    fails on its first temp file. /dev/null is always writable."""
-    lines = ["(version 1)", "(allow default)"]
-    if deny_network:
-        lines.append("(deny network*)")
-    lines.append("(deny file-write*)")
-    for r in write_roots:
-        _sb_quote(r)   # absolute and printable, before it is resolved
-    allow = ['(literal "/dev/null")'] + ["(subpath %s)" % _sb_quote(os.path.realpath(r)) for r in write_roots]
-    lines.append("(allow file-write* %s)" % " ".join(allow))
-    return "\n".join(lines) + "\n"
+    """engine.sb rendered to one string with its parameters filled in (for `sandbox-exec -p`); the first root is the
+    work folder. Reads and exec stay open on purpose, so it is not a confidentiality boundary."""
+    f = sandbox_file()
+    if not f:
+        raise EngineError("Can't start this safely: the sandbox profile is missing.")
+    write_roots = list(write_roots)
+    if not write_roots:
+        raise EngineError("A sandbox needs at least a work folder.")
+    params = sandbox_params("deny-ip" if deny_network else "allow", write_roots[0], None, write_roots[1:])
+    text = open(f, encoding="utf-8").read()
+    for k, v in params.items():
+        text = text.replace('(param "%s")' % k, '"%s"' % v if k == "NET" else _sb_quote(v))
+    return text
 
 
 # --------------------------------------------------------------------------------------------------------------- CLI
@@ -1149,7 +1243,7 @@ def main(argv=None):
             if args.command == "weights":
                 table = _by_id(read_layout(root))
                 comps = [c for c in comps if c in table and table[c]["kind"] in ("weights", "stems")] or ["rvc-core"]
-            done = install(root, comps, uv, req.get("env"), emit)
+            done = install(root, comps, uv, req.get("env"), emit, explicit_download=req.get("explicit_download") is True)
             cns_proto.result(installed=done, **status(root))
         elif args.command == "uninstall":
             cns_proto.result(freed_bytes=uninstall(root, list(req.get("components") or [])), **status(root))

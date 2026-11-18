@@ -434,18 +434,20 @@ static const NSTimeInterval kNotifyInterval = 0.25;
     OVJobContext *_ctx;
     pid_t _pid;
     BOOL _reaped, _stopped, _launched, _ended;
+    int _stdinFd;   // the kept-open write end (keepStdinOpen), -1 otherwise
     NSDictionary *_resultData;
     NSString *_errorMessage;
 }
 
 - (instancetype)initWithSpecBlock:(OVProcessSpec *(^)(OVJob *))b {
-    if ((self = [super init])) _specFor = [b copy];
+    if ((self = [super init])) { _specFor = [b copy]; _stdinFd = -1; }
     return self;
 }
 
 - (void)start:(OVJob *)job context:(OVJobContext *)ctx {
     _ctx = ctx;
     _spec = _specFor(job);
+    if (_spec.launchError.length) { [self endWithError:_spec.launchError]; return; }
     if (!_spec.executable.length) { [self endWithError:L(@"No program to run was given.")]; return; }
     for (NSString *p in _spec.partialPaths) [ctx registerPartialPath:p];
     void (^go)(void) = ^{ [self launch]; };
@@ -536,7 +538,8 @@ static const NSTimeInterval kNotifyInterval = 0.25;
             const uint8_t *p = data.bytes;
             size_t left = data.length;
             while (left > 0) { ssize_t n = write(wfd, p, left); if (n <= 0) break; p += n; left -= (size_t)n; }
-            close(wfd);
+            if (self->_spec.keepStdinOpen) { @synchronized (self) { self->_stdinFd = wfd; if (self->_reaped || self->_stopped) { close(wfd); self->_stdinFd = -1; } } }
+            else close(wfd);
         });
     }
     [self readFd:out[0] group:readers queue:q asEvents:YES];
@@ -547,6 +550,7 @@ static const NSTimeInterval kNotifyInterval = 0.25;
         pid_t r;
         do { r = waitpid(pid, &status, 0); } while (r < 0 && errno == EINTR);
         @synchronized (self) { self->_reaped = YES; }
+        [self closeKeptStdin];
         // output still in the pipes is read first; a grandchild that keeps them open cannot hold us longer than this
         dispatch_group_wait(readers, dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC));
         [self finishWithStatus:status];
@@ -652,7 +656,12 @@ static NSString *OVCleanLine(NSString *line) {
     }
 }
 
+- (void)closeKeptStdin {
+    @synchronized (self) { if (_stdinFd > 0) { close(_stdinFd); _stdinFd = -1; } }
+}
+
 - (void)terminateGroup {
+    [self closeKeptStdin];
     pid_t pid;
     @synchronized (self) { pid = _pid; }
     if (pid <= 0) return;

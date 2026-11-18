@@ -14,6 +14,7 @@
 #import "OVPageRegistry.h"
 #import "OVDesign.h"
 #import "OVJobs.h"
+#import "OVProKit.h"
 #import "OVAPI.h"
 #import "OVBridge.h"
 
@@ -496,6 +497,7 @@ static void OVRedrawTree(NSView *v) {
     [[OVVoices shared] reload];
     [[OVHistory shared] reload];
     [OVJobs registerBuiltinKinds];
+    [OVProKit registerKinds];
     [OVSeparatorPage sweepInputFolder];
     [OVBridge.shared cleanupOrphans];               // a tunnel an earlier crash left behind; Bridge itself never starts here
     [OVAPI.shared startIfEnabled];
