@@ -1,21 +1,11 @@
 #import "OVNetwork.h"
 #import "OVWorker.h"
 #import "OVLocale.h"
+#import "OVPrivacyCatalog.h"
 
 NSNotificationName const OVNetworkModeDidChangeNotification = @"OVNetworkModeDidChange";
 
 static NSString *const kOffline = @"offlineMode";
-
-// Stub of OVPrivacyCatalog (task 8.9 replaces it): the same fields — feature name, where data goes, what is sent.
-static NSDictionary<NSString *, NSString *> *CatalogEntry(OVNetFeature f) {
-    switch (f) {
-        case OVNetEdgeTTS: return @{@"name": @"Edge TTS", @"where": @"Microsoft speech servers", @"what": @"the text you want to hear"};
-        case OVNetYouTube: return @{@"name": @"YouTube import", @"where": @"YouTube", @"what": @"the video link you paste"};
-        case OVNetBridge: return @{@"name": @"Bridge", @"where": @"a tunnel that makes this Mac reachable from other devices", @"what": @"the requests your devices send and the audio they get back"};
-        case OVNetModelDownload: return @{@"name": @"Model downloads", @"where": @"Hugging Face", @"what": @"the names of the models you download"};
-        case OVNetPluginNetwork: return @{@"name": @"Plugin network access", @"where": @"the servers a plugin talks to", @"what": @"whatever the plugin sends"};
-    }
-}
 
 @implementation OVNetwork
 
@@ -61,7 +51,7 @@ static NSDictionary<NSString *, NSString *> *CatalogEntry(OVNetFeature f) {
 }
 
 + (NSString *)blockedMessageFor:(OVNetFeature)f {
-    return [NSString stringWithFormat:L(@"Offline mode is on. Turn it off in Settings to use %@."), L(CatalogEntry(f)[@"name"])];
+    return [NSString stringWithFormat:L(@"Offline mode is on. Turn it off in Settings to use %@."), [OVPrivacyCatalog entryForFeature:[self identifierFor:f]][@"title"]];
 }
 
 + (void)requestFeature:(OVNetFeature)f window:(NSWindow *)w completion:(void (^)(BOOL))completion {
@@ -83,11 +73,11 @@ static NSDictionary<NSString *, NSString *> *CatalogEntry(OVNetFeature f) {
             return;
         }
         case OVNetNeedsConsent: {
-            NSDictionary *c = CatalogEntry(f);
+            NSDictionary *c = [OVPrivacyCatalog entryForFeature:[self identifierFor:f]];
             NSAlert *a = [NSAlert new];
-            a.messageText = [NSString stringWithFormat:L(@"Use %@?"), L(c[@"name"])];
+            a.messageText = [NSString stringWithFormat:L(@"Use %@?"), c[@"title"]];
             a.informativeText = [NSString stringWithFormat:L(@"This sends %@ to %@. Nothing is sent until you agree, and you can turn it off with Offline mode in Settings."),
-                                 L(c[@"what"]), L(c[@"where"])];
+                                 c[@"sends"], c[@"destination"]];
             [a addButtonWithTitle:L(@"Allow")];
             [a addButtonWithTitle:L(@"Not now")];
             [self run:a on:w done:^(NSModalResponse r) {

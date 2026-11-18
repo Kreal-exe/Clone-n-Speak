@@ -27,7 +27,7 @@ static NSDictionary *P(NSString *pid, NSString *title, NSString *symbol, Class c
             P(@"jobs", L(@"Jobs"), @"clock.arrow.circlepath", OVJobsPage.class, NO),
             P(@"api", L(@"API & Bridge"), @"chevron.left.forwardslash.chevron.right", ph, NO),
             P(@"plugins", L(@"Plugins"), @"puzzlepiece.extension", ph, YES),
-            P(@"privacy", L(@"Data & Privacy"), @"hand.raised", ph, NO),
+            P(@"privacy", L(@"Data & Privacy"), @"hand.raised", OVPrivacyPage.class, NO),
             P(@"settings", L(@"Settings"), @"gearshape", OVSettingsPage.class, NO),
             P(@"setup", L(@"Setup"), @"checklist", OVSetupPage.class, NO)]},
     ];
