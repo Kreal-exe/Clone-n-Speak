@@ -25,4 +25,5 @@
     (subpath (param "ROOT3"))
     (subpath (param "ROOT4"))
     (subpath (param "DCACHE"))
-    (subpath (param "DTEMP")))
+    (subpath (param "DTEMP"))
+    (regex #"^/private/tmp/cns-[0-9]+(/|$)"))   ; short TMPDIR of the training children (torch_shm_manager socket path limit)

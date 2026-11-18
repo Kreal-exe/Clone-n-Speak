@@ -551,11 +551,28 @@ class Trainer:
         tmp = self.tmp
         os.makedirs(tmp, exist_ok=True)
         env = eng._safe_env(os.path.dirname(self.paths["training"]), {
-            "TMPDIR": tmp, "APPLIO_LOGS_DIR": self.paths["training"], "APPLIO_ROOT": self.paths["applio"],
+            "TMPDIR": self._short_tmp(), "APPLIO_LOGS_DIR": self.paths["training"], "APPLIO_ROOT": self.paths["applio"],
             "PYTORCH_ENABLE_MPS_FALLBACK": "1", "OV_OFFLINE": "1", "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1",
             "PYTHONUNBUFFERED": "1", "MPLCONFIGDIR": tmp, "XDG_CACHE_HOME": tmp,
             "NUMBA_CACHE_DIR": os.path.join(tmp, "numba")})
         return env
+
+    def _short_tmp(self):
+        """TMPDIR of the training children: a SHORT private folder. torch_shm_manager (DataLoader workers) binds a local
+        AF_UNIX endpoint named torch-shm-... inside TMPDIR, and a path longer than 104 bytes cannot be bound: the job's
+        work folder (…/Application Support/Clone-n-Speak/jobs/<id>/work) is too long, which showed up as "Address already
+        in use" and a hang. /private/tmp/cns-<uid>/<8 hex of the work folder> is 0700, owned by us, never a link; engine.sb
+        allows writing it. Removed in clear_work()."""
+        key = os.path.realpath(self.work or self.exp)
+        base = "/private/tmp/cns-%d" % os.getuid()
+        os.makedirs(base, mode=0o700, exist_ok=True)
+        st = os.lstat(base)
+        if os.path.islink(base) or st.st_uid != os.getuid() or (st.st_mode & 0o077):
+            raise TrainError("The temporary folder %s isn't private to this user. Remove it and retry." % base)
+        d = os.path.join(base, hashlib.sha1(key.encode()).hexdigest()[:8])
+        os.makedirs(d, mode=0o700, exist_ok=True)
+        self.short_tmp = d
+        return d
 
     def _should_stop(self):
         """SIGTERM, or the app that started us is gone (we were re-parented): the ~10 GB child must not live on."""
@@ -741,6 +758,8 @@ class Trainer:
             raise TrainError("The work folder overlaps a folder that must be kept.")
 
     def clear_work(self):
+        if getattr(self, "short_tmp", None):
+            shutil.rmtree(self.short_tmp, ignore_errors=True)
         if self.work and os.path.isdir(self.work):
             for f in os.listdir(self.work):
                 p = os.path.join(self.work, f)

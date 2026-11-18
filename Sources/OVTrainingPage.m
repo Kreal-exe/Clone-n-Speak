@@ -15,6 +15,7 @@
 #import "OVWorker.h"
 #import "OVYouTubeSheet.h"
 #import "OVTrainingModel.h"
+#import "OVRvcStore.h"
 #import <AVFoundation/AVFoundation.h>
 
 /// "Try in Convert": the page writes this defaults key (the model's folder name) before OVNavigate(@"convert"), and posts the
@@ -441,6 +442,7 @@ static double AudioSeconds(NSURL *url) {
     NSNotificationCenter *nc = NSNotificationCenter.defaultCenter;
     [nc addObserver:self selector:@selector(jobsChanged:) name:OVJobsDidChangeNotification object:nil];
     [nc addObserver:self selector:@selector(enginesChanged:) name:OVEnginesDidChangeNotification object:nil];
+    [nc addObserver:self selector:@selector(storeChanged:) name:OVRvcStoreDidChangeNotification object:nil];
     [self rateChanged:nil];
     [self updateEpochHint];
     [self rebuildList];
@@ -453,6 +455,7 @@ static double AudioSeconds(NSURL *url) {
 
 - (void)viewWillAppear {
     [super viewWillAppear];
+    [OVRvcStore.shared rescanInBackground];
     [self refreshRuns];
     [self adoptRunningJob];
     [self updateBatchAdvice];
@@ -484,6 +487,8 @@ static double AudioSeconds(NSURL *url) {
     [self.timer invalidate];
     self.timer = nil;
 }
+
+- (void)storeChanged:(NSNotification *)n { [self refreshRuns]; }
 
 - (void)enginesChanged:(NSNotification *)n { [self updateBatchAdvice]; [self updateEnabled]; }
 
@@ -517,7 +522,7 @@ static double AudioSeconds(NSURL *url) {
     if (!self.entries.count) return L(@"Add recordings first.");
     NSFileManager *fm = NSFileManager.defaultManager;
     NSString *model = [[OVPaths.rvcModels stringByAppendingPathComponent:slug] stringByAppendingPathComponent:[slug stringByAppendingString:@".pth"]];
-    if ([fm fileExistsAtPath:model]) return [NSString stringWithFormat:L(@"A voice named %@ already exists in Models. Pick another name, or continue it from the list below."), slug];
+    if ([OVRvcStore.shared modelWithIdentifier:slug] || [fm fileExistsAtPath:model]) return [NSString stringWithFormat:L(@"A voice named %@ already exists in Models. Pick another name, or continue it from the list below."), slug];
     for (NSDictionary *r in self.runs)
         if ([r[@"name"] isEqual:slug] && ([r[@"has_checkpoints"] boolValue] || [r[@"epochs"] integerValue] > 0))
             return [NSString stringWithFormat:L(@"%@ already has training progress. Continue it from the list below, or pick another name."), slug];
@@ -1068,6 +1073,7 @@ static double AudioSeconds(NSURL *url) {
         self.resultHeadline.stringValue = [NSString stringWithFormat:L(@"%@ is in Models. %@"), name, how];
         self.resultHeadline.hidden = NO;
         self.ownedFolder = nil;   // the name is free to change for the next voice
+        [OVRvcStore.shared rescanInBackground];
     } else if (job.state == OVJobStopped) {
         if (self.useBestEpoch > 0) {
             NSInteger use = self.useBestEpoch;
@@ -1104,7 +1110,14 @@ static double AudioSeconds(NSURL *url) {
 #pragma mark - Earlier runs
 
 - (void)refreshRuns {
-    self.runs = [OVTrainingModel savedRunsInTraining:OVPaths.rvcTraining models:OVPaths.rvcModels];
+    NSMutableArray *runs = [NSMutableArray array];
+    for (NSDictionary *r in [OVTrainingModel savedRunsInTraining:OVPaths.rvcTraining models:OVPaths.rvcModels]) {
+        NSMutableDictionary *m = [r mutableCopy];
+        OVRvcModel *model = [OVRvcStore.shared modelWithIdentifier:r[@"name"]];
+        if (model) { m[@"has_model"] = @YES; if ([m[@"status"] isEqual:@"unfinished"]) m[@"status"] = @"done"; }
+        [runs addObject:m];
+    }
+    self.runs = runs;
     BOOL anyDone = NO;
     for (NSDictionary *r in self.runs) if ([r[@"status"] isEqual:@"done"] && [r[@"has_checkpoints"] boolValue]) anyDone = YES;
     self.moreRow.hidden = !anyDone;
