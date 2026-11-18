@@ -22,7 +22,7 @@ typedef NS_ENUM(NSInteger, OVEngineState) { OVEngineNotInstalled, OVEngineInstal
 /// Job kinds of the pro engines (they never collide with the kinds of sub-plan D: synth, train, install, …).
 extern NSString *const OVProKindConvert, *const OVProKindRvcImport, *const OVProKindRvcInfo, *const OVProKindRvcFetch,
                        *const OVProKindRvcBlend, *const OVProKindRvcTrain, *const OVProKindRvcReview, *const OVProKindRealtime,
-                       *const OVProKindStems, *const OVProKindYouTube, *const OVProKindEdge, *const OVProKindEngineInstall,
+                       *const OVProKindStems, *const OVProKindYouTube, *const OVProKindEdge, *const OVProKindEdgeVoices, *const OVProKindEngineInstall,
                        *const OVProKindEngineWeights, *const OVProKindEngineUpdate;
 
 /// Manager of the pro engines (RVC, Seed-VC, stems, Edge, yt-dlp): the state of every component, installs and
