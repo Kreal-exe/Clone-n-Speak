@@ -1,21 +1,107 @@
 # Clone'n'Speak
 
-**Voice cloning and text-to-speech in 600+ languages for Apple Silicon Macs — built to run well on an 8 GB M1.**
+Voice cloning, speech, voice conversion and audio tools for Apple Silicon Macs. It runs on an 8 GB M1 and uses the
+extra memory of a 16 GB Mac for the heavy engines.
 
-Clone'n'Speak is a small native macOS app (Objective-C / AppKit) around the open
+Clone'n'Speak is a native macOS app (Objective-C / AppKit) around the open
 [OmniVoice](https://github.com/k2-fsa/OmniVoice) model, running on Apple's [MLX](https://github.com/ml-explore/mlx)
-through [mlx-audio](https://github.com/Blaizzy/mlx-audio). It is a lightweight alternative to
-[VoiceStudio](https://github.com/debpalash/VoiceStudio), focused on one job: **clone a voice and speak text with it,
-well, on a weak Mac.** VoiceStudio keeps its whole Python backend (around 3 GB of RAM) loaded; Clone'n'Speak keeps only one model in memory
-at a time, in full 16-bit quality, and gives the memory back when idle.
+through [mlx-audio](https://github.com/Blaizzy/mlx-audio). You record 3 to 10 seconds of a voice, type text and get the
+text spoken in that voice in 600+ languages, with Ukrainian and Russian treated with particular care. Version 2.0 adds
+what a voice workbench needs around that: RVC voice conversion, realtime voice change, model training, music removal
+and stems, an effects chain, batch speech, a local API and a page that says what leaves the Mac.
 
-Everything runs locally. No cloud, no account, no subscription.
+Everything runs locally. There is no cloud, no account and no subscription. The few features that use the network are
+marked Online, ask first and are switched off by Offline mode.
 
 [Русская версия ↓](#русский)
 
 <p align="center">
-  <img src="docs/screenshots/speech-light.png" width="49%" alt="Speech, light theme">
-  <img src="docs/screenshots/speech-dark.png" width="49%" alt="Speech, dark theme">
+  <img src="docs/screenshots/voices-dark.png" width="49%" alt="Voices, dark theme">
+  <img src="docs/screenshots/voices-light.png" width="49%" alt="Voices, light theme">
+</p>
+
+## What is in 2.0
+
+The sidebar groups the pages. A "16 GB" badge marks the pro features that need a Mac with 16 GB of unified memory:
+they are visible on every Mac, install on request, and on a smaller Mac the app warns before they start and lets you go
+on.
+
+| Group | Pages |
+|---|---|
+| Voice | Speech, Voices, Convert (16 GB), Realtime (16 GB) |
+| Models & Training | Models, Training (16 GB), Voice Blender (16 GB) |
+| Tools | Audio Tools, Separation |
+| System | Jobs, API & Bridge, Plugins (16 GB), Data & Privacy, Settings, Setup |
+
+### Speech and Voices
+
+Type text, pick a cloned voice, speak. The Speech page keeps the voice style (mood, intonation, energy, pitch, tone,
+speed, pauses) in a "Voice style" block, with presets that also remember the file format and the effects chain.
+Results export as WAV, M4A, FLAC or ALAC, and as MP3 or OGG when ffmpeg is installed. The player has a scrubber and an
+A/B switch between the dry take and the processed one. Batch speech reads a whole .txt, .md or .srt file, or one line per
+file. Edge TTS (Microsoft, online) is a second engine, and its result can be passed through an RVC model.
+
+The Voices page checks a sample for loudness, noise, clipping, silence at the edges and long pauses, marks the problem
+spots on the waveform, and compares several samples of one voice. *Improve sample* cleans it with DeepFilterNet, removes
+music, shortens pauses and normalizes the level.
+
+<p align="center">
+  <img src="docs/screenshots/synth-dark.png" width="49%" alt="Speech: mood, quality, voice style and presets">
+  <img src="docs/screenshots/synth-light.png" width="49%" alt="Speech, light theme">
+</p>
+
+### Audio Tools and Separation
+
+Audio Tools take any recording, or the sound of a video, up to 20 minutes: an analyzer (spectrogram, pitch curve),
+an effects chain (reverb, delay, chorus, compressor, limiter, distortion, bitcrush, gain, EQ, pitch, formant shift),
+noise cleanup at 6, 18 or 30 dB and format conversion.
+
+Separation removes the music and keeps the voice, or the reverse. That works on any Mac with a small ONNX model. On a
+16 GB Mac it also splits a mix into stems and removes reverb.
+
+<p align="center">
+  <img src="docs/screenshots/tools-dark.png" width="49%" alt="Audio Tools">
+  <img src="docs/screenshots/separator-dark.png" width="49%" alt="Separation">
+</p>
+
+### Convert, Realtime and Voice Blender (16 GB)
+
+Convert re-voices a recording with an RVC model (pitch, rmvpe / crepe / fcpe, index rate, protect, volume envelope,
+formant, autotune, cleanup) or with your own cloned voice through Seed-VC. Realtime changes your voice live through
+the microphone with any audio device. It installs no drivers, so for Zoom or Discord you choose a virtual device such as
+BlackHole as the output. Voice Blender mixes two RVC models in a ratio you choose. Training builds an RVC model from
+a folder of recordings, with a dataset check, an overtraining warning and resume.
+
+<p align="center">
+  <img src="docs/screenshots/convert-dark.png" width="49%" alt="Convert">
+  <img src="docs/screenshots/realtime-dark.png" width="49%" alt="Realtime">
+</p>
+
+### Models, Jobs, API and plugins
+
+The Models page manages OmniVoice, LoRA adapters (also by Hugging Face link) and RVC models, and the model folder can
+live on another disk (Settings → Storage). Jobs is the history of everything long the app ran, with progress, log,
+stop and run again. The local API (off by default, key in the Keychain) lets scripts on the Mac speak, clone and convert.
+Bridge reaches it from a phone through a Cloudflare tunnel, each device approved on the Mac. Plugins run as separate
+processes and are off until you switch them on.
+
+<p align="center">
+  <img src="docs/screenshots/models-dark.png" width="49%" alt="Models">
+  <img src="docs/screenshots/jobs-dark.png" width="49%" alt="Jobs">
+</p>
+<p align="center">
+  <img src="docs/screenshots/api-dark.png" width="49%" alt="Local API and Bridge">
+  <img src="docs/screenshots/settings-dark.png" width="49%" alt="Settings">
+</p>
+
+### Themes
+
+Eight palettes (Applio, Amethyst, Crimson, Cyberpunk, Emerald, Midnight, Sunset, Halloween), each in light and dark.
+Choose one in Settings → Appearance.
+
+<p align="center">
+  <img src="docs/screenshots/voices-emerald-dark.png" width="49%" alt="Emerald palette, dark">
+  <img src="docs/screenshots/models-emerald-light.png" width="49%" alt="Emerald palette, light">
 </p>
 
 ## Why it is light
@@ -33,7 +119,8 @@ How: speech recognition and synthesis **take turns** in memory, so an 8 GB Mac w
 quality; text is spoken sentence by sentence, so memory doesn't grow with the text length; MLX's buffer cache is capped.
 The app shows the engine's memory and the free memory live, and on Macs with less RAM you can switch to 8-bit.
 
-## Features
+
+## Cloning and speech in detail
 
 - **Voice cloning from 3–10 seconds** — pick a file, drop it on the window or record from the microphone.
   - *Sample language*: detected automatically from the recording (or pick it by hand).
@@ -82,15 +169,6 @@ The app shows the engine's memory and the free memory live, and on Macs with les
 - Live memory meter: how much the engine uses and how much is still free.
 - English and Russian interface, light and dark themes, ~500 KB native binary.
 
-<p align="center">
-  <img src="docs/screenshots/voices-light.png" width="49%" alt="Voice cloning with sample quality check">
-  <img src="docs/screenshots/voices-dark.png" width="49%" alt="Voice cloning, dark theme">
-</p>
-<p align="center">
-  <img src="docs/screenshots/models-light.png" width="49%" alt="Models, LoRA and Hugging Face catalog">
-  <img src="docs/screenshots/settings-dark.png" width="49%" alt="Settings">
-</p>
-
 ## Tips for a great clone
 
 1. **A sample in the language you will synthesize is still the best start.** For another language *accent removal*
@@ -110,10 +188,15 @@ The app shows the engine's memory and the free memory live, and on Macs with les
    *Models → Add your own model or LoRA*. (As of now there are no public Ukrainian OmniVoice adapters; OmniVoice was
    pre-trained on ~1,850 hours of Ukrainian, so a clean Ukrainian sample already gives native pronunciation.)
 
+
 ## Requirements
 
-- Mac with Apple Silicon (M1 or newer), macOS 13 Ventura or later — 8 GB of RAM is enough
-- ~3 GB of free disk space, internet on first launch
+- Mac with Apple Silicon (M1 or newer), macOS 13 Ventura or later
+- 8 GB of memory is enough for the main features: cloning, speech, Audio Tools, music removal
+- Pro features (Convert, Realtime, Training, Voice Blender, full stems, plugins) need a Mac with 16 GB of unified memory
+- About 3 GB of free disk space for the main engine and model; each pro engine is an extra download of a few GB, with
+  the size shown before it starts
+- Internet on first launch, for the engine and the model
 
 ## Install
 
@@ -128,6 +211,58 @@ open "/Applications/Clone'n'Speak.app"
 ```
 
 Or: *System Settings → Privacy & Security* → **Open Anyway** (on macOS 15 “right-click → Open” no longer works).
+Voices, settings and models from 1.0.x are kept.
+
+## Privacy and offline use
+
+Voices, recordings, models and history stay on this Mac. Nothing is uploaded unless you use a feature marked Online:
+
+| Feature | Goes to | What is sent |
+|---|---|---|
+| Edge TTS | Microsoft speech servers | the text you want to hear |
+| YouTube import | YouTube | the video link you paste |
+| Bridge | Cloudflare, through a tunnel | the requests of your devices and the results |
+| Model and engine downloads | Hugging Face, GitHub | the names of the files you download |
+| Plugin network access | what the plugin asks for | whatever the plugin sends |
+
+The **Data & Privacy** page shows when each of them was last used, where every folder lives, and has a button to reveal
+or delete it. **Offline mode** (Settings) refuses all of them, model downloads included, and everything local keeps
+working. The local API listens on 127.0.0.1 only and is off by default. Voice conversion, training and separation run
+as separate processes; in the 2.0 checks they ran with the network denied. Downloaded engines and weights are pinned to
+exact versions and checked by hash.
+
+## Model licenses
+
+The app's own code is MIT. The weights of the models it can download have their own licenses, and the app bundles none
+of them. They are fetched on request, and the app marks the ones whose license it could not confirm.
+
+- **Kim_Vocal_2** (vocal separation), **BS-Roformer** (viperx, vocal separation) and the **dereverb** model (anvuew)
+  have unverified weight licenses. Their authors state no license for the weights, and the dereverb model was
+  fine-tuned from Kim's vocal model, so it carries the same doubt. The app marks all three "license unverified",
+  downloads them only when you press the button, and leaves the decision to you. If you plan to use the results
+  commercially, check with the rights holders first.
+- **htdemucs** (Meta) is under the MIT license of its repository, which gives the weights no separate terms. It is the
+  licensed fallback for vocals and stems.
+- OmniVoice is Apache-2.0. Other weights keep their authors' licenses.
+
+## Credits
+
+- [OmniVoice](https://github.com/k2-fsa/OmniVoice) by k2-fsa (Apache-2.0): the voice model.
+- [MLX](https://github.com/ml-explore/mlx) and [mlx-audio](https://github.com/Blaizzy/mlx-audio): the engine on Apple Silicon.
+- [Applio](https://github.com/IAHispano/Applio) by IAHispano (MIT): the RVC engine behind Convert, Realtime and
+  Training, fetched from a pinned commit and run as a separate process. The 2.0 interface follows its look.
+- [Seed-VC](https://github.com/Plachtaa/seed-vc) by Plachtaa (GPL-3.0): optional download for cloned-voice conversion
+  and the native narrator, run as a separate program and not part of the app.
+- [audio-separator](https://github.com/nomadkaraoke/python-audio-separator) (MIT),
+  [Demucs](https://github.com/facebookresearch/demucs) (MIT), the
+  [Ultimate Vocal Remover](https://github.com/Anjok07/ultimatevocalremovergui) model releases and anvuew's dereverb
+  model: music removal and stems.
+- [DeepFilterNet](https://github.com/Rikorose/DeepFilterNet) (MIT or Apache-2.0): noise cleanup.
+- [Whisper](https://github.com/openai/whisper) (MIT) on MLX for transcripts and clarity checks, and
+  [SpeechBrain](https://github.com/speechbrain/speechbrain) ECAPA (Apache-2.0) for voice likeness.
+- [yt-dlp](https://github.com/yt-dlp/yt-dlp) (Unlicense) for YouTube import,
+  [edge-tts](https://github.com/rany2/edge-tts) (LGPL-3.0) for Edge TTS and Cloudflare's cloudflared for Bridge, each
+  downloaded on request.
 
 ## Build from source
 
@@ -255,15 +390,16 @@ PyTorch and several times slower. Not worth a second engine; OmniVoice stays the
 
 | Where | What |
 |---|---|
-| `~/.cache/huggingface/hub` | downloaded models (configurable in *Models*) |
+| `~/.cache/huggingface/hub` | downloaded models (configurable in *Settings → Storage*) |
 | `~/Library/Application Support/Clone'n'Speak` | Python engine, optimized models, voices, logs |
 | `~/Music/Clone'n'Speak` | generated WAV files |
 
+
 ## License
 
-MIT — see [LICENSE](LICENSE). OmniVoice © k2-fsa (Apache-2.0); model weights keep their authors' licenses.
-Seed-VC © Plachtaa (GPL-3.0) is not included: the optional native-narrator download fetches it from its repository.
-Only clone a voice with the consent of its owner.
+MIT, see [LICENSE](LICENSE). OmniVoice © k2-fsa (Apache-2.0); model weights keep their authors' licenses (see
+[Model licenses](#model-licenses)). Seed-VC © Plachtaa (GPL-3.0) is not included: the optional download fetches it from
+its repository. Only clone a voice with the consent of its owner.
 
 ---
 
@@ -271,20 +407,30 @@ Only clone a voice with the consent of its owner.
 
 # Clone'n'Speak (по-русски)
 
-**Клонирование голоса и озвучка текста на 600+ языках для Mac на Apple Silicon — рассчитано на M1 с 8 ГБ памяти.**
+Клонирование голоса, озвучка, конвертация голоса и аудио-инструменты для Mac на Apple Silicon. Работает на M1 с 8 ГБ,
+а лишнюю память Mac с 16 ГБ отдаёт тяжёлым движкам.
 
-Clone'n'Speak — небольшое нативное macOS-приложение (Objective-C / AppKit) для открытой модели
+Clone'n'Speak — нативное macOS-приложение (Objective-C / AppKit) для открытой модели
 [OmniVoice](https://github.com/k2-fsa/OmniVoice), которая работает на фреймворке Apple [MLX](https://github.com/ml-explore/mlx)
-через [mlx-audio](https://github.com/Blaizzy/mlx-audio). Это облегчённая альтернатива
-[VoiceStudio](https://github.com/debpalash/VoiceStudio) с одной задачей: **качественно клонировать голос и озвучивать им
-текст на слабом Mac.** Запущенный Python-бэкенд VoiceStudio сам по себе занимает около 3 ГБ памяти; Clone'n'Speak
-держит в памяти только одну модель в полном 16-битном качестве и освобождает память при простое.
+через [mlx-audio](https://github.com/Blaizzy/mlx-audio). Вы записываете 3–10 секунд голоса, вводите текст и получаете
+его озвучку этим голосом на 600+ языках; украинскому и русскому уделено особое внимание.
 
-Всё работает локально: без облака, аккаунтов и подписок.
+Всё работает локально: без облака, аккаунтов и подписок. Несколько функций выходят в сеть, они помечены «Онлайн»,
+спрашивают разрешения и отключаются режимом «Офлайн».
 
-<p align="center">
-  <img src="docs/screenshots/speech-light-ru.png" width="80%" alt="Озвучка, русский интерфейс">
-</p>
+## Что нового в 2.0
+
+- Новое оформление: пронумерованные карточки, 8 палитр в светлой и тёмной теме, боковая панель с группами.
+- **Аудио-инструменты**: анализатор, цепочка эффектов, сдвиг формант, очистка DeepFilterNet, конвертация форматов.
+- **Разделение**: удаление музыки на любом Mac; полные стемы и удаление реверберации на Mac с 16 ГБ.
+- **Озвучка**: форматы WAV, M4A, FLAC, ALAC, MP3, OGG; пресеты; эффекты; плеер с A/B; пакетная озвучка; Edge TTS (онлайн).
+- **Голоса**: расширенная проверка образца и улучшение (очистка, удаление музыки).
+- **Модели**: LoRA по ссылке Hugging Face, модели RVC, папка моделей на другом диске.
+- **Для Mac с 16 ГБ**: Конвертация (RVC, Seed-VC), Реалтайм, Обучение, Смешивание голосов, импорт из YouTube.
+- **Задачи** (история долгих операций), локальный **API** и **Bridge** для телефона, **плагины**, страница
+  **«Данные и приватность»** и режим **«Офлайн»**.
+
+Подробности — в [CHANGELOG](CHANGELOG.md), скриншоты — в английской части выше.
 
 ## Почему лёгкое
 
@@ -367,7 +513,9 @@ Clone'n'Speak — небольшое нативное macOS-приложение
 
 ## Требования и установка
 
-Mac на Apple Silicon (M1 и новее), macOS 13+, 8 ГБ памяти достаточно, ~3 ГБ на диске, интернет при первом запуске.
+Mac на Apple Silicon (M1 и новее), macOS 13+. Для основных функций хватит 8 ГБ памяти, для функций с бейджем «16 ГБ»
+(Конвертация, Реалтайм, Обучение, Смешивание голосов, полные стемы, плагины) нужен Mac с 16 ГБ. ~3 ГБ на диске, интернет
+при первом запуске.
 Скачайте `CloneNSpeak-vx.y.z.dmg` в [Releases](../../releases) и перетащите приложение в «Программы».
 
 Сборка не нотаризована, поэтому macOS пишет, что «не удалось подтвердить» файл. Дважды щёлкните **Allow Clone'n'Speak to open**
@@ -381,7 +529,15 @@ open "/Applications/Clone'n'Speak.app"
 Или: «Системные настройки» → «Конфиденциальность и безопасность» → **«Всё равно открыть»** (в macOS 15 «правый клик → Открыть» больше не работает).
 Сборка из исходников — `./build.sh`: собирает приложение, устанавливает его в `/Applications` и открывает (`--test` — с тестами, `--zip` — ещё и архив в `dist/`, `--dmg` — ещё и образ диска со скриптом снятия карантина).
 
+## Лицензии моделей
+
+Код приложения — MIT. Веса моделей имеют свои лицензии, приложение их не включает: они скачиваются по запросу.
+У **Kim_Vocal_2**, **BS-Roformer** и модели удаления реверберации (дообучена из Kim) лицензия весов не подтверждена:
+приложение помечает их «license unverified», скачивает только по кнопке, решение за вами; для коммерческого
+использования результата уточните права у авторов. **htdemucs** (Meta) — MIT репозитория. Полный список
+благодарностей — в английской части выше.
+
 ## Лицензия
 
 MIT. OmniVoice © k2-fsa (Apache-2.0). Seed-VC © Plachtaa (GPL-3.0) в приложение не входит: его скачивает
-необязательная загрузка «Диктор-носитель». Клонируйте голос только с согласия его владельца.
+необязательная загрузка. Клонируйте голос только с согласия его владельца.
