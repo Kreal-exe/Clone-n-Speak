@@ -470,6 +470,4 @@ static const NSTimeInterval kMaxSeconds = 20 * 60;   // the 20-minute limit
     OVNavigate(@"tools");
 }
 
-- (void)learnMore:(id)sender { OVNavigate(@"models"); }
-
 @end

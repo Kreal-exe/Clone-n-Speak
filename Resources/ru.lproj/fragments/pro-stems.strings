@@ -32,3 +32,4 @@
 "Without reverb" = "Без реверберации";
 "or click to choose a file; up to 60 minutes" = "или нажмите, чтобы выбрать файл; до 60 минут";
 "≈ %.1f× the length" = "≈ %.1f× длительности";
+"This file is longer than 60 minutes. Cut it first and try again." = "Файл длиннее 60 минут. Сначала обрежьте его и попробуйте снова.";

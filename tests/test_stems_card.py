@@ -25,9 +25,9 @@ class StemsCardTable(unittest.TestCase):
             self.assertEqual(verified == "YES", e["verified"], e["id"])
             self.assertEqual(lic, e["license"], e["id"])
 
-    def test_peak_is_not_below_the_catalog(self):
+    def test_peak_equals_the_catalog(self):
         for e in cat.CATALOG:
-            self.assertGreaterEqual(float(self.rows[e["id"]][3]), e["peak_gb"], e["id"])
+            self.assertEqual(float(self.rows[e["id"]][3]), e["peak_gb"], e["id"])
 
 
 if __name__ == "__main__":

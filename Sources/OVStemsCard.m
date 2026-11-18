@@ -18,6 +18,7 @@ static NSString *const kModelKey = @"OVStemsModel", *const kOutputKey = @"OVStem
 static const NSTimeInterval kMaxInputSeconds = 60 * 60;
 static const NSTimeInterval kLongInputSeconds = 10 * 60;
 static char kControllerKey;
+static const OVNetFeature OVNetNone = (OVNetFeature)-1;   // OVProRun: use the kind's own network feature (stems needs none)
 
 #pragma mark - Models
 
@@ -122,7 +123,7 @@ static char kControllerKey;
 @property NSProgressIndicator *downloadBar, *runBar;
 @property OVPlayerBar *inputBar, *resultBar;
 @property NSStackView *resultRows;
-@property (weak) OVJob *job, *weightsJob;
+@property OVJob *job, *weightsJob;   // strong: cleared when the job finishes
 @property BOOL stopping, submitting;
 @property (copy) NSArray<NSString *> *rowPaths;
 @end
@@ -280,7 +281,8 @@ static char kControllerKey;
             s.decoding = NO;
             if (!ok) {
                 [NSFileManager.defaultManager removeItemAtPath:dir error:nil];
-                s.fileLabel.stringValue = err.localizedDescription ?: L(@"This file could not be read.");
+                s.fileLabel.stringValue = err.code == OVAudioIOTooLong ? L(@"This file is longer than 60 minutes. Cut it first and try again.")
+                                                                       : (err.localizedDescription ?: L(@"This file could not be read."));
                 [s update];
                 return;
             }
@@ -319,7 +321,7 @@ static char kControllerKey;
     self.summaryLabel.stringValue = [m summaryWithDownloadBytes:wc.downloadBytes];
     self.licenseLabel.stringValue = m.verified ? [NSString stringWithFormat:L(@"License: %@"), m.license] : m.licenseNote;
     self.licenseLabel.textColor = OVColor(m.verified ? OVRoleMuted : OVRoleWarn);
-    self.weightsBox.hidden = weightsReady;
+    self.weightsBox.hidden = weightsReady || !OVEngines.shared.statusLoaded;   // no download offer before the first status
     BOOL partial = OVEngines.shared.statusLoaded && (wc.state == OVEnginePartial || wc.state == OVEngineBroken);
     self.downloadButton.title = partial ? L(@"Finish the download") : L(@"Download model");
     self.downloadButton.enabled = engine && !downloading && !running;
@@ -374,7 +376,7 @@ static char kControllerKey;
                                                    format:self.formatPopup.indexOfSelectedItem == 1 ? @"flac" : @"wav"
                                                      name:self.sourcePath.lastPathComponent];
     __weak typeof(self) w = self;
-    [OVProRun submitKind:OVProKindStems request:req feature:L(@"Full separation") window:[self window] network:(OVNetFeature)-1
+    [OVProRun submitKind:OVProKindStems request:req feature:L(@"Full separation") window:[self window] network:OVNetNone
               completion:^(OVJob *job, NSString *error) {
         typeof(self) s = w;
         if (!s) return;
