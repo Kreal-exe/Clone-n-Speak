@@ -84,6 +84,8 @@ NSNotificationName const OVPrivacyWillDeleteAppDataNotification = @"OVPrivacyWil
         Src(@"OVYouTubeSheet.h", @"youtube", @"the YouTube import sheet"),
         Src(@"cns_ytdl.py", @"youtube", @"video downloader, only for the link you paste"),
         Src(@"cns_edge.py", @"edge_tts", @"Edge speech service, only for the text you speak"),
+        Src(@"OVProModelsCards.h", @"internal", @"Models page cards' interface; sends nothing"),
+        Src(@"OVProModelsCards.m", dl, @"voice-model downloads you press (through the gate), engine installs, the video downloader update; the search of voice models sends only the words you type to Hugging Face (Offline mode blocks it)"),
         Src(@"cns_rvc.py", dl, @"voice-model files, only from the link you paste"),
     ];
 }
