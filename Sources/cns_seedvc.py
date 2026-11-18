@@ -27,7 +27,6 @@ from cns_rvc import RvcError  # noqa: E402
 TARGET_SECONDS = 25          # as worker.convert_voice: more of the sample does not help and costs time
 MIN_TARGET_SECONDS = 1.0
 TIMEOUT = 3 * 3600
-SANDBOX_EXEC = "/usr/bin/sandbox-exec"
 ONLY_DEFAULT_MODE = "Only the standard Seed-VC voice model is available."
 
 
@@ -67,21 +66,19 @@ def trim_wav(src, dst, seconds):
 
 
 def sandboxed_command(root, cmd, tmp):
-    """cmd wrapped in sandbox-exec: network denied, writes only into the job folder, the Seed-VC folder (Hugging Face
-    locks, numba cache) and the MPS graph cache. Used for the Seed-VC run and, by the installer, its warm-up."""
-    profile = cns_engines.sandbox_profile(True, [tmp, cns_engines.seedvc_dir(root)] + cns_rvc.mps_cache_roots())
-    return [SANDBOX_EXEC, "-p", profile] + list(cmd)
+    """cmd behind the shared engine.sb profile (network denied, writes only into the job folder, the Seed-VC folder and
+    the Metal caches the profile names)."""
+    try:
+        return cns_engines.sandbox_command("deny-ip", tmp, None, [cns_engines.seedvc_dir(root)]) + list(cmd)
+    except cns_engines.EngineError as e:
+        raise RvcError(str(e))
 
 
-def wrap_command(root, cmd, tmp, env=None, exists=os.path.exists):
-    """The app starts this script already inside its sandbox (CNS_SANDBOXED=1 and CNS_SANDBOX_FILE both set): then the
-    child inherits it and is not wrapped again. Otherwise it is wrapped here, and without sandbox-exec Seed-VC
-    does not run (it must never run with network access)."""
-    env = os.environ if env is None else env
-    if env.get("CNS_SANDBOXED") == "1" and env.get("CNS_SANDBOX_FILE"):
+def wrap_command(root, cmd, tmp, env=None):
+    """Under the app's own engine.sb (cns_engines.already_sandboxed) the child inherits the sandbox and is not wrapped
+    again; otherwise it is wrapped here, and when that is impossible Seed-VC does not run (never unconfined)."""
+    if cns_engines.already_sandboxed(env):
         return list(cmd)
-    if not exists(SANDBOX_EXEC):
-        raise RvcError("Seed-VC needs the macOS sandbox (sandbox-exec), which is missing, so it was not started.")
     return sandboxed_command(root, cmd, tmp)
 
 
