@@ -113,7 +113,10 @@ static void testIdCollisionGetsSuffix(void) {
     OVRvcModel *first = s.models.firstObject;
     NSString *other = s.models.lastObject.name;
     NSString *final = [s renameModel:first to:other error:nil];
-    ASSERT(final && ![final.lowercaseString isEqualToString:other.lowercaseString], "%@ vs %@", final, other);
+    NSArray *after = [s.models valueForKey:@"name"];
+    ASSERT(final.length && [[NSSet setWithArray:[after valueForKey:@"lowercaseString"]] count] == 3, "names stay distinct: %@", after);
+    NSData *md = [NSData dataWithContentsOfFile:[first.folder stringByAppendingPathComponent:@"meta.json"]];
+    ASSERT([[NSJSONSerialization JSONObjectWithData:md options:0 error:nil][@"name"] isEqualToString:other], "the saved name is what was typed, no suffix baked in");
     NSArray *used = @[@"x", @"x 2"];
     ASSERT([[OVRvcStore uniqueName:@"x" amongNames:used] isEqualToString:@"x 3"]);
     ASSERT([[OVRvcStore uniqueName:@"y" amongNames:used] isEqualToString:@"y"]);
@@ -137,6 +140,13 @@ static void testSearchKeepsRepositoriesWithAVoiceFile(void) {
     ASSERT([r[0].indexFile isEqualToString:@"weights/added_IVF_Flat.index"], "%@", r[0].indexFile);
     ASSERT(r[1].license == nil && r[1].indexFile == nil, "no license tag means not stated");
     ASSERT([OVRvcSearch resultsFromJSON:@{@"error": @"x"}].count == 0);
+    NSArray *evil = @[@{@"id": @"a/../b", @"siblings": @[@{@"rfilename": @"m.pth"}]},
+                      @{@"id": @"a/b c", @"siblings": @[@{@"rfilename": @"m.pth"}]},
+                      @{@"id": @"a/ok", @"siblings": @[@{@"rfilename": @"../m.pth"}, @{@"rfilename": @"x\ny.pth"}]}];
+    ASSERT([OVRvcSearch resultsFromJSON:evil].count == 0, "unsafe repo ids and file names are dropped");
+    NSMutableArray *many = [NSMutableArray array];
+    for (int i = 0; i < 30; i++) [many addObject:@{@"id": [NSString stringWithFormat:@"u/m%d", i], @"siblings": @[@{@"rfilename": @"m.pth"}]}];
+    ASSERT([OVRvcSearch resultsFromJSON:many].count == 20, "at most 20 results");
 }
 
 static void testSearchURLAndLinks(void) {

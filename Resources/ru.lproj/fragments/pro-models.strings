@@ -105,3 +105,6 @@
 "Training base, 48 kHz" = "Основа для обучения, 48 кГц";
 "Various (open source)" = "Разные (открытые)";
 "See the model's page" = "См. страницу модели";
+"This voice is in use by a running task." = "Этот голос сейчас используется запущенной задачей.";
+"Name of the voice model" = "Название модели голоса";
+"Remove and Update are unavailable while a pro job runs." = "Пока идёт про-задача, «Удалить» и «Обновить» недоступны.";

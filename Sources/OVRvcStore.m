@@ -84,7 +84,7 @@ static OVRvcModel *ReadFolder(NSString *folder) {
 - (void)dealloc { [NSNotificationCenter.defaultCenter removeObserver:self]; }
 
 /// Someone else (a blend, an import) changed the folder: read it again. Our own posts are ignored.
-- (void)modelsChanged:(NSNotification *)n { if (n.object != self) [self rescan]; }
+- (void)modelsChanged:(NSNotification *)n { if (n.object != self) [self rescanInBackground]; }
 
 - (void)announce { [NSNotificationCenter.defaultCenter postNotificationName:kModelsChanged object:self]; }
 
@@ -93,7 +93,27 @@ static OVRvcModel *ReadFolder(NSString *folder) {
     [NSNotificationCenter.defaultCenter postNotificationName:OVRvcStoreDidChangeNotification object:self];
 }
 
+- (void)rescanInBackground {
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        NSArray *list = nil; NSUInteger skipped = 0;
+        [self readInto:&list skipped:&skipped];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            self.models = list;
+            self.skippedCount = skipped;
+            [NSNotificationCenter.defaultCenter postNotificationName:OVRvcStoreDidChangeNotification object:self];
+        });
+    });
+}
+
 - (void)scan {
+    NSArray *list = nil; NSUInteger skipped = 0;
+    [self readInto:&list skipped:&skipped];
+    self.models = list;
+    self.skippedCount = skipped;
+}
+
+/// Pure read of the folder (any thread).
+- (void)readInto:(NSArray **)out skipped:(NSUInteger *)skippedOut {
     NSFileManager *fm = NSFileManager.defaultManager;
     NSMutableArray<OVRvcModel *> *list = [NSMutableArray array];
     NSUInteger skipped = 0;
@@ -115,8 +135,8 @@ static OVRvcModel *ReadFolder(NSString *folder) {
         m.name = [OVRvcStore uniqueName:m.name amongNames:used];
         [used addObject:m.name];
     }
-    self.models = list;
-    self.skippedCount = skipped;
+    *out = list;
+    *skippedOut = skipped;
 }
 
 - (OVRvcModel *)modelWithIdentifier:(NSString *)identifier {
@@ -157,9 +177,6 @@ static NSError *Err(NSString *text) {
     if (!clean.length) { if (error) *error = Err(L(@"Type a name for the voice model.")); return nil; }
     if (clean.length > 120) clean = [clean substringToIndex:120];
     if (![self owns:model]) { if (error) *error = Err(L(@"This voice model is not in the models folder.")); return nil; }
-    NSMutableArray *others = [NSMutableArray array];
-    for (OVRvcModel *m in _models) if (m != model) [others addObject:m.name];
-    NSString *final = [OVRvcStore uniqueName:clean amongNames:others];
     NSString *metaPath = [model.folder stringByAppendingPathComponent:@"meta.json"];
     NSData *data = [NSData dataWithContentsOfFile:metaPath];
     id parsed = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
@@ -168,7 +185,7 @@ static NSError *Err(NSString *text) {
         return nil;
     }
     NSMutableDictionary *meta = [parsed mutableCopy];
-    meta[@"name"] = final;   // everything else (id, sha256, info) stays as cns_rvc.py wrote it
+    meta[@"name"] = clean;   // the typed name only: a de-dup suffix is added for display, never saved; everything else (id, sha256, info) stays as cns_rvc.py wrote it
     NSData *out = [NSJSONSerialization dataWithJSONObject:meta options:NSJSONWritingPrettyPrinted | NSJSONWritingSortedKeys error:nil];
     NSError *werr = nil;
     if (!out || ![out writeToFile:metaPath options:NSDataWritingAtomic error:&werr]) {
@@ -177,7 +194,7 @@ static NSError *Err(NSString *text) {
     }
     [self rescan];
     [self announce];
-    return final;
+    return [self modelWithIdentifier:model.identifier].name ?: clean;
 }
 
 - (NSString *)deleteModel:(OVRvcModel *)model error:(NSError **)error {

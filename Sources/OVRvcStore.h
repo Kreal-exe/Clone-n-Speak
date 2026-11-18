@@ -29,7 +29,9 @@ extern NSNotificationName const OVRvcStoreDidChangeNotification;
 @property (readonly, copy) NSString *root;
 @property (readonly, copy) NSArray<OVRvcModel *> *models;   // sorted by name, case-insensitive
 @property (readonly) NSUInteger skippedCount;
-- (void)rescan;
+- (void)rescan;                 // synchronous
+/// Reads the folder off the main thread; the list is replaced and the notification posted on main.
+- (void)rescanInBackground;
 - (nullable OVRvcModel *)modelWithIdentifier:(NSString *)identifier;
 /// Changes the name shown (meta.json "name" only): folder, files and checksum stay. A name another model already has
 /// gets " 2", " 3" … Returns the final name, or nil with an error.

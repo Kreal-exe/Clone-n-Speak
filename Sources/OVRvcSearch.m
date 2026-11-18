@@ -41,17 +41,29 @@ static BOOL IsVoicePth(NSString *file) {
     return [re numberOfMatchesInString:n options:0 range:NSMakeRange(0, n.length)] == 0;
 }
 
+/// Repository ids and file names come from a remote answer: only plain characters, no "..", no line breaks.
+static BOOL SafeRepo(NSString *repo) {
+    if (![repo isKindOfClass:NSString.class] || [repo containsString:@".."] || repo.length > 200) return NO;
+    return [repo rangeOfString:@"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$" options:NSRegularExpressionSearch].location != NSNotFound;
+}
+static BOOL SafeFile(NSString *f) {
+    if (![f isKindOfClass:NSString.class] || !f.length || f.length > 300) return NO;
+    if ([f containsString:@".."] || [f containsString:@"\n"] || [f containsString:@"\r"] || [f containsString:@"\\"] || [f hasPrefix:@"/"]) return NO;
+    return YES;
+}
+
 + (NSArray<OVRvcSearchResult *> *)resultsFromJSON:(id)json {
     NSMutableArray *out = [NSMutableArray array];
     if (![json isKindOfClass:NSArray.class]) return out;
     for (id item in json) {
         if (![item isKindOfClass:NSDictionary.class]) continue;
         NSString *repo = [item[@"id"] isKindOfClass:NSString.class] ? item[@"id"] : item[@"modelId"];
-        if (![repo isKindOfClass:NSString.class] || ![repo containsString:@"/"]) continue;
+        if (!SafeRepo(repo)) continue;
+        if (out.count >= 20) break;
         NSMutableArray *pth = [NSMutableArray array], *index = [NSMutableArray array];
         for (id sib in [item[@"siblings"] isKindOfClass:NSArray.class] ? item[@"siblings"] : @[]) {
             NSString *f = [sib isKindOfClass:NSDictionary.class] ? sib[@"rfilename"] : nil;
-            if (![f isKindOfClass:NSString.class] || !f.length) continue;
+            if (!SafeFile(f)) continue;
             if (IsVoicePth(f)) [pth addObject:f];
             else if ([f.pathExtension.lowercaseString isEqualToString:@"index"]) [index addObject:f];
         }
@@ -82,7 +94,7 @@ static BOOL IsVoicePth(NSString *file) {
 
 + (NSURL *)downloadURLForRepo:(NSString *)repo file:(NSString *)file {
     NSString *base = [self endpoint];
-    if (!base || ![repo containsString:@"/"] || [file containsString:@".."]) return nil;
+    if (!base || !SafeRepo(repo) || !SafeFile(file)) return nil;
     NSString *path = [file stringByAddingPercentEncodingWithAllowedCharacters:NSCharacterSet.URLPathAllowedCharacterSet];
     return [NSURL URLWithString:[NSString stringWithFormat:@"%@/%@/resolve/main/%@", base, repo, path]];
 }

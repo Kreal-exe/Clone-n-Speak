@@ -18,7 +18,8 @@ static void WatchJob(OVJob *job, void (^done)(OVJob *job)) {
     __block id token = nil;
     token = [NSNotificationCenter.defaultCenter addObserverForName:OVJobsDidChangeNotification object:nil queue:NSOperationQueue.mainQueue
                                                        usingBlock:^(NSNotification *n) {
-        if (job.active || !token) return;
+        BOOL gone = ![OVJobs.shared.all containsObject:job];
+        if ((job.active && !gone) || !token) return;
         [NSNotificationCenter.defaultCenter removeObserver:token];
         token = nil;
         done(job);
@@ -69,7 +70,7 @@ static NSString *NameFromFile(NSString *path) {
     if (![j isKindOfClass:OVJob.class] || j.active || [self.settled containsObject:j.identifier]) return;
     if (![@[OVProKindRvcImport, OVProKindRvcBlend, OVProKindRvcTrain] containsObject:j.kind]) return;
     [self.settled addObject:j.identifier];
-    if (j.state == OVJobSucceeded) [OVRvcStore.shared rescan];
+    if (j.state == OVJobSucceeded) [OVRvcStore.shared rescanInBackground];
 }
 
 - (NSWindow *)window { return self.card.window; }
@@ -135,6 +136,18 @@ static NSString *DetailText(OVRvcModel *m) {
     return [parts componentsJoinedByString:@" · "];
 }
 
+/// A model an active convert, blend or realtime job reads must not be renamed or moved away under it.
+static BOOL ModelInUse(OVRvcModel *m) {
+    for (OVJob *j in OVJobs.shared.all) {
+        if (!j.active || ![@[OVProKindConvert, OVProKindRvcBlend, OVProKindRealtime] containsObject:j.kind]) continue;
+        for (NSString *k in @[@"model", @"model_a", @"model_b"]) {
+            NSString *v = j.request[k];
+            if ([v isKindOfClass:NSString.class] && ([v isEqualToString:m.folder] || [v isEqualToString:m.identifier] || [v isEqualToString:m.pthPath])) return YES;
+        }
+    }
+    return NO;
+}
+
 - (NSView *)rowFor:(OVRvcModel *)m {
     OVTableRowView *row = [OVTableRowView new];
     row.translatesAutoresizingMaskIntoConstraints = NO;
@@ -152,6 +165,10 @@ static NSString *DetailText(OVRvcModel *m) {
         NSButton *b = OVIconButton(spec[0], spec[1], self, NSSelectorFromString(spec[2]));
         b.identifier = m.identifier;
         b.accessibilityLabel = [NSString stringWithFormat:@"%@: %@", spec[1], m.name];
+        if (ModelInUse(m) && ([spec[2] isEqual:@"renameModel:"] || [spec[2] isEqual:@"deleteModel:"])) {
+            b.enabled = NO;
+            b.toolTip = b.accessibilityHelp = L(@"This voice is in use by a running task.");
+        }
         [buttons addObject:b];
     }
     NSStackView *inner = OVHStack(@[text, OVSpacer(), OVHStack(buttons, 2)], 8);
@@ -199,12 +216,13 @@ static NSString *DetailText(OVRvcModel *m) {
 
 - (void)renameModel:(NSButton *)b {
     OVRvcModel *m = [self modelOf:b];
-    if (!m) return;
+    if (!m || ModelInUse(m)) return;
     NSAlert *a = [NSAlert new];
     a.messageText = L(@"Rename voice model");
     a.informativeText = L(@"Only the name in the list changes; the files stay as they are.");
     NSTextField *f = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 280, 24)];
     f.stringValue = m.name;
+    f.accessibilityLabel = L(@"Name of the voice model");
     a.accessoryView = f;
     [a addButtonWithTitle:L(@"Rename")];
     [a addButtonWithTitle:L(@"Cancel")];
@@ -216,7 +234,7 @@ static NSString *DetailText(OVRvcModel *m) {
 
 - (void)deleteModel:(NSButton *)b {
     OVRvcModel *m = [self modelOf:b];
-    if (!m) return;
+    if (!m || ModelInUse(m)) return;
     NSAlert *a = [NSAlert new];
     a.messageText = [NSString stringWithFormat:L(@"Delete “%@”?"), m.name];
     a.informativeText = [NSString stringWithFormat:L(@"%@ is freed. The files are moved to the Trash; you can put them back from there."), OVFormatBytes(m.sizeBytes)];
@@ -319,7 +337,7 @@ static NSString *DetailText(OVRvcModel *m) {
     text.alignment = NSLayoutAttributeLeading;
     [text setHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
     NSButton *dl = OVSmallPill(OVGhostButton(L(@"Download"), nil, self, @selector(downloadResult:)));
-    dl.identifier = [NSString stringWithFormat:@"%@\n%@\n%@", r.repo, r.pthFile, r.indexFile ?: @""];
+    objc_setAssociatedObject(dl, "ovResult", r, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     dl.accessibilityLabel = [NSString stringWithFormat:L(@"Download %@"), r.repo];
     NSStackView *inner = OVHStack(@[text, OVSpacer(), dl], 8);
     inner.alignment = NSLayoutAttributeCenterY;
@@ -329,13 +347,12 @@ static NSString *DetailText(OVRvcModel *m) {
 }
 
 - (void)downloadResult:(NSButton *)b {
-    NSArray *p = [b.identifier componentsSeparatedByString:@"\n"];
-    if (p.count < 3) return;
-    NSString *repo = p[0], *pth = p[1], *index = p[2];
-    NSURL *u = [OVRvcSearch downloadURLForRepo:repo file:pth];
-    NSURL *iu = index.length ? [OVRvcSearch downloadURLForRepo:repo file:index] : nil;
+    OVRvcSearchResult *r = objc_getAssociatedObject(b, "ovResult");
+    if (!r) return;
+    NSURL *u = [OVRvcSearch downloadURLForRepo:r.repo file:r.pthFile];
+    NSURL *iu = r.indexFile.length ? [OVRvcSearch downloadURLForRepo:r.repo file:r.indexFile] : nil;
     if (!u) { Say(self.status, L(@"The Hugging Face address in the settings is not https, so nothing is downloaded."), OVRoleErr); return; }
-    NSString *name = repo.lastPathComponent.length ? repo.lastPathComponent : NameFromFile(pth);
+    NSString *name = r.repo.lastPathComponent.length ? r.repo.lastPathComponent : NameFromFile(r.pthFile);
     [self downloadPth:u.absoluteString index:iu.absoluteString name:name];
 }
 
@@ -367,7 +384,7 @@ static NSString *DetailText(OVRvcModel *m) {
 
 - (void)finishWith:(NSString *)error name:(NSString *)name {
     self.busy = NO;
-    [OVRvcStore.shared rescan];
+    [OVRvcStore.shared rescanInBackground];
     [NSNotificationCenter.defaultCenter postNotificationName:OVRvcModelsDidChangeNotification object:self];
     if (error.length) Say(self.status, error, OVRoleErr);
     else Say(self.status, [NSString stringWithFormat:L(@"“%@” was added to your voice models."), name], OVRoleOK);
@@ -409,11 +426,15 @@ static NSString *DetailText(OVRvcModel *m) {
         NSMutableDictionary *r2 = [base mutableCopy];
         r2[@"url"] = indexURL;
         r2[@"name"] = [name stringByAppendingString:@" index"];
-        [w run:OVProKindRvcFetch request:r2 done:^(OVJob *idx, NSString *ierr) {
-            NSString *ip = (idx && idx.state == OVJobSucceeded) ? idx.outputs.firstObject : nil;
-            if (!ip && idx) [OVJobs.shared remove:idx];
+        // the same download the user approved with the .pth: submitted directly, no second prompt
+        NSString *serr = nil;
+        OVJob *idxJob = [OVJobs.shared submitKind:OVProKindRvcFetch request:r2 origin:@"app" onFinish:nil error:&serr];
+        if (!idxJob) { importNow(nil, nil); return; }
+        WatchJob(idxJob, ^(OVJob *idx) {
+            NSString *ip = idx.state == OVJobSucceeded ? idx.outputs.firstObject : nil;
+            if (!ip) [OVJobs.shared remove:idx];
             importNow(ip, ip ? idx : nil);   // a missing index is not fatal: the voice works without it
-        }];
+        });
     }];
 }
 
@@ -446,7 +467,7 @@ static NSString *DetailText(OVRvcModel *m) {
 - (void)importNext:(NSMutableArray<NSDictionary *> *)queue added:(NSInteger)added failed:(NSString *)lastError {
     if (!queue.count) {
         self.busy = NO;
-        [OVRvcStore.shared rescan];
+        [OVRvcStore.shared rescanInBackground];
         [NSNotificationCenter.defaultCenter postNotificationName:OVRvcModelsDidChangeNotification object:self];
         if (lastError.length) Say(self.status, lastError, OVRoleErr);
         else Say(self.status, added == 1 ? L(@"The voice model was added.") : [NSString stringWithFormat:L(@"%ld voice models were added."), (long)added], OVRoleOK);
@@ -481,14 +502,16 @@ NSView *OVRvcModelsCard(void) {
 @property (strong) NSStackView *rows;
 @property (strong) NSTextField *footer, *status;
 @property (copy) NSString *signature;
+@property (copy) NSString *ytVersion;   // read from disk on engine changes only
+@property BOOL lastBusy;
 @end
 
 @implementation OVEnginesCardController
 
 - (instancetype)init {
     if ((self = [super init])) {
-        [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(reload) name:OVEnginesDidChangeNotification object:nil];
-        [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(reload) name:OVJobsDidChangeNotification object:nil];
+        [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(enginesChanged) name:OVEnginesDidChangeNotification object:nil];
+        [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(jobsTick) name:OVJobsDidChangeNotification object:nil];
     }
     return self;
 }
@@ -503,6 +526,7 @@ NSView *OVRvcModelsCard(void) {
     OVFillWidth(@[self.rows, self.status], content);
     self.card = OVStepCardWithAccessory(0, @"cpu", L(@"Pro engines"), OVProBadge(), content);
     objc_setAssociatedObject(self.card, "ovEnginesController", self, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    self.ytVersion = YtDlpVersion();
     [self reload];
     [OVEngines.shared refresh];
     return self.card;
@@ -530,10 +554,10 @@ static NSView *StateBadge(OVEngineComponent *c) {
     }
 }
 
-- (NSButton *)action:(NSString *)title sel:(SEL)sel id:(NSString *)ident primary:(BOOL)primary {
+- (NSButton *)action:(NSString *)title sel:(SEL)sel id:(NSString *)ident primary:(BOOL)primary label:(NSString *)what {
     NSButton *b = OVSmallPill(primary ? OVPrimaryButton(title, self, sel) : OVGhostButton(title, nil, self, sel));
     b.identifier = ident;
-    b.accessibilityLabel = [NSString stringWithFormat:@"%@: %@", title, ident];
+    b.accessibilityLabel = [NSString stringWithFormat:@"%@: %@", title, what];
     return b;
 }
 
@@ -558,13 +582,13 @@ static NSView *StateBadge(OVEngineComponent *c) {
 
     BOOL busy = OVEngines.shared.proJobActive;
     NSMutableArray *buttons = [NSMutableArray array];
-    if (c.state == OVEngineNotInstalled) [buttons addObject:[self action:L(@"Install") sel:@selector(install:) id:c.identifier primary:YES]];
-    else if (c.state == OVEnginePartial) [buttons addObject:[self action:L(@"Finish installing") sel:@selector(install:) id:c.identifier primary:YES]];
-    else if (c.state == OVEngineBroken) [buttons addObject:[self action:L(@"Repair") sel:@selector(install:) id:c.identifier primary:YES]];
+    if (c.state == OVEngineNotInstalled) [buttons addObject:[self action:L(@"Install") sel:@selector(install:) id:c.identifier primary:YES label:L(c.title)]];
+    else if (c.state == OVEnginePartial) [buttons addObject:[self action:L(@"Finish installing") sel:@selector(install:) id:c.identifier primary:YES label:L(c.title)]];
+    else if (c.state == OVEngineBroken) [buttons addObject:[self action:L(@"Repair") sel:@selector(install:) id:c.identifier primary:YES label:L(c.title)]];
     if (c.state != OVEngineNotInstalled && c.state != OVEngineInstalling) {
-        NSButton *rm = [self action:L(@"Remove") sel:@selector(remove:) id:c.identifier primary:NO];
+        NSButton *rm = [self action:L(@"Remove") sel:@selector(remove:) id:c.identifier primary:NO label:L(c.title)];
         rm.enabled = !busy;
-        if (busy) rm.toolTip = L(@"A pro job is running — wait for it or stop it in Jobs");
+        if (busy) rm.toolTip = rm.accessibilityHelp = L(@"A pro job is running — wait for it or stop it in Jobs");
         [buttons addObject:rm];
     }
     NSStackView *inner = OVHStack(@[text, OVSpacer(), OVHStack(buttons, 6)], 10);
@@ -575,9 +599,9 @@ static NSView *StateBadge(OVEngineComponent *c) {
 }
 
 - (NSView *)ytDlpRow {
-    NSString *v = YtDlpVersion();
+    NSString *v = self.ytVersion;
     NSTextField *label = OVLabel(v ? [NSString stringWithFormat:L(@"yt-dlp: version %@"), v] : L(@"yt-dlp: not installed"), 13, NSFontWeightRegular, OVColor(OVRoleMuted));
-    NSButton *up = [self action:L(@"Update") sel:@selector(updateYtDlp:) id:@"yt-dlp" primary:NO];
+    NSButton *up = [self action:L(@"Update") sel:@selector(updateYtDlp:) id:@"yt-dlp" primary:NO label:@"yt-dlp"];
     up.enabled = v != nil && !OVEngines.shared.proJobActive;
     NSStackView *row = OVHStack(@[label, OVSpacer(), up], 8);
     row.alignment = NSLayoutAttributeCenterY;
@@ -610,7 +634,19 @@ static NSView *StateBadge(OVEngineComponent *c) {
     for (OVEngineComponent *c in e.components) [views addObject:[self rowFor:c]];
     [views addObject:[self ytDlpRow]];
     [views addObject:[self layoutRow]];
+    if (e.proJobActive) {
+        NSTextField *why = OVWrapLabel(L(@"Remove and Update are unavailable while a pro job runs."), 13, OVColor(OVRoleWarn));
+        [views addObject:why];
+    }
     for (NSView *v in views) { [self.rows addArrangedSubview:v]; OVFillWidth(@[v], self.rows); }
+}
+
+- (void)enginesChanged { self.ytVersion = YtDlpVersion(); [self reload]; }
+
+/// Job ticks come four times a second: rebuild only when "a pro job is running" flips.
+- (void)jobsTick {
+    BOOL busy = OVEngines.shared.proJobActive;
+    if (busy != self.lastBusy) { self.lastBusy = busy; [self reload]; }
 }
 
 - (void)say:(NSString *)text tone:(OVRole)tone { Say(self.status, text, tone); }
@@ -631,7 +667,7 @@ static NSView *StateBadge(OVEngineComponent *c) {
     __weak typeof(self) w = self;
     WatchJob(job, ^(OVJob *done) {
         [w say:done.state == OVJobSucceeded ? L(@"yt-dlp is up to date.") : (done.error ?: L(@"The update failed.")) tone:done.state == OVJobSucceeded ? OVRoleOK : OVRoleErr];
-        [w reload];
+        [w enginesChanged];
     });
 }
 
