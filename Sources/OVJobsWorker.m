@@ -106,6 +106,11 @@ static NSString *OVShortText(NSDictionary *r, NSString *fmt) {
         NSString *n = [r[@"_name"] isKindOfClass:NSString.class] ? r[@"_name"] : @"";
         return n.length ? [NSString stringWithFormat:L(@"Remove music: %@"), n] : L(@"Remove music");
     } factory:OVWorkerRunnerFactory() onSuccess:nil];
+    [jobs registerKind:@"tool" lane:OVJobLaneCompute retryable:NO   // Audio Tools: effects, formant / pitch, cleanup
+                 title:^NSString *(NSDictionary *r) {
+        NSString *n = [r[@"_name"] isKindOfClass:NSString.class] ? r[@"_name"] : @"";
+        return n.length ? [NSString stringWithFormat:L(@"Audio tools: %@"), n] : L(@"Audio tools");
+    } factory:OVWorkerRunnerFactory() onSuccess:nil];
     [jobs registerKind:OVJobKindInstall lane:OVJobLaneNetwork retryable:YES
                  title:^NSString *(NSDictionary *r) { return L(@"Installing components"); }
                factory:OVWorkerRunnerFactory() onSuccess:nil];

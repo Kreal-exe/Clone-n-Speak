@@ -178,6 +178,12 @@ static NSError *Err(NSString *why) {
     return [NSError errorWithDomain:OVAnalyzerErrorDomain code:1 userInfo:@{NSLocalizedDescriptionKey: why}];
 }
 
+- (void)clear {
+    _u8 = nil; _cols = _rows = 0; _rowHz = nil; _f0 = nil; _centroid = nil; _median = nil; _seconds = 0;
+    [self dropImage];
+    self.needsDisplay = YES;
+}
+
 - (BOOL)loadResult:(NSDictionary *)result error:(NSError **)error {
     NSDictionary *sp = [result[@"spectrogram"] isKindOfClass:NSDictionary.class] ? result[@"spectrogram"] : nil;
     NSString *path = [sp[@"path"] isKindOfClass:NSString.class] ? sp[@"path"] : nil;
