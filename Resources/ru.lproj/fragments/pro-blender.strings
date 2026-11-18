@@ -32,12 +32,14 @@
 "The new voice is saved under this name." = "Новый голос сохранится под этим именем.";
 "The preview couldn’t be made." = "Не удалось сделать пробу.";
 "The voices couldn’t be blended." = "Не удалось смешать голоса.";
-"These voices can’t be blended — different sample rates or versions" = "Эти голоса нельзя смешать: разные частоты дискретизации или версии";
+"These voices can’t be blended — different sample rates, versions or pitch type" = "Эти голоса нельзя смешать: разные частоты дискретизации, версии или тип высоты тона";
 "This recording can’t be read. Choose another file." = "Эту запись не прочитать. Выберите другой файл.";
+"A voice named ‘%@’ already exists. Try ‘%@’." = "Голос «%@» уже есть. Попробуйте «%@».";
+"Close" = "Закрыть";
 "Voice A" = "Голос A";
 "Voice B" = "Голос B";
 "my-blend" = "моя-смесь";
 "no index" = "без индекса";
 "with index" = "с индексом";
 "‘%@’ is ready." = "«%@» готов.";
-"‘%@’ was already there: these two voices with this ratio were blended before." = "«%@» уже был: эти два голоса в такой пропорции смешивали раньше.";
+"‘%@’ already existed: these two voices with this ratio were blended before. Nothing was changed." = "«%@» уже был: эти два голоса в такой пропорции смешивали раньше.";

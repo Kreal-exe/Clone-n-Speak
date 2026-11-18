@@ -21,7 +21,7 @@ static const NSTimeInterval kPreviewSeconds = 5;
 @interface OVBlendModel : NSObject
 @property (copy) NSString *folder, *name, *version;
 @property int sampleRate;
-@property BOOL hasIndex;
+@property BOOL hasIndex, hasF0, f0Known;
 @property NSInteger epochs;
 @end
 @implementation OVBlendModel
@@ -53,6 +53,8 @@ static NSArray<OVBlendModel *> *OVBlendInstalledModels(void) {
         b.version = [info[@"version"] isKindOfClass:NSString.class] ? info[@"version"] : @"";
         b.sampleRate = [info[@"sample_rate"] intValue];
         b.hasIndex = [info[@"has_index"] boolValue];
+        b.f0Known = info[@"f0"] != nil;
+        b.hasF0 = [info[@"f0"] boolValue];
         b.epochs = [info[@"epochs"] integerValue];
         [out addObject:b];
     }
@@ -67,8 +69,9 @@ static NSString *OVBlendProblem(OVBlendModel *a, OVBlendModel *b) {
     if (!a || !b) return nil;
     if ([a.folder isEqualToString:b.folder]) return L(@"Choose two different models");
     if ((a.version.length && b.version.length && ![a.version isEqualToString:b.version]) ||
-        (a.sampleRate && b.sampleRate && a.sampleRate != b.sampleRate))
-        return L(@"These voices can’t be blended — different sample rates or versions");
+        (a.sampleRate && b.sampleRate && a.sampleRate != b.sampleRate) ||
+        (a.f0Known && b.f0Known && a.hasF0 != b.hasF0))
+        return L(@"These voices can’t be blended — different sample rates, versions or pitch type");
     return nil;
 }
 
@@ -84,7 +87,8 @@ static NSString *OVBlendProblem(OVBlendModel *a, OVBlendModel *b) {
 @property OVPlayerBar *player;
 @property (weak) OVJob *job;
 @property (copy) NSString *resultFolder, *resultName, *previewSource, *previewTrimmed, *previewOutput;
-@property BOOL gateReady, busy;
+@property BOOL gateReady, busy, nameEdited, resultAlready;
+@property NSTextField *nameWarning;
 @end
 
 @implementation OVBlenderPage
@@ -107,6 +111,7 @@ static NSString *OVBlendProblem(OVBlendModel *a, OVBlendModel *b) {
 - (void)loadView {
     NSNotificationCenter *nc = NSNotificationCenter.defaultCenter;
     [nc addObserver:self selector:@selector(jobsChanged:) name:OVJobsDidChangeNotification object:nil];
+    [nc addObserver:self selector:@selector(reloadModels) name:OVRvcModelsDidChangeNotification object:nil];
 
     self.popupA = [self modelPopup:L(@"First voice")];
     self.popupB = [self modelPopup:L(@"Second voice")];
@@ -131,10 +136,12 @@ static NSString *OVBlendProblem(OVBlendModel *a, OVBlendModel *b) {
     __weak typeof(self) weakSelf = self;
     self.ratioRow.onChange = ^{ [weakSelf updateState]; };
     [self.ratioRow refresh];   // the pill shows "A 50 % · B 50 %" from the start
+    self.nameWarning = OVWrapLabel(@"", 13, OVColor(OVRoleWarn));
+    self.nameWarning.hidden = YES;
     self.problemLabel = OVWrapLabel(@"", 13, OVColor(OVRoleWarn));
     self.problemLabel.hidden = YES;
     self.problemLabel.accessibilityLabel = L(@"Problem");
-    NSView *mix = OVFillStack(@[OVFieldBlock(L(@"Name"), L(@"The new voice is saved under this name."), self.nameField), self.ratioRow,
+    NSView *mix = OVFillStack(@[OVFieldBlock(L(@"Name"), L(@"The new voice is saved under this name."), self.nameField), self.nameWarning, self.ratioRow,
                                 OVWrapLabel(L(@"Indexes aren’t mixed: the new voice has no index, so it sounds a little less like its sources at high Index rate."), 13, OVColor(OVRoleMuted)),
                                 self.problemLabel], 14);
     NSView *cardMix = OVStepCard(3, @"slider.horizontal.3", L(@"Blend"), nil, mix);
@@ -207,7 +214,7 @@ static NSString *OVBlendProblem(OVBlendModel *a, OVBlendModel *b) {
 }
 
 - (void)selectionChanged:(id)sender { [self updateState]; }
-- (void)controlTextDidChange:(NSNotification *)n { [self updateState]; }
+- (void)controlTextDidChange:(NSNotification *)n { self.nameEdited = YES; [self updateState]; }
 
 #pragma mark State
 
@@ -220,6 +227,13 @@ static NSString *OVBlendProblem(OVBlendModel *a, OVBlendModel *b) {
     OVBlendModel *a = [self modelAt:self.popupA], *b = [self modelAt:self.popupB];
     self.infoA.stringValue = a ? [a detail] : @"";
     self.infoB.stringValue = b ? [b detail] : @"";
+    if (!self.nameEdited && a && b && !self.busy) {   // the default name carries the ratio: "aria+mira 70-30"
+        int pa = (int)lround(self.ratioRow.value * 100);
+        self.nameField.stringValue = [NSString stringWithFormat:@"%@+%@ %d-%d", a.name, b.name, pa, 100 - pa];
+    }
+    NSString *taken = [self cleanName].length ? [self takenNameSuggestion:[self cleanName]] : nil;
+    self.nameWarning.stringValue = taken ? [NSString stringWithFormat:L(@"A voice named ‘%@’ already exists. Try ‘%@’."), [self cleanName], taken] : @"";
+    self.nameWarning.hidden = taken == nil;
     NSString *problem = self.models.count < 2 ? (has ? L(@"Choose two different models") : nil) : OVBlendProblem(a, b);
     self.problemLabel.stringValue = problem ?: @"";
     self.problemLabel.hidden = problem == nil;
@@ -234,9 +248,22 @@ static NSString *OVBlendProblem(OVBlendModel *a, OVBlendModel *b) {
     self.previewButton.enabled = haveResult && !self.busy && self.gateReady && (self.previewSource.length > 0);
     self.chooseButton.enabled = !self.busy;
     self.saveButton.enabled = discardable(self);
+    self.saveButton.title = self.resultAlready ? L(@"Close") : L(@"Save");
     self.discardButton.enabled = discardable(self);
+    self.discardButton.hidden = self.resultAlready;   // a voice that was already there is never deleted from here
     self.previewFile.stringValue = self.previewSource.length ? self.previewSource.lastPathComponent
                                                               : L(@"No test recording yet. Choose one to hear the new voice.");
+}
+
+- (NSString *)takenNameSuggestion:(NSString *)name {
+    NSMutableSet *have = [NSMutableSet set];
+    for (OVBlendModel *m in self.models) [have addObject:m.name.lowercaseString];
+    if (![have containsObject:name.lowercaseString] || self.resultFolder) return nil;
+    for (int i = 2; i < 100; i++) {
+        NSString *c = [NSString stringWithFormat:@"%@ %d", name, i];
+        if (![have containsObject:c.lowercaseString]) return c;
+    }
+    return nil;
 }
 
 static BOOL discardable(OVBlenderPage *p) { return p.resultFolder != nil && !p.busy; }
@@ -246,7 +273,12 @@ static BOOL discardable(OVBlenderPage *p) { return p.resultFolder != nil && !p.b
     self.bar.hidden = !busy;
     self.statusLabel.hidden = status.length == 0;
     self.statusLabel.stringValue = status ?: @"";
-    if (busy) { self.bar.indeterminate = YES; [self.bar startAnimation:nil]; } else [self.bar stopAnimation:nil];
+    if (busy) {
+        self.bar.indeterminate = YES;
+        [self.bar startAnimation:nil];
+    } else {
+        [self.bar stopAnimation:nil];
+    }
     [self updateState];
 }
 
@@ -259,6 +291,7 @@ static BOOL discardable(OVBlenderPage *p) { return p.resultFolder != nil && !p.b
     if (!name.length) return;
     [self removePreviewFiles];
     self.resultFolder = nil;
+    self.resultAlready = NO;
     self.player.hidden = YES;
     NSDictionary *req = @{@"model_a": a.folder, @"model_b": b.folder, @"ratio": @(self.ratioRow.value), @"name": name};
     [self setBusy:YES status:L(@"Starting…")];
@@ -294,8 +327,9 @@ static BOOL discardable(OVBlenderPage *p) { return p.resultFolder != nil && !p.b
     if (job.state == OVJobSucceeded && [job.result[@"model_dir"] isKindOfClass:NSString.class]) {
         self.resultFolder = job.result[@"model_dir"];
         self.resultName = [self cleanName];
+        self.resultAlready = [job.result[@"already"] boolValue];
         BOOL already = [job.result[@"already"] boolValue];
-        self.resultLabel.stringValue = [NSString stringWithFormat:already ? L(@"‘%@’ was already there: these two voices with this ratio were blended before.")
+        self.resultLabel.stringValue = [NSString stringWithFormat:already ? L(@"‘%@’ already existed: these two voices with this ratio were blended before. Nothing was changed.")
                                                                          : L(@"‘%@’ is ready."), self.resultName];
         [self setBusy:NO status:nil];    } else if (job.state == OVJobStopped) {
         [self setBusy:NO status:L(@"Stopped.")];
@@ -374,6 +408,7 @@ static BOOL discardable(OVBlenderPage *p) { return p.resultFolder != nil && !p.b
     } else if (job.state == OVJobStopped) {
         [self setBusy:NO status:L(@"Stopped.")];
     } else {
+        if (self.previewTrimmed) { [NSFileManager.defaultManager removeItemAtPath:self.previewTrimmed error:nil]; self.previewTrimmed = nil; }
         [self setBusy:NO status:job.error ?: L(@"The preview couldn’t be made.")];
     }
 }
@@ -397,12 +432,14 @@ static BOOL discardable(OVBlenderPage *p) { return p.resultFolder != nil && !p.b
 }
 
 - (void)discard:(id)sender {
+    if (self.resultAlready) return;
     NSString *folder = self.resultFolder;
     // Only a folder directly inside rvc/models, never anything else.
     NSString *root = OVPaths.rvcModels.stringByResolvingSymlinksInPath;
     NSString *real = folder.stringByResolvingSymlinksInPath;
     if (folder && [real.stringByDeletingLastPathComponent isEqualToString:root] && real.lastPathComponent.length)
         [NSFileManager.defaultManager removeItemAtPath:real error:nil];
+    [NSNotificationCenter.defaultCenter postNotificationName:OVRvcModelsDidChangeNotification object:nil];
     [self.player stopIfPlayingThis];
     [self removePreviewFiles];
     self.resultFolder = nil;
