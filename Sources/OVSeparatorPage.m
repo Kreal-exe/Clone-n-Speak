@@ -12,6 +12,7 @@
 #import "OVStore.h"
 #import "OVExport.h"
 #import "OVSeparatorModel.h"
+#import "OVStemsCard.h"
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
 /// Posted by "Use in Audio Tools" just before the page switch; userInfo @"path" = the result file. The Audio Tools page
@@ -110,13 +111,8 @@ static const NSTimeInterval kMaxSeconds = 20 * 60;   // the 20-minute limit
     self.resultCard = OVStepCard(3, @"waveform", L(@"Result"), nil, res);
     self.resultCard.hidden = YES;
 
-    // 4 Full stem separation: a stand-in. The pro sub-plan puts its OVStemsCard here (STEMS-CARD-SLOT).
-    NSButton *disabled = OVGhostButton(L(@"Separate into stems"), nil, nil, nil);
-    disabled.enabled = NO;
-    disabled.toolTip = L(@"Available after installing the Pro engines");
-    NSView *stems = OVFillStack(@[OVWrapLabel(L(@"Splits a song into vocals, drums, bass and the rest. Available after installing the Pro engines."), 13, OVColor(OVRoleMuted)),
-                                  OVHStack(@[disabled, OVGhostButton(L(@"Learn more"), nil, self, @selector(learnMore:)), OVSpacer()], 8)], 10);
-    NSView *c4 = OVStepCardWithAccessory(0, @"square.stack.3d.up", L(@"Full stem separation"), OVProBadge(), stems);   // STEMS-CARD-SLOT
+    // 4 Full stem separation (pro): the card of the pro sub-plan, below "Remove music" and its result
+    NSView *c4 = OVStemsCard(nil, nil);
 
     self.view = OVPageScroll(@[OVPageHeader(L(@"Separation"), L(@"Take the music out of a recording and keep the voice."), nil),
                                OVStepCard(1, @"waveform.badge.plus", L(@"Input"), nil, c1), c2, self.resultCard, c4]);
