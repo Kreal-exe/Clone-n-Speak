@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "id": "gain",
+  "name": "Gain",
+  "version": "1.0",
+  "author": "Clone'n'Speak",
+  "description": "Makes a 16-bit WAV louder or quieter by a number of decibels. A small example of the plugin format.",
+  "entry": "main.py",
+  "timeout_s": 120,
+  "actions": [
+    {
+      "id": "gain",
+      "label": "Change volume",
+      "inputs": [
+        {"name": "audio", "type": "audio", "label": "Audio file (WAV, 16-bit)"},
+        {"name": "gain_db", "type": "number", "label": "Gain (dB)", "min": -24, "max": 24, "default": 6}
+      ]
+    }
+  ]
+}

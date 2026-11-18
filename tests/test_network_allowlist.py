@@ -24,14 +24,22 @@ EXPECTED = {
     "OVModels.m": (0, "catalog and downloads go through OVDownloader; no direct calls"),
     "OVRuntime.m": (0, "Setup (uv) goes through OVDownloader / uv; no direct calls"),
     "OVNetwork.h": (1, "the gate"),
-    "OVNetwork.m": (2, "the gate"),
+    "OVNetwork.m": (1, "the gate"),
     "cns_net.py": (3, "the gate for Python processes"),
     "worker.py": (4, "ECAPA fetch (cached only offline), Seed-VC download (explicit_download)"),
     "cns_separate.py": (8, "music-removal model download, started by the user (pinned HTTPS URL + sha256, https-only redirects)"),
     "cns_dfn.py": (4, "DeepFilterNet binary download, started by the user (pinned URL + sha256)"),
+    "OVAPIPage.m": (3, "the Quick start text shows shell commands for the local API (127.0.0.1); the page makes no network call"),
     "cns_engines.py": (22, "pro-engine installs, started by the user: pinned HTTPS URLs (GitHub, Hugging Face) + sha256, "
                            "https-only redirects, uv/PyPI through the installer; also names edge-tts and yt-dlp as packages"),
+    "cns_realtime.py": (8, "realtime voice process: one local Unix-socket client (AF_UNIX, no internet); sandboxed without network"),
+    "cns_rt_proto.py": (12, "realtime block protocol over a local Unix socket (AF_UNIX); no internet"),
+    "cns_ytdl.py": (7, "YouTube audio import, started by the user: one https youtube.com / youtu.be video through yt-dlp, "
+                       "after cns_net.require_online(\"youtube\") and the rights confirmation; no cookies, no plugins"),
+    "cns_edge.py": (12, "Edge TTS: sends the typed text to Microsoft's online voices (edge-tts, own process), "
+                        "after cns_net.require_online(\"edge_tts\")"),
     "cns_pins.py": (7, "generated pins: the requirement lines that name requests / edge-tts packages (no network code)"),
+    "OVPrivacyCatalog.m": (3, "descriptions only: feature ids and the word \"requests\" in the Bridge text"),
     "cns_api.py": (4, "local API / Bridge listeners on 127.0.0.1, server side only (no outgoing calls)"),
 }
 

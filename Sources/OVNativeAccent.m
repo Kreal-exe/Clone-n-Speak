@@ -1,7 +1,7 @@
 #import "OVNativeAccent.h"
 #import "OVPaths.h"
 #import "OVRuntime.h"
-#import "OVWorker.h"
+#import "OVJobs.h"
 #import "OVLocale.h"
 
 NSNotificationName const OVNativeAccentDidChangeNotification = @"OVNativeAccentDidChange";
@@ -11,6 +11,8 @@ NSNotificationName const OVNativeAccentDidChangeNotification = @"OVNativeAccentD
 @property (readwrite) double progress;
 @property (readwrite, copy) NSString *step;
 @property (readwrite, nullable, copy) NSString *error;
+@property (strong, nullable) OVJob *job;
+@property (strong, nullable) id observer;
 @end
 
 @implementation OVNativeAccent
@@ -51,18 +53,30 @@ NSNotificationName const OVNativeAccentDidChangeNotification = @"OVNativeAccentD
     [self changed];
     NSDictionary *req = @{@"cmd": @"install_accent", @"explicit_download": @YES, @"dir": [OVPaths accent], @"uv": uv, @"env": [[OVRuntime shared] uvEnv]};
     __weak typeof(self) w = self;
-    [[OVWorker shared] request:req status:^(NSString *msg) {
-        w.step = msg;
-        [w changed];
-    } progress:^(double v) {
-        w.progress = v;
-        [w changed];
-    } done:^(NSDictionary *data, NSString *err) {
+    NSString *submitError = nil;
+    OVJob *job = [OVJobs.shared submitKind:OVJobKindInstall request:req origin:@"app" onFinish:^(OVJob *j) {
+        w.job = nil;
         w.installing = NO;
-        w.error = err;
+        w.error = j.state == OVJobFailed ? (j.error ?: L(@"The install failed.")) : j.state == OVJobStopped ? L(@"Stopped") : nil;
         w.step = @"";
         [w changed];
-    }];
+    } error:&submitError];
+    if (!job) {
+        self.installing = NO;
+        self.error = submitError ?: L(@"The install could not be started.");
+        [self changed];
+        return;
+    }
+    self.job = job;
+    if (!self.observer)
+        self.observer = [NSNotificationCenter.defaultCenter addObserverForName:OVJobsDidChangeNotification object:nil queue:NSOperationQueue.mainQueue
+                                                                    usingBlock:^(NSNotification *n) {
+            OVJob *j = n.object;
+            if (!j || j != w.job || !j.active) return;
+            if (j.status.length) w.step = j.status;
+            if (j.progress >= 0) w.progress = j.progress;
+            [w changed];
+        }];
 }
 
 - (BOOL)remove:(NSError **)error {

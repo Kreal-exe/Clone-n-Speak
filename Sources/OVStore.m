@@ -169,7 +169,19 @@ NSNotificationName const OVHistoryDidChangeNotification = @"OVHistoryDidChange";
 #pragma mark - History
 
 @implementation OVGeneration
+- (NSString *)formatId { return _formatId.length ? _formatId : @"wav"; }
+- (NSString *)deliveryPath { return self.exportedPath ?: self.path; }
 @end
+
+NSString *OVDryPathForOutput(NSString *out) {
+    return [[out stringByDeletingPathExtension] stringByAppendingString:@".dry.wav"];
+}
+
+void OVSynthApplyChain(NSMutableDictionary *req, NSArray<NSDictionary *> *chain, NSString *out) {
+    if (!chain.count) return;
+    req[@"chain"] = chain;
+    req[@"dry_out"] = OVDryPathForOutput(out);
+}
 
 @interface OVHistory ()
 @property (readwrite) NSArray<OVGeneration *> *all;
@@ -189,7 +201,7 @@ NSNotificationName const OVHistoryDidChangeNotification = @"OVHistoryDidChange";
     NSString *root = [OVPaths outputs];
     NSMutableArray *list = [NSMutableArray array];
     for (NSString *f in [NSFileManager.defaultManager contentsOfDirectoryAtPath:root error:nil]) {
-        if (![f.pathExtension.lowercaseString isEqualToString:@"wav"]) continue;
+        if (![f.pathExtension.lowercaseString isEqualToString:@"wav"] || [f.lowercaseString hasSuffix:@".dry.wav"]) continue;
         NSString *path = [root stringByAppendingPathComponent:f];
         NSDictionary *meta = [NSDictionary dictionaryWithContentsOfFile:[path.stringByDeletingPathExtension stringByAppendingPathExtension:@"plist"]];
         OVGeneration *g = [OVGeneration new];
@@ -203,6 +215,11 @@ NSNotificationName const OVHistoryDidChangeNotification = @"OVHistoryDidChange";
         g.clarity = meta[@"clarity"] ? [meta[@"clarity"] doubleValue] : -1;
         g.likeness = meta[@"likeness"] ? [meta[@"likeness"] doubleValue] : -1;
         g.problems = meta[@"problems"] ?: @[];
+        // the files of a take that was deleted in Finder are not offered
+        NSString *dry = meta[@"originalPath"], *exp = meta[@"exportedPath"];
+        g.originalPath = [dry isKindOfClass:NSString.class] && [NSFileManager.defaultManager fileExistsAtPath:dry] ? dry : nil;
+        g.exportedPath = [exp isKindOfClass:NSString.class] && [NSFileManager.defaultManager fileExistsAtPath:exp] ? exp : nil;
+        g.formatId = g.exportedPath && [meta[@"formatId"] isKindOfClass:NSString.class] ? meta[@"formatId"] : @"wav";
         [list addObject:g];
     }
     [list sortUsingComparator:^NSComparisonResult(OVGeneration *a, OVGeneration *b) { return [b.date compare:a.date]; }];
@@ -233,6 +250,11 @@ NSNotificationName const OVHistoryDidChangeNotification = @"OVHistoryDidChange";
     if (r[@"clarity"]) meta[@"clarity"] = r[@"clarity"];
     if (r[@"likeness"]) meta[@"likeness"] = r[@"likeness"];
     if ([r[@"problems"] count]) meta[@"problems"] = r[@"problems"];
+    if ([r[@"dry_path"] isKindOfClass:NSString.class] && [r[@"dry_path"] length]) meta[@"originalPath"] = r[@"dry_path"];
+    if ([r[@"exported_path"] isKindOfClass:NSString.class] && [r[@"exported_path"] length]) {
+        meta[@"exportedPath"] = r[@"exported_path"];
+        if ([r[@"format"] isKindOfClass:NSString.class]) meta[@"formatId"] = r[@"format"];
+    }
     [meta writeToFile:[path.stringByDeletingPathExtension stringByAppendingPathExtension:@"plist"] atomically:YES];
     [self reload];
 }
@@ -242,11 +264,26 @@ NSNotificationName const OVHistoryDidChangeNotification = @"OVHistoryDidChange";
     NSString *text = [job.request[@"text"] isKindOfClass:NSString.class] ? job.request[@"text"] : nil;
     if (!path.length || !text) return;
     NSString *vid = [job.request[@"_voiceId"] isKindOfClass:NSString.class] ? job.request[@"_voiceId"] : nil;
-    [self record:path text:text voice:vid ? [[OVVoices shared] voiceWithId:vid] : nil result:job.result ?: @{}];
+    NSMutableDictionary *r = [job.result ?: @{} mutableCopy];
+    NSString *dry = [job.request[@"dry_out"] isKindOfClass:NSString.class] ? job.request[@"dry_out"] : nil;   // the unprocessed take of an effects chain run
+    if (dry.length && [NSFileManager.defaultManager fileExistsAtPath:dry]) r[@"dry_path"] = dry;
+    [self record:path text:text voice:vid ? [[OVVoices shared] voiceWithId:vid] : nil result:r];
+}
+
+- (void)attachExport:(NSString *)exported format:(NSString *)formatId toPath:(NSString *)path {
+    NSString *plist = [path.stringByDeletingPathExtension stringByAppendingPathExtension:@"plist"];
+    NSMutableDictionary *meta = [NSMutableDictionary dictionaryWithContentsOfFile:plist];
+    if (!meta || !exported.length) return;
+    meta[@"exportedPath"] = exported;
+    if (formatId.length) meta[@"formatId"] = formatId;
+    [meta writeToFile:plist atomically:YES];
+    [self reload];
 }
 
 - (void)remove:(OVGeneration *)g {
     [NSFileManager.defaultManager trashItemAtURL:[NSURL fileURLWithPath:g.path] resultingItemURL:nil error:nil];
+    for (NSString *extra in @[g.originalPath ?: @"", g.exportedPath ?: @""])
+        if (extra.length) [NSFileManager.defaultManager trashItemAtURL:[NSURL fileURLWithPath:extra] resultingItemURL:nil error:nil];
     [NSFileManager.defaultManager removeItemAtPath:[g.path.stringByDeletingPathExtension stringByAppendingPathExtension:@"plist"] error:nil];
     [self reload];
 }
@@ -321,6 +358,8 @@ BOOL OVConvertToWav(NSString *src, NSString *dst, double *seconds, NSError **err
 + (void)registerDefaults {
     [NSUserDefaults.standardUserDefaults registerDefaults:@{
         @"language": @"auto",
+        @"exportFormat": @"wav",
+        @"exportQuality": @-1,
         @"numStep": @32,
         @"guidance": @2.0,
         @"speed": @1.0,
@@ -423,12 +462,33 @@ BOOL OVConvertToWav(NSString *src, NSString *dst, double *seconds, NSError **err
     return [tags componentsJoinedByString:@", "];
 }
 
++ (NSString *)exportFormatId { return [NSUserDefaults.standardUserDefaults stringForKey:@"exportFormat"] ?: @"wav"; }
+
++ (NSInteger)exportQuality {
+    id v = [NSUserDefaults.standardUserDefaults objectForKey:@"exportQuality"];
+    return [v respondsToSelector:@selector(integerValue)] ? [v integerValue] : -1;
+}
+
++ (NSDictionary *)currentStyle {
+    NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
+    return @{@"intonation": @([d doubleForKey:@"styleIntonation"]), @"energy": @([d doubleForKey:@"styleEnergy"]),
+             @"pitch": @([d doubleForKey:@"stylePitch"]), @"tone": @([d doubleForKey:@"styleTone"]),
+             @"pauses": @([d doubleForKey:@"stylePauses"]), @"volume": @([d doubleForKey:@"styleVolume"])};
+}
+
++ (void)applyStyle:(NSDictionary *)style {
+    NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
+    for (NSString *k in @[@"intonation", @"energy", @"pitch", @"tone", @"pauses", @"volume"]) {
+        id v = style[k];
+        if ([v isKindOfClass:NSNumber.class]) [d setObject:v forKey:[@"style" stringByAppendingString:k.capitalizedString]];
+    }
+    [d setObject:@"custom" forKey:@"styleMood"];
+}
+
 + (NSDictionary *)generationParams {
     NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
     return @{
-        @"style": @{@"intonation": @([d doubleForKey:@"styleIntonation"]), @"energy": @([d doubleForKey:@"styleEnergy"]),
-                    @"pitch": @([d doubleForKey:@"stylePitch"]), @"tone": @([d doubleForKey:@"styleTone"]),
-                    @"pauses": @([d doubleForKey:@"stylePauses"]), @"volume": @([d doubleForKey:@"styleVolume"])},
+        @"style": [self currentStyle],
         @"instruct": [self designInstruct],
         @"num_step": @([d integerForKey:@"numStep"]),
         @"guidance_scale": @([d doubleForKey:@"guidance"]),

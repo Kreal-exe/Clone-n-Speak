@@ -58,6 +58,14 @@ typedef NS_ENUM(NSInteger, OVModelKind) { OVModelTTS, OVModelASR, OVModelLoRA };
 - (void)removeCustom:(OVModel *)m;
 - (nullable OVModel *)modelForRepo:(NSString *)repo;
 
+/// "owner/repo" from owner/repo, huggingface.co or hf.co links (also /tree/…, /blob/…, /resolve/…); nil for anything else.
++ (nullable NSString *)repoFromHuggingFaceString:(NSString *)s;
+/// Checks on Hugging Face that the repository holds a PEFT adapter, then adds it as a LoRA (a repeat does not duplicate).
+/// Completion runs on the main queue: the model, or a plain error that says what to do.
+- (void)addLoRAFromString:(NSString *)s completion:(void (^)(OVModel *_Nullable model, NSString *_Nullable error))completion;
+/// Replaceable JSON GET used by addLoRAFromString (tests run offline); nil means the real one.
+@property (nullable, copy) void (^jsonFetcher)(NSURL *url, NSDictionary *_Nullable headers, void (^done)(id _Nullable json, NSError *_Nullable error));
+
 /// Calls `ready` once a Whisper model is installed, downloading the recommended one if needed.
 - (void)whenASRReady:(void (^)(OVModel *_Nullable asr, NSString *_Nullable error))ready;
 @end

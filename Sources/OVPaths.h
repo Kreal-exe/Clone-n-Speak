@@ -20,10 +20,15 @@ NS_ASSUME_NONNULL_BEGIN
 + (NSString *)engines;       // …/engines (pro engines, downloaded on demand)
 + (NSString *)proEngine;     // …/engines/pro (Python 3.11 env for the 16 GB tier)
 + (NSString *)edgeEngine;    // …/engines/edge (Edge TTS venv)
++ (NSString *)plugins;       // …/plugins (installed plugin folders: plugins/<id>/)
++ (NSString *)pluginData;    // …/plugin-data (a plugin's own writable folder: plugin-data/<id>/)
 + (NSString *)rvc;           // …/rvc
 + (NSString *)rvcModels;     // …/rvc/models (voice models: .pth + .index)
 + (NSString *)rvcTraining;   // …/rvc/training (experiment workspaces)
 + (NSString *)rvcDatasets;   // …/rvc/datasets
++ (NSString *)api;           // …/api (local API: uploads/ and out/)
++ (NSString *)apiUploads;    // …/api/uploads (the server's upload folder)
++ (NSString *)apiOut;        // …/api/out (audio the API's jobs produced)
 + (void)ensure;
 
 /// Folders of the previous version (OmniVoice UA).

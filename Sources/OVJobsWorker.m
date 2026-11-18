@@ -96,11 +96,11 @@ static NSString *OVShortText(NSDictionary *r, NSString *fmt) {
     [jobs registerKind:@"clone" lane:OVJobLaneCompute retryable:YES
                  title:^NSString *(NSDictionary *r) { return L(@"Voice cloning"); }
                factory:OVWorkerRunnerFactory() onSuccess:nil];
-    [jobs registerKind:OVJobKindTrain lane:OVJobLaneCompute retryable:NO
+    [jobs registerKind:OVJobKindTrain lane:OVJobLaneCompute retryable:YES
                  title:^NSString *(NSDictionary *r) {
         NSString *v = [r[@"voice"] isKindOfClass:NSDictionary.class] ? r[@"voice"][@"name"] : nil;
         return v.length ? [NSString stringWithFormat:L(@"Training: %@"), v] : L(@"Voice training");
-    } factory:OVWorkerRunnerFactory() onSuccess:nil];
+    } factory:OVWorkerRunnerFactory() onSuccess:^(OVJob *job) { [[OVVoices shared] reload]; }];   // the voice learned the language, also when the sheet is closed
     [jobs registerKind:OVJobKindSeparate lane:OVJobLaneCompute retryable:YES
                  title:^NSString *(NSDictionary *r) {
         NSString *n = [r[@"_name"] isKindOfClass:NSString.class] ? r[@"_name"] : @"";

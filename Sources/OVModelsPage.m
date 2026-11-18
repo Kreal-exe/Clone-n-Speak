@@ -31,7 +31,7 @@ static NSString *DetailsText(NSString *details) {
 @property (weak) id target;
 @property NSString *repo;
 @property NSButton *radio;
-@property NSTextField *title, *details, *meta;
+@property NSTextField *title,*details, *meta;
 @property NSProgressIndicator *bar;
 @property NSStackView *buttons, *titleRow;
 @property (nonatomic) NSView *statusBadge;
@@ -163,7 +163,8 @@ static NSString *DetailsText(NSString *details) {
 @property NSStackView *ttsList, *loraList, *asrList, *catalogList;
 @property NSMutableDictionary<NSString *, OVModelRow *> *rows;
 @property OVSegmented *catalogKind, *tabs;
-@property NSTextField *catalogStatus, *repoField, *addStatus, *endpointField, *cacheLabel;
+@property NSButton *addLinkButton;
+@property NSTextField *catalogStatus,*repoField, *hfLinkField, *hfStatus, *addStatus, *endpointField, *cacheLabel;
 @property OVPopup *kindPopup;
 @property NSSecureTextField *tokenField;
 @property NSTextField *accentMeta;
@@ -246,8 +247,19 @@ static NSString *DetailsText(NSString *details) {
     [self.repoField setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
     [self.repoField.widthAnchor constraintGreaterThanOrEqualToConstant:180].active = YES;
     NSStackView *addRow = OVHStack(@[self.repoField, self.kindPopup, folder, add], 8);
-    NSStackView *addBox = OVVStack(@[addRow, self.addStatus], 8);
-    OVFillWidth(@[addRow, self.addStatus], addBox);
+    self.hfLinkField = OVField(L(@"https://huggingface.co/author/lora-name"));
+    self.hfLinkField.accessibilityLabel = L(@"Hugging Face link");
+    [self.hfLinkField setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
+    [self.hfLinkField.widthAnchor constraintGreaterThanOrEqualToConstant:180].active = YES;
+    self.hfLinkField.target = self;
+    self.hfLinkField.action = @selector(addLoRAFromLink:);
+    NSButton *addLink = OVGhostButton(L(@"Add LoRA"), @"link", self, @selector(addLoRAFromLink:));
+    self.addLinkButton = addLink;
+    addLink.accessibilityLabel = L(@"Add LoRA from a Hugging Face link");
+    self.hfStatus = OVWrapLabel(L(@"Paste a Hugging Face link to a LoRA made with PEFT. It is checked first, then downloaded."), 13, nil);
+    NSStackView *linkRow = OVHStack(@[self.hfLinkField, addLink], 8);
+    NSStackView *addBox = OVVStack(@[addRow, self.addStatus, linkRow, self.hfStatus], 8);
+    OVFillWidth(@[addRow, self.addStatus, linkRow, self.hfStatus], addBox);
     NSView *addCard = OVStepCard(0, @"plus.circle", L(@"Add your own model or LoRA"), nil, addBox);
 
     // HF access
@@ -500,6 +512,28 @@ static NSString *DetailsText(NSString *details) {
         self.addStatus.stringValue = m.installed ? [NSString stringWithFormat:L(@"%@ is already in the cache."), m.title]
                                                  : [NSString stringWithFormat:L(@"%@ was added and is downloading."), m.title];
     }
+}
+
+- (void)addLoRAFromLink:(id)s {
+    NSString *text = self.hfLinkField.stringValue;
+    if (![text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet].length) return;
+    self.addLinkButton.enabled = NO;
+    [self setHFStatus:L(@"Checking the repository…")];
+    [[OVModels shared] addLoRAFromString:text completion:^(OVModel *m, NSString *error) {
+        self.addLinkButton.enabled = YES;
+        if (!m) { [self setHFStatus:error ?: L(@"Couldn’t add this LoRA.")]; return; }
+        self.hfLinkField.stringValue = @"";
+        [[OVModels shared] selectLoRA:m];
+        [self reloadEngine];
+        [self setHFStatus:m.installed ? [NSString stringWithFormat:L(@"LoRA “%@” is connected."), m.title]
+                                      : [NSString stringWithFormat:L(@"LoRA “%@” is selected and downloading."), m.title]];
+    }];
+}
+
+- (void)setHFStatus:(NSString *)text {
+    self.hfStatus.stringValue = text;
+    NSAccessibilityPostNotificationWithUserInfo(self.hfStatus, NSAccessibilityAnnouncementRequestedNotification,
+                                                @{NSAccessibilityAnnouncementKey: text});
 }
 
 - (void)saveAccess:(id)s {
