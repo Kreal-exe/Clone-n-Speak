@@ -14,6 +14,7 @@ import http.client
 import json
 import os
 import shutil
+import signal
 import ssl
 import subprocess
 import sys
@@ -597,10 +598,38 @@ def _closure(requested, layout):
     return [c for c in components(layout) if c["id"] in want]
 
 
+def _kill_group(p):
+    """Kills the child's whole process group (it was started with start_new_session)."""
+    try:
+        os.killpg(p.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        try:
+            p.kill()
+        except OSError:
+            pass
+
+
+def _run_group(cmd, timeout, **kw):
+    """subprocess.run in its own session: on timeout the whole process group dies (a bare kill() would leave the
+    grandchildren of uv / python running), then TimeoutExpired is raised."""
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True, **kw)
+    try:
+        out, err = p.communicate(timeout=timeout)
+    except BaseException:
+        _kill_group(p)
+        try:
+            p.communicate(timeout=5)
+        except (subprocess.TimeoutExpired, OSError, ValueError):
+            pass
+        raise
+    return subprocess.CompletedProcess(cmd, p.returncode, out, err)
+
+
 def _run_uv(args, env, emit_fn, prog, cid, lo, hi, what):
     emit_fn("status", msg=what)
     try:
-        p = subprocess.Popen(args, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        p = subprocess.Popen(args, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                             start_new_session=True)
     except OSError as e:
         raise EngineError("Could not start the installer (%s)." % e)
     n = 0
@@ -611,7 +640,7 @@ def _run_uv(args, env, emit_fn, prog, cid, lo, hi, what):
             prog.stage_at(cid, lo + (hi - lo) * (1 - 0.97 ** n))
         code = p.wait()
     except BaseException:
-        p.kill()
+        _kill_group(p)
         raise
     if code:
         raise EngineError("Could not install %s — see the log, then press Install again." % what.rstrip("…. "))
@@ -647,7 +676,7 @@ def _safe_env(root, extra=None):
     caller's explicit keys are added, minus index overrides and anything that looks like a secret."""
     env = {"PATH": _SAFE_PATH, "HOME": os.environ.get("HOME", os.path.expanduser("~")),
            "LANG": os.environ.get("LANG", "en_US.UTF-8"), "PYTHONNOUSERSITE": "1", "PYTHONDONTWRITEBYTECODE": "1",
-           "UV_CACHE_DIR": os.path.join(root, ".uv-cache")}
+           "UV_CACHE_DIR": os.path.join(root, ".uv-cache"), "UV_NO_CONFIG": "1"}
     if os.environ.get("TMPDIR"):
         env["TMPDIR"] = os.environ["TMPDIR"]
     for k in _PASS_THROUGH:   # network settings the install needs behind a proxy or a corporate CA
@@ -802,7 +831,7 @@ def _warm_seedvc(root, py, src, uvenv, emit_fn):
     env = dict(uvenv, **seedvc_env(root))
     emit_fn("status", msg="Checking Seed-VC…")
     try:
-        run = subprocess.run(cmd, cwd=src, capture_output=True, text=True, env=env, timeout=WARMUP_TIMEOUT)
+        run = _run_group(cmd, WARMUP_TIMEOUT, cwd=src, env=env)
     except subprocess.TimeoutExpired:
         shutil.rmtree(tmp, ignore_errors=True)
         raise EngineError("Seed-VC did not finish its first run in time — close other apps and press Install again.")
@@ -907,15 +936,23 @@ def install(root, components_, uv, env, emit_fn, opener=None, python=PYTHON_VERS
 
 
 def update_ytdlp(root, uv, env, emit_fn):
-    """Updates yt-dlp. ready.json is cleared first and written back only when the update succeeded."""
+    """Updates yt-dlp. ready.json is cleared while pip runs; when the update fails the previous marker is put back
+    (the installed yt-dlp still works, so the YouTube import must stay available) and the error is raised."""
     cns_net.require_online("youtube")
     if not is_ready(root, "pro-env"):
         raise EngineError("Install the pro engines first.")
     comp = _by_id(read_layout(root))["ytdlp"]
     prog = _Progress(emit_fn, [comp])
+    previous = _read_json(marker_path(root, comp))
     _clear_ready(root, comp)
     _mark_installing(root, comp)
-    data = _pip_ytdlp(root, uv, _safe_env(root, env), emit_fn, prog, comp["id"])
+    try:
+        data = _pip_ytdlp(root, uv, _safe_env(root, env), emit_fn, prog, comp["id"])
+    except BaseException:
+        _remove(installing_path(root, comp))
+        if previous is not None:
+            _atomic_json(marker_path(root, comp), previous)
+        raise
     _write_ready(root, comp, data)
     return data["version"]
 
