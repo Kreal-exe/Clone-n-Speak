@@ -64,8 +64,47 @@ SEEDVC_MODEL_SPECS = [
 ]
 EDGE_REQUIREMENT = "edge-tts==7.3.1"
 
-# Task 7.5 adds the stem models here: id -> [(file name, url, sha256 or None to read it from the URL's LFS headers)].
-STEM_SPECS = {}
+# Stem-separation models (Task 7.5; the catalog with licenses is Sources/cns_stems_catalog.py): id -> [(file name, url,
+# sha256, size)], every file of the model, hashed from the published bytes on 2026-11-18. Config files go next to
+# the weights because the separator is given a model folder, never a model name to download.
+_UVR = "https://github.com/TRvlvr/model_repo/releases/download/all_public_uvr_models/"
+_JSD = "https://cdn.jsdelivr.net/gh/TRvlvr/application_data@main/mdx_model_data/mdx_c_configs/"
+_DRV = "https://huggingface.co/anvuew/dereverb_mel_band_roformer/resolve/cef05ad2b5b3145ea5c149d3ad5d1f8439b34d06/"
+# audio-separator fetches these three lists into the model folder when they are missing, which is a hidden network call;
+# every model folder gets pinned snapshots (identical to the files it would fetch, 2026-11-18), so it never does.
+_META = [
+    ("download_checks.json", "https://cdn.jsdelivr.net/gh/TRvlvr/application_data@main/filelists/download_checks.json",
+     "d3622e1fa19c161d3cf704927711b453d593a3f1eb0f2e0838c3136907935151", 28267),
+    ("mdx_model_data.json", "https://cdn.jsdelivr.net/gh/TRvlvr/application_data@main/mdx_model_data/model_data_new.json",
+     "1aca8f9bcc57233bc714029663a9ec2345d9c7721f91e5e08f46392a879c6a9a", 15358),
+    ("vr_model_data.json", "https://cdn.jsdelivr.net/gh/TRvlvr/application_data@main/vr_model_data/model_data_new.json",
+     "6a2021b9aa355c10f845b68c73944d47bd9e1fdf37b8a584b14ce8f88b09bb2f", 4380),
+]
+_STEM_MODELS = {
+    "kim-vocal-2": [
+        ("Kim_Vocal_2.onnx", _UVR + "Kim_Vocal_2.onnx",
+         "ce74ef3b6a6024ce44211a07be9cf8bc6d87728cc852a68ab34eb8e58cde9c8b", 66759214),
+    ],
+    "bs-roformer": [
+        ("model_bs_roformer_ep_317_sdr_12.9755.ckpt", _UVR + "model_bs_roformer_ep_317_sdr_12.9755.ckpt",
+         "5b84f37e8d444c8cb30c79d77f613a41c05868ff9c9ac6c7049c00aefae115aa", 639331213),
+        ("model_bs_roformer_ep_317_sdr_12.9755.yaml", _JSD + "model_bs_roformer_ep_317_sdr_12.9755.yaml",
+         "2bfdd16c656bd9519aba757cc4f8834b7ede675eb1e00ec4772d74ae1c41af7f", 2273),
+    ],
+    "htdemucs": [
+        ("955717e8-8726e21a.th", "https://dl.fbaipublicfiles.com/demucs/hybrid_transformer/955717e8-8726e21a.th",
+         "8726e21a993978c7ba086d3872e7608d7d5bfca646ca4aca459ffda844faa8b4", 84141911),
+        ("htdemucs.yaml", _UVR + "htdemucs.yaml",
+         "239c445d0b14454d541ad8bd9bb271c9e536d267e8a4625208744cbb2e7bb66c", 21),
+    ],
+    "dereverb-anvuew": [
+        ("dereverb_mel_band_roformer_anvuew_sdr_19.1729.ckpt", _DRV + "dereverb_mel_band_roformer_anvuew_sdr_19.1729.ckpt",
+         "9262877b87e9ebb0fb808a456b0a411fa677f5df31c8383c1254af531c078970", 913107578),
+        ("dereverb_mel_band_roformer_anvuew.yaml", _DRV + "dereverb_mel_band_roformer_anvuew.yaml",
+         "66963a9d60756076506a230b4e503c553a3beb7b4e9a10e6bcc73dee9dbd4866", 1846),
+    ],
+}
+STEM_SPECS = {k: v + _META for k, v in _STEM_MODELS.items()}
 
 
 def sha256_file(path):
