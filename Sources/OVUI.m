@@ -440,33 +440,44 @@ NSScrollView *OVScrollPage(NSStackView *content) {
 @interface OVSliderRow ()
 @property NSSlider *slider;
 @property NSView *valuePill;
-@property NSTextField *value, *titleLabel, *hintLabel;
+@property NSTextField *valueLabel, *titleLabel, *hintLabel;
 @property NSString *key, *format;
 @property BOOL integer;
+@property double ownValue;
 @property NSArray<NSLayoutConstraint *> *fillConstraints;
 @end
 
 @implementation OVSliderRow
 + (instancetype)rowWithTitle:(NSString *)title hint:(NSString *)hint key:(NSString *)key
                          min:(double)min max:(double)max format:(NSString *)format integer:(BOOL)integer {
+    return [self buildWithTitle:title hint:hint key:key value:0 min:min max:max format:format integer:integer];
+}
++ (instancetype)rowWithTitle:(NSString *)title hint:(NSString *)hint value:(double)value
+                         min:(double)min max:(double)max format:(NSString *)format integer:(BOOL)integer {
+    return [self buildWithTitle:title hint:hint key:nil value:value min:min max:max format:format integer:integer];
+}
++ (instancetype)buildWithTitle:(NSString *)title hint:(NSString *)hint key:(NSString *)key value:(double)value
+                           min:(double)min max:(double)max format:(NSString *)format integer:(BOOL)integer {
     OVSliderRow *r = [OVSliderRow new];
     r.key = key;
+    r.ownValue = value;
+    r->_titleWidth = 82;
     r.format = format;
     r.integer = integer;
 
     r.titleLabel = OVLabel(title, 14, NSFontWeightSemibold, nil);
     r.hintLabel = hint.length ? OVWrapLabel(hint, 13, nil) : nil;
-    r.slider = [OVSlider sliderWithValue:[NSUserDefaults.standardUserDefaults doubleForKey:key]
+    r.slider = [OVSlider sliderWithValue:key ? [NSUserDefaults.standardUserDefaults doubleForKey:key] : value
                                 minValue:min maxValue:max target:r action:@selector(moved:)];
     r.slider.continuous = YES;
     r.slider.accessibilityLabel = title;
-    r.value = OVLabel(@"", 13, NSFontWeightMedium, nil);
-    r.value.font = [NSFont monospacedDigitSystemFontOfSize:13 weight:NSFontWeightMedium];
-    r.value.alignment = NSTextAlignmentCenter;
-    r.value.accessibilityElement = NO;
+    r.valueLabel = OVLabel(@"", 13, NSFontWeightMedium, nil);
+    r.valueLabel.font = [NSFont monospacedDigitSystemFontOfSize:13 weight:NSFontWeightMedium];
+    r.valueLabel.alignment = NSTextAlignmentCenter;
+    r.valueLabel.accessibilityElement = NO;
     OVBoxView *pill = [OVBoxView boxWithFill:OVColor(OVRoleField) border:OVColor(OVRoleBorder) radius:8];
-    [pill addSubview:r.value];
-    OVPin(r.value, pill, NSEdgeInsetsMake(4, 8, 4, 8));
+    [pill addSubview:r.valueLabel];
+    OVPin(r.valueLabel, pill, NSEdgeInsetsMake(4, 8, 4, 8));
     [pill.widthAnchor constraintGreaterThanOrEqualToConstant:56].active = YES;
     [pill setContentHuggingPriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
     r.valuePill = pill;
@@ -485,7 +496,11 @@ NSScrollView *OVScrollPage(NSStackView *content) {
         self.alignment = NSLayoutAttributeCenterY;
         self.spacing = 12;
         self.titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
-        [fills addObject:[self.titleLabel.widthAnchor constraintEqualToConstant:82]];
+        self.titleLabel.toolTip = self.titleLabel.stringValue;   // the full title when the column is too narrow
+        self.titleLabel.lineBreakMode = NSLineBreakByWordWrapping;
+        self.titleLabel.maximumNumberOfLines = 2;
+        self.titleLabel.preferredMaxLayoutWidth = self.titleWidth;
+        [fills addObject:[self.titleLabel.widthAnchor constraintEqualToConstant:self.titleWidth]];
         for (NSView *v in @[self.titleLabel, self.slider, self.valuePill]) [self addArrangedSubview:v];
         [self.slider setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
         [fills addObject:[self.slider.widthAnchor constraintGreaterThanOrEqualToConstant:110]];
@@ -516,26 +531,39 @@ NSScrollView *OVScrollPage(NSStackView *content) {
     else v = self.integer ? round(v) : round(v * 100) / 100;
     v = MIN(s.maxValue, MAX(s.minValue, v));
     s.doubleValue = v;
-    [NSUserDefaults.standardUserDefaults setDouble:v forKey:self.key];
+    if (self.key) [NSUserDefaults.standardUserDefaults setDouble:v forKey:self.key]; else self.ownValue = v;
     [self showValue:v];
     if (self.onChange) self.onChange();
 }
 - (void)showValue:(double)v {
     NSString *t = self.valueFormatter ? self.valueFormatter(v) : [NSString stringWithFormat:self.format, v];
-    self.value.stringValue = t;
+    self.valueLabel.stringValue = t;
     self.slider.accessibilityValueDescription = t;
 }
 - (BOOL)enabled { return self.slider.enabled; }
 - (void)setEnabled:(BOOL)e {
     self.slider.enabled = e;
-    self.value.alphaValue = e ? 1 : 0.5;
+    self.valueLabel.alphaValue = e ? 1 : 0.5;
     self.titleLabel.alphaValue = e ? 1 : 0.6;
 }
 - (void)refresh {
-    double v = [NSUserDefaults.standardUserDefaults doubleForKey:self.key];
+    double v = self.key ? [NSUserDefaults.standardUserDefaults doubleForKey:self.key] : self.ownValue;
     self.slider.doubleValue = v;
     [self showValue:v];
 }
+- (double)value { return self.key ? [NSUserDefaults.standardUserDefaults doubleForKey:self.key] : self.ownValue; }
+- (void)setValue:(double)v {
+    v = MIN(self.slider.maxValue, MAX(self.slider.minValue, v));
+    if (self.key) [NSUserDefaults.standardUserDefaults setDouble:v forKey:self.key]; else self.ownValue = v;
+    [self refresh];
+}
+- (void)setTitleWidth:(CGFloat)w {
+    if (w == _titleWidth) return;
+    _titleWidth = w;
+    if (self.compact) [self rebuild];
+}
+- (NSString *)accessibilityName { return self.slider.accessibilityLabel; }
+- (void)setAccessibilityName:(NSString *)n { self.slider.accessibilityLabel = n.length ? n : self.titleLabel.stringValue; }
 @end
 
 #pragma mark - Popup

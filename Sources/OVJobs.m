@@ -36,7 +36,7 @@ static const NSTimeInterval kNotifyInterval = 0.25;
 - (void)contextProgress:(OVJobContext *)c value:(double)p;
 - (void)contextPartial:(OVJobContext *)c path:(NSString *)path;
 - (void)contextSucceed:(OVJobContext *)c result:(NSDictionary *)r outputs:(NSArray *)outs;
-- (void)contextFail:(OVJobContext *)c message:(NSString *)m;
+- (void)contextFail:(OVJobContext *)c message:(NSString *)m code:(nullable NSString *)code;
 @end
 
 @interface OVJobContext ()
@@ -76,9 +76,10 @@ static const NSTimeInterval kNotifyInterval = 0.25;
     OVJobs *m = self.manager;
     dispatch_async(dispatch_get_main_queue(), ^{ [m contextSucceed:self result:result outputs:finalPaths ?: @[]]; });
 }
-- (void)failWithError:(NSString *)message {
+- (void)failWithError:(NSString *)message { [self failWithError:message code:nil]; }
+- (void)failWithError:(NSString *)message code:(NSString *)code {
     OVJobs *m = self.manager;
-    dispatch_async(dispatch_get_main_queue(), ^{ [m contextFail:self message:message ?: @""]; });
+    dispatch_async(dispatch_get_main_queue(), ^{ [m contextFail:self message:message ?: @"" code:code]; });
 }
 @end
 
@@ -307,8 +308,9 @@ static const NSTimeInterval kNotifyInterval = 0.25;
     [self finish:c.job state:OVJobSucceeded error:nil result:r outputs:paths];
 }
 
-- (void)contextFail:(OVJobContext *)c message:(NSString *)m {
+- (void)contextFail:(OVJobContext *)c message:(NSString *)m code:(NSString *)code {
     if (![self isCurrent:c]) return;
+    c.job.errorCode = code.length && !c.stopRequested ? code : nil;   // the result of a failed job stays nil
     [self finish:c.job state:c.stopRequested ? OVJobStopped : OVJobFailed error:c.stopRequested ? nil : m result:nil outputs:@[]];
 }
 
@@ -341,6 +343,7 @@ static const NSTimeInterval kNotifyInterval = 0.25;
     job.state = state;
     job.finished = NSDate.date;
     job.error = error.length ? error : nil;
+    if (state != OVJobFailed) job.errorCode = nil;
     job.result = result ? [OVJobStore redact:result] : nil;
     job.outputs = outputs ?: @[];
     if (state == OVJobSucceeded) job.progress = 1;

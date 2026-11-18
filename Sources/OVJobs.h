@@ -34,6 +34,8 @@ extern NSString *const OVJobKindSynth, *const OVJobKindBatch, *const OVJobKindCo
 @property (readonly) double progress;                 // 0…1, <0 = indeterminate
 @property (readonly, copy) NSString *status;          // the last status line
 @property (readonly, nullable, copy) NSString *error; // says what to do about it
+/// Machine-readable code of a Failed job ("engine_missing", …), persisted in job.json; nil in other states and for failures without one.
+@property (readonly, nullable, copy) NSString *errorCode;
 @property (readonly, copy) NSDictionary *request;     // JSON-safe, secrets replaced by ***; this is what is persisted and shown
 /// What a runner must use: the original request, kept in memory only for this session (secrets intact). After a
 /// relaunch it is the redacted request, so a runner never gets "***" unless the job was loaded from disk.
@@ -67,6 +69,9 @@ extern NSString *const OVJobKindSynth, *const OVJobKindBatch, *const OVJobKindCo
 /// Fail with stopRequested set ends as Stopped; succeed always ends as Succeeded.
 - (void)succeedWithResult:(nullable NSDictionary *)result outputs:(NSArray<NSString *> *)finalPaths;
 - (void)failWithError:(NSString *)message;
+/// Same, with the machine-readable error code of the worker (for instance "engine_missing"). A Failed job then has
+/// errorCode == code; result stays nil (a result belongs to successful jobs only). Stopped jobs get no code.
+- (void)failWithError:(NSString *)message code:(nullable NSString *)code;
 @end
 
 typedef id<OVJobRunner> _Nonnull (^OVJobRunnerFactory)(OVJob *job);

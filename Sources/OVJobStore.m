@@ -66,6 +66,7 @@ static BOOL OVJobStateFromName(NSString *n, OVJobState *out) {
     d[@"progress"] = @(self.progress);
     d[@"status"] = self.status ?: @"";
     if (self.error) d[@"error"] = self.error;
+    if (self.errorCode) d[@"errorCode"] = self.errorCode;
     d[@"request"] = [OVJobStore jsonSafe:[OVJobStore redact:self.request ?: @{}]];
     if (self.result) d[@"result"] = [OVJobStore jsonSafe:[OVJobStore redact:self.result]];
     d[@"outputs"] = self.outputs ?: @[];
@@ -94,6 +95,7 @@ static BOOL OVJobStateFromName(NSString *n, OVJobState *out) {
     j.progress = [d[@"progress"] isKindOfClass:NSNumber.class] ? [d[@"progress"] doubleValue] : -1;
     j.status = [d[@"status"] isKindOfClass:NSString.class] ? d[@"status"] : @"";
     j.error = [d[@"error"] isKindOfClass:NSString.class] ? d[@"error"] : nil;
+    j.errorCode = [d[@"errorCode"] isKindOfClass:NSString.class] ? d[@"errorCode"] : nil;
     j.request = [d[@"request"] isKindOfClass:NSDictionary.class] ? d[@"request"] : @{};
     j.result = [d[@"result"] isKindOfClass:NSDictionary.class] ? d[@"result"] : nil;
     NSMutableArray *outs = [NSMutableArray array];
