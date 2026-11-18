@@ -937,7 +937,7 @@ def install(root, components_, uv, env, emit_fn, opener=None, python=PYTHON_VERS
 
 def update_ytdlp(root, uv, env, emit_fn):
     """Updates yt-dlp. ready.json is cleared while pip runs; when the update fails the previous marker is put back
-    (the installed yt-dlp still works, so the YouTube import must stay available) and the error is raised."""
+    (the installed copy still works, so the YouTube import must stay available) and the error is raised."""
     cns_net.require_online("youtube")
     if not is_ready(root, "pro-env"):
         raise EngineError("Install the pro engines first.")

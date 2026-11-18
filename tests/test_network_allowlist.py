@@ -31,6 +31,10 @@ EXPECTED = {
     "cns_dfn.py": (4, "DeepFilterNet binary download, started by the user (pinned URL + sha256)"),
     "cns_engines.py": (22, "pro-engine installs, started by the user: pinned HTTPS URLs (GitHub, Hugging Face) + sha256, "
                            "https-only redirects, uv/PyPI through the installer; also names edge-tts and yt-dlp as packages"),
+    "cns_ytdl.py": (7, "YouTube audio import, started by the user: one https youtube.com / youtu.be video through yt-dlp, "
+                       "after cns_net.require_online(\"youtube\") and the rights confirmation; no cookies, no plugins"),
+    "cns_edge.py": (12, "Edge TTS: sends the typed text to Microsoft's online voices (edge-tts, own process), "
+                        "after cns_net.require_online(\"edge_tts\")"),
     "cns_pins.py": (7, "generated pins: the requirement lines that name requests / edge-tts packages (no network code)"),
     "cns_api.py": (4, "local API / Bridge listeners on 127.0.0.1, server side only (no outgoing calls)"),
 }
