@@ -153,6 +153,11 @@ class ProgressMap:
             acc += w
         self._last = 0.0
 
+    @property
+    def value(self):
+        """The last value returned by at() (0 before the first call)."""
+        return self._last
+
     def at(self, stage, frac):
         if stage not in self._start:
             raise ProtoError("Unknown stage: %s" % stage)

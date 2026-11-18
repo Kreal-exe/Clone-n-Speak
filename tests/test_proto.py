@@ -12,6 +12,12 @@ import cns_proto  # noqa: E402
 
 
 class Proto(unittest.TestCase):
+    def setUp(self):
+        # another test module may have run a main() that installed the stdout guard in this process
+        patcher = mock.patch.object(cns_proto, "_out", None)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_emit_is_one_json_line(self):
         buf = io.StringIO()
         with mock.patch.object(sys, "stdout", buf):
