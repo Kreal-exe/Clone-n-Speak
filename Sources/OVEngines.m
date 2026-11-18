@@ -17,7 +17,7 @@ NSString *const OVEngineEdge = @"edge";
 NSString *const OVProKindConvert = @"pro_convert", *const OVProKindRvcImport = @"rvc_import", *const OVProKindRvcInfo = @"rvc_info",
           *const OVProKindRvcFetch = @"rvc_fetch", *const OVProKindRvcBlend = @"rvc_blend", *const OVProKindRvcTrain = @"rvc_train",
           *const OVProKindRvcReview = @"rvc_review", *const OVProKindRealtime = @"rvc_realtime", *const OVProKindStems = @"stems",
-          *const OVProKindYouTube = @"yt_import", *const OVProKindEdge = @"edge_tts", *const OVProKindEngineInstall = @"engine_install",
+          *const OVProKindYouTube = @"yt_import", *const OVProKindEdge = @"edge_tts", *const OVProKindEdgeVoices = @"edge_voices", *const OVProKindEngineInstall = @"engine_install",
           *const OVProKindEngineWeights = @"engine_weights", *const OVProKindEngineUpdate = @"engine_update";
 
 @interface OVEngineComponent ()
@@ -58,8 +58,6 @@ static NSArray<NSDictionary *> *KindTable(void) {
             if ([r[@"mode"] isEqual:@"batch"] || [r[@"inputs"] isKindOfClass:NSArray.class]) return @[@"cns_rvc.py", @"batch"];
             return @[@"cns_rvc.py", @"infer"];
         };
-        // The Edge kind also lists the voices (list_voices in the request): one script, two commands.
-        OVProCommandBlock edge = ^NSArray *(NSDictionary *r) { return @[@"cns_edge.py", [r[@"list_voices"] boolValue] ? @"voices" : @"synth"]; };
         // net: an OVNetFeature the run needs, or -1. cwd: "applio" = the Applio folder. roots: where the sandbox lets it
         // write (the job's work folder is always one).
         t = @[
@@ -73,7 +71,8 @@ static NSArray<NSDictionary *> *KindTable(void) {
             With(Row(OVProKindRealtime, OVJobLaneCompute, NO, YES, -1, YES, NO, @"applio", @[], FixedCmd(@"cns_realtime.py", @"run")), @{@"keepStdin": @YES}),
             Row(OVProKindStems,         OVJobLaneCompute, YES, YES, -1, YES, NO, @"",       @[@"outputs"], FixedCmd(@"cns_stems.py", @"separate")),
             Row(OVProKindYouTube,       OVJobLaneNetwork, YES, NO,  OVNetYouTube, NO, NO, @"", @[@"outputs"], FixedCmd(@"cns_ytdl.py", @"fetch")),
-            Row(OVProKindEdge,          OVJobLaneNetwork, YES, NO,  OVNetEdgeTTS, NO, NO, @"", @[@"outputs"], edge),
+            Row(OVProKindEdge,          OVJobLaneNetwork, YES, NO,  OVNetEdgeTTS, NO, NO, @"", @[@"outputs"], FixedCmd(@"cns_edge.py", @"synth")),
+            Row(OVProKindEdgeVoices,    OVJobLaneNetwork, YES, NO,  OVNetEdgeTTS, NO, NO, @"", @[@"edgecache"], FixedCmd(@"cns_edge.py", @"voices")),
             Row(OVProKindEngineInstall, OVJobLaneNetwork, YES, NO,  -1, NO, YES, @"", @[@"engines", @"uvcache", @"pythons"], FixedCmd(@"cns_engines.py", @"install")),
             Row(OVProKindEngineWeights, OVJobLaneNetwork, YES, NO,  -1, NO, YES, @"", @[@"engines", @"uvcache", @"pythons"], FixedCmd(@"cns_engines.py", @"weights")),
             Row(OVProKindEngineUpdate,  OVJobLaneNetwork, YES, NO,  OVNetYouTube, NO, YES, @"", @[@"engines", @"uvcache", @"pythons"], FixedCmd(@"cns_engines.py", @"update-ytdlp")),
@@ -409,7 +408,7 @@ static BOOL IsWeightId(NSString *i) { return [i hasPrefix:@"rvc-core"] || [i has
             : [o containsString:@"dereverb"] ? @"dereverb" : @"mdx";
     }
     else if ([kind isEqualToString:OVProKindYouTube]) key = @"ytdlp";
-    else if ([kind isEqualToString:OVProKindEdge]) key = @"edge";
+    else if ([kind isEqualToString:OVProKindEdge] || [kind isEqualToString:OVProKindEdgeVoices]) key = @"edge";
     else if ([kind isEqualToString:OVProKindRvcImport] || [kind isEqualToString:OVProKindRvcInfo] || [kind isEqualToString:OVProKindRvcReview]) key = @"blend";
     if (!key) return 0;
     double gb = [_peaks[key] doubleValue];
@@ -448,7 +447,7 @@ static BOOL IsWeightId(NSString *i) { return [i hasPrefix:@"rvc-core"] || [i has
     if ([kind isEqualToString:OVProKindRealtime]) return @"realtime";
     if ([kind isEqualToString:OVProKindStems]) return @"stems";
     if ([kind isEqualToString:OVProKindYouTube]) return @"ytdlp";
-    if ([kind isEqualToString:OVProKindEdge]) return OVEngineEdge;
+    if ([kind isEqualToString:OVProKindEdge] || [kind isEqualToString:OVProKindEdgeVoices]) return OVEngineEdge;
     return @"rvc";
 }
 
@@ -579,7 +578,7 @@ static OVProcessSpec *Refused(NSString *why) {
     if (!file) return Refused(L(@"Can’t start this safely: the sandbox profile is missing."));
     NSString *uvCache = NSProcessInfo.processInfo.environment[@"UV_CACHE_DIR"] ?: J(NSHomeDirectory(), @"Library/Caches/uv");
     NSDictionary *tokens = @{@"models": [OVPaths rvcModels], @"training": [OVPaths rvcTraining], @"datasets": [OVPaths rvcDatasets],
-                             @"engines": _root, @"uvcache": uvCache, @"pythons": J([OVPaths runtime], @"python")};
+                             @"engines": _root, @"edgecache": J(_root, @"edge"), @"uvcache": uvCache, @"pythons": J([OVPaths runtime], @"python")};
     NSMutableArray *roots = [NSMutableArray array];
     BOOL toOutputs = NO;
     for (NSString *t in info[@"roots"]) {

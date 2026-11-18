@@ -94,15 +94,21 @@ static void RecordTake(NSString *path, NSString *text, NSString *label, NSString
 }
 
 - (void)loadVoicesWindow:(NSWindow *)w completion:(void (^)(NSString *))done {
-    [OVProRun submitKind:OVProKindEdge request:@{@"list_voices": @YES} feature:L(@"Edge TTS") window:w network:(OVNetFeature)-1
+    [OVProRun submitKind:OVProKindEdgeVoices request:@{} feature:L(@"Edge TTS") window:w network:(OVNetFeature)-1
               completion:^(OVJob *job, NSString *error) {
         if (!job) { done(error); return; }
-        __block id obs = [NSNotificationCenter.defaultCenter addObserverForName:OVJobsDidChangeNotification object:nil queue:NSOperationQueue.mainQueue
-                                                                     usingBlock:^(NSNotification *n) {
-            if (job.active) return;
-            [NSNotificationCenter.defaultCenter removeObserver:obs];
-            done(job.state == OVJobSucceeded ? nil : (job.error ?: L(@"Could not load the Edge voice list. Check the network and try again.")));
-        }];
+        __block id obs = nil;
+        __block BOOL finished = NO;
+        void (^check)(void) = ^{
+            if (finished || job.active) return;
+            finished = YES;
+            if (obs) [NSNotificationCenter.defaultCenter removeObserver:obs];
+            obs = nil;
+            done(job.state == OVJobSucceeded ? nil : (job.state == OVJobStopped ? L(@"Stopped") : (job.error ?: L(@"Could not load the Edge voice list. Check the network and try again."))));
+        };
+        obs = [NSNotificationCenter.defaultCenter addObserverForName:OVJobsDidChangeNotification object:nil queue:NSOperationQueue.mainQueue
+                                                          usingBlock:^(NSNotification *n) { check(); }];
+        check();   // the job may already be over
     }];
 }
 
@@ -141,7 +147,15 @@ static void RecordTake(NSString *path, NSString *text, NSString *label, NSString
     NSMutableDictionary *req = [@{@"engine": seed ? @"seedvc" : @"rvc", @"input": wav, @"_name": then[@"name"] ?: @"",
                                   @"_edgeText": text ?: @"", @"_edgeDry": wav} mutableCopy];
     if (seed) req[@"target"] = then[@"target"] ?: @"";
-    else { req[@"model"] = then[@"model"] ?: @""; req[@"mode"] = @"single"; req[@"pitch"] = @0; req[@"f0_method"] = @"rmvpe"; }
+    else {
+        // the user's saved Convert settings, when there are any
+        NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
+        id pitch = [d objectForKey:@"convert.pitch"], f0 = [d objectForKey:@"convert.f0Method"], idx = [d objectForKey:@"convert.indexRate"];
+        req[@"model"] = then[@"model"] ?: @""; req[@"mode"] = @"single";
+        req[@"pitch"] = [pitch isKindOfClass:NSNumber.class] ? pitch : @0;
+        req[@"f0_method"] = [f0 isKindOfClass:NSString.class] ? f0 : @"rmvpe";
+        if ([idx isKindOfClass:NSNumber.class]) req[@"index_rate"] = idx;
+    }
     req[@"_edgeLabel"] = [NSString stringWithFormat:seed ? L(@"Edge → Seed-VC · %@") : L(@"Edge → RVC · %@"), then[@"name"] ?: @""];
     _starting = YES;
     _statusLine = L(@"Changing the voice…");
