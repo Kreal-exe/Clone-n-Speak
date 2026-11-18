@@ -627,10 +627,23 @@ class Fetch(Tmp):
         self.assertEqual(rvc.normalize_model_url(" https://huggingface.co/a/b/resolve/main/m.zip?download=true#frag "),
                          "https://huggingface.co/a/b/resolve/main/m.zip?download=true")
 
-    def test_offline_mode_does_not_block_a_user_started_model_download(self):
+    def test_offline_mode_blocks_every_download_unless_explicit(self):
+        calls = []
+
+        def opener(req):
+            calls.append(req.full_url)
+            return self.Resp(b"PK")
+
         with mock.patch.dict(os.environ, {"OV_OFFLINE": "1"}):
-            path, kind = rvc.fetch_model("https://example.com/m.zip", str(self.tmp), opener=lambda r: self.Resp(b"PK"))
-        self.assertEqual(kind, "zip")
+            with self.assertRaises(rvc.cns_net.OfflineError) as cm:
+                rvc.fetch_model("https://example.com/m.zip", str(self.tmp), opener=opener)
+            self.assertIn("Offline mode is on", str(cm.exception))
+            self.assertIn("Settings", str(cm.exception))
+            self.assertEqual(calls, [])
+            path, kind = rvc.fetch_model("https://example.com/m.zip", str(self.tmp), opener=opener, explicit_download=True)
+        self.assertEqual((kind, len(calls)), ("zip", 1))
+        with mock.patch.dict(os.environ, {"OV_OFFLINE": "0"}):
+            self.assertEqual(rvc.fetch_model("https://example.com/m2.zip", str(self.tmp), opener=opener)[1], "zip")
 
 
 class FetchCommand(Tmp):
@@ -759,8 +772,9 @@ class SeedVC(Tmp):
 
     def test_seedvc_runs_sandboxed_without_network(self):
         cmd = seedvc.sandboxed_command(str(self.tmp), ["/py/python", "inference.py"], str(self.tmp))
-        self.assertEqual(cmd[0], "/usr/bin/sandbox-exec")
-        self.assertIn("(deny network*)", cmd[2])
+        self.assertEqual(cmd[:2], ["/usr/bin/sandbox-exec", "-f"])
+        self.assertTrue(cmd[2].endswith("engine.sb"))   # the shared profile, not an own one
+        self.assertIn("NET=deny-ip", cmd)
         self.assertEqual(cmd[-2:], ["/py/python", "inference.py"])
         env = seedvc.child_env(str(self.tmp), str(self.tmp))
         self.assertEqual(env["HF_HUB_OFFLINE"], "1")
@@ -770,13 +784,15 @@ class SeedVC(Tmp):
         base = ["/py/python", "inference.py"]
         wrapped = seedvc.wrap_command(str(self.tmp), base, str(self.tmp), env={})
         self.assertEqual(wrapped[0], "/usr/bin/sandbox-exec")
-        # both markers of the app's own sandbox are needed to skip ours
-        for env in ({"CNS_SANDBOXED": "1"}, {"CNS_SANDBOX_FILE": "/x/p.sb"}, {"CNS_SANDBOXED": "0", "CNS_SANDBOX_FILE": "/x/p.sb"}):
+        # strays are not trusted: the real marker file is needed (cns_engines.already_sandboxed)
+        for env in ({"CNS_SANDBOXED": "1"}, {"CNS_SANDBOX_FILE": "/x/p.sb"}, {"CNS_SANDBOXED": "1", "CNS_SANDBOX_FILE": "/x/p.sb"}):
             self.assertEqual(seedvc.wrap_command(str(self.tmp), base, str(self.tmp), env=env)[0], "/usr/bin/sandbox-exec")
+        sb = cns_engines.sandbox_file()
         self.assertEqual(seedvc.wrap_command(str(self.tmp), base, str(self.tmp),
-                                             env={"CNS_SANDBOXED": "1", "CNS_SANDBOX_FILE": "/x/p.sb"}), base)
-        with self.assertRaises(rvc.RvcError) as cm:   # no sandbox-exec: never run unsandboxed
-            seedvc.wrap_command(str(self.tmp), base, str(self.tmp), env={}, exists=lambda p: False)
+                                             env={"CNS_SANDBOXED": "1", "CNS_SANDBOX_FILE": sb}), base)
+        with mock.patch.object(cns_engines, "SANDBOX_EXEC", "/nonexistent/sandbox-exec"):   # never run unsandboxed
+            with self.assertRaises(rvc.RvcError) as cm:
+                seedvc.wrap_command(str(self.tmp), base, str(self.tmp), env={})
         self.assertIn("sandbox", str(cm.exception))
 
     def test_trim_wav_keeps_at_most_25_seconds(self):

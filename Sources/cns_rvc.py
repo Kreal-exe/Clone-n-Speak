@@ -729,22 +729,27 @@ def normalize_model_url(url):
     return urllib.parse.urlunsplit(("https", parts.netloc, path, parts.query, ""))
 
 
-def fetch_model(url, work_dir, emit_fn=None, opener=None, max_bytes=MAX_MODEL_BYTES, download=None):
+def fetch_model(url, work_dir, emit_fn=None, opener=None, max_bytes=MAX_MODEL_BYTES, download=None,
+                explicit_download=False):
     """Downloads a model (.pth or .zip) to work_dir/fetch through cns_engines.download (https only, Range resume into a
     .part, size limit, https-only redirects). Returns (path, kind) where kind is 'pth' or 'zip'."""
     url = normalize_model_url(url)
     ext = os.path.splitext(urllib.parse.urlsplit(url).path)[1].lower()
     if ext not in (".pth", ".zip"):
         raise RvcError("The link must point to a .pth or .zip file.")
-    cns_net.require_online("model_download")
+    # Offline mode blocks every download, the one the user started included, unless the app says a button started it
+    cns_engines._require_download_allowed(explicit_download)
     folder = os.path.join(work_dir, "fetch")
     os.makedirs(folder, exist_ok=True)
     dest = os.path.join(folder, hashlib.sha256(url.encode()).hexdigest()[:16] + ext)
     download = download or cns_engines.download
+    was, cns_engines._EXPLICIT = cns_engines._EXPLICIT, bool(explicit_download)   # download() applies the same gate itself
     try:
         download(url, dest, None, None, emit_fn, opener, max_bytes=max_bytes)
     except cns_engines.EngineError as e:
         raise RvcError(str(e))
+    finally:
+        cns_engines._EXPLICIT = was
     return dest, ext[1:]
 
 
@@ -955,7 +960,8 @@ def cmd_fetch(req):
     work = req.get("work_dir") or tempfile.mkdtemp(prefix="cns-rvc-")
     cns_proto.status("Downloading the voice model…")
     with heartbeat("Downloading", 10.0):   # the size is unknown up front, so there is no percentage to report
-        path, kind = fetch_model(req.get("url"), work, lambda ev, **kw: cns_proto.emit(ev, **kw))
+        path, kind = fetch_model(req.get("url"), work, lambda ev, **kw: cns_proto.emit(ev, **kw),
+                                 explicit_download=req.get("explicit_download") is True)
     name = req.get("name") or os.path.splitext(os.path.basename(urllib.parse.urlsplit(req["url"]).path))[0]
     cns_proto.result(path=path, kind=kind, name=name, source_url=normalize_model_url(req["url"]),
                      size_bytes=os.path.getsize(path))
