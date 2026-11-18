@@ -668,6 +668,28 @@ Pages purgeable:                           3000.
         self.assertEqual(r.stdout.split(), ["bind-ok", "ip-blocked", "write-blocked"], r.stdout + r.stderr)
         self.assertFalse(os.path.exists(outside))
 
+    @unittest.skipUnless(sys.platform == "darwin" and os.path.exists("/usr/bin/sandbox-exec"), "needs macOS sandbox-exec")
+    def test_engine_sb_lets_the_edge_voices_cache_be_written(self):
+        """The voices command writes <root>/edge/voices.json: under engine.sb with the edge folder as a root it works,
+        and a sibling folder of the engines root stays closed."""
+        import subprocess
+        outside = "/tmp/cns-edge-sb-%d" % os.getpid()   # not under the Darwin temp folder, which the profile opens
+        with tempfile.TemporaryDirectory() as d:
+            root = os.path.realpath(d)
+            work = os.path.join(root, "work")
+            edge = os.path.join(root, "engines", "edge")
+            for p in (work, edge, os.path.join(root, "engines", "pro")):
+                os.makedirs(p)
+            code = ("import os\n"
+                    "open(os.path.join(%r,'voices.json'),'w').write('{}'); print('cache-ok')\n"
+                    "try:\n open(%r,'w').write('x'); print('wrote')\n"
+                    "except OSError: print('other-blocked')\n" % (edge, outside))
+            cmd = eng.sandbox_command("allow", work, None, [edge]) + [sys.executable, "-c", code]
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            self.assertEqual(r.stdout.split(), ["cache-ok", "other-blocked"], r.stdout + r.stderr)
+            self.assertTrue(os.path.isfile(os.path.join(edge, "voices.json")))
+            self.assertFalse(os.path.exists(outside))
+
     def test_sandbox_command_fails_closed(self):
         old = eng.SANDBOX_EXEC
         eng.SANDBOX_EXEC = "/nonexistent/sandbox-exec"

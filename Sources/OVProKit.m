@@ -34,6 +34,7 @@ static NSString *OVProTitle(NSString *kind, NSDictionary *r) {
     if ([kind isEqualToString:OVProKindStems]) return has ? [NSString stringWithFormat:L(@"Separate: %@"), n] : L(@"Separate stems");
     if ([kind isEqualToString:OVProKindYouTube]) return has ? [NSString stringWithFormat:L(@"YouTube: %@"), n] : L(@"YouTube import");
     if ([kind isEqualToString:OVProKindEdge]) return L(@"Edge speech");
+    if ([kind isEqualToString:OVProKindEdgeVoices]) return L(@"Edge voices");
     if ([kind isEqualToString:OVProKindEngineWeights]) return L(@"Downloading models");
     if ([kind isEqualToString:OVProKindEngineUpdate]) return L(@"Updating yt-dlp");
     return L(@"Installing components");
