@@ -13,5 +13,9 @@ What the sandbox allows (each run is a new process under `sandbox-exec`):
   wrote itself, and cannot reach LaunchServices or Apple Events.
 - The timeout (`timeout_s`, at most 3600) is enforced by the app; Stop and the timeout kill the whole process tree.
 
+It cannot signal other processes (only itself and its own children).
+
 Known limit: a child that double-forks, calls `setsid` and is re-parented to launchd within half a second (between two
-samples of the process tree) can outlive Stop. It still runs inside the sandbox above.
+samples of the process tree) can outlive Stop. The app also looks for such orphans by a per-run token in their
+environment, but `ps` cannot show the environment of every binary (not that of the app's own Python build) and a
+plugin can scrub it, so this is best effort. Such a process still runs inside the sandbox above.

@@ -5,6 +5,7 @@ It runs in its own process (cns_plugin_host.py) under sandbox-exec, with an allo
 Nothing heavy is imported here: the worker loads this module at start-up.
 """
 import hashlib
+import uuid
 import json
 import os
 import pwd
@@ -14,6 +15,7 @@ import tempfile
 
 ID_RE = r"^[a-z0-9][a-z0-9_-]{1,39}$"
 ACTION_RE = r"^[a-z0-9][a-z0-9_-]{0,39}$"
+TOKEN_VAR = "CNS_PLUGIN_TOKEN"
 MAX_BYTES = 50 * 1024 * 1024
 MAX_FILES = 2000
 MAX_STR = 200
@@ -285,15 +287,18 @@ def install(src_folder, plugins_dir):
     return pid
 
 
-def build_env(parent, work_dir, data_dir):
+def build_env(parent, work_dir, data_dir, token=None):
     """The whole environment of a plugin process: an allowlist, never a copy of the user's environment."""
     lang = str((parent or {}).get("LANG") or "")
     if not re.match(r"^[A-Za-z0-9_.@-]{1,40}$", lang):
         lang = "en_US.UTF-8"
     off = str((parent or {}).get("OV_OFFLINE") or "")
-    return {"PATH": "/usr/bin:/bin", "HOME": data_dir, "TMPDIR": work_dir, "LANG": lang,
-            "PYTHONNOUSERSITE": "1", "PYTHONDONTWRITEBYTECODE": "1",
-            "OV_OFFLINE": "1" if off.lower() in ("1", "true", "yes") else "0"}
+    env = {"PATH": "/usr/bin:/bin", "HOME": data_dir, "TMPDIR": work_dir, "LANG": lang,
+           "PYTHONNOUSERSITE": "1", "PYTHONDONTWRITEBYTECODE": "1",
+           "OV_OFFLINE": "1" if off.lower() in ("1", "true", "yes") else "0"}
+    if token:   # per-run marker: the relay finds orphans that detached from the process tree by it
+        env[TOKEN_VAR] = token
+    return env
 
 
 def _q(path):
@@ -339,12 +344,19 @@ def python_read_files(python):
     return [os.path.abspath(python)] + symlinks_on(python)
 
 
+def host_read_files(host):
+    """The only files of the app's runtime folder the plugin host needs (it must not read the rest of it)."""
+    d = os.path.dirname(os.path.abspath(host))
+    # the folder itself is listed by the import system (names only); the other files in it stay unreadable
+    return [d, os.path.abspath(host)] + [os.path.join(d, n) for n in ("cns_proto.py", "cns_plugins.py")]
+
+
 def sandbox_profile(work_dir, data_dir, allow_network, plugin_dir=None, read_roots=(), read_files=()):
     """sandbox-exec profile for a plugin process. Last matching rule wins.
     - network: closed unless allowed;
     - writes: only work_dir and data_dir (+ /dev/null);
     - reads: everything outside the user's home and /Volumes (system libraries, Python), but inside them only
-      work_dir, data_dir, plugin_dir, read_roots (Python and the host scripts) and the exact files in read_files
+      work_dir, data_dir, plugin_dir, read_roots (Python) and read_files (host scripts, input files) and the exact files in read_files
       (the job's input files);
     - exec: nothing from DENY_EXEC and nothing written into the plugin's own folders; Mach services of LaunchServices
       and Apple Events are closed, so `open`-style escapes fail.
@@ -373,6 +385,10 @@ def sandbox_profile(work_dir, data_dir, allow_network, plugin_dir=None, read_roo
     lines.append("(deny process-exec (subpath %s) (subpath %s))" % (_q(work_dir), _q(data_dir)))
     lines.append("(deny mach-lookup %s)" % " ".join("(global-name \"%s\")" % m for m in DENY_MACH))
     lines.append("(deny appleevent-send)")
+    lines.append("(deny signal)")                           # cannot kill the relay, the app or anything else ...
+    lines.append("(allow signal (target self) (target children))")   # ... only itself and its own children
+    lines.append("(deny process-info* (target others))")
+    lines.append("(deny mach-priv-task-port)")
     return "\n".join(lines) + "\n"
 
 
@@ -422,13 +438,14 @@ def launch(python, host, plugin_dir, action, work_dir, data_dir, allow_network, 
     timeout = load_manifest(plugin_dir)["timeout_s"]
     host_dir = os.path.dirname(os.path.abspath(host))
     files = [f for f in read_files if isinstance(f, str) and os.path.isabs(f)]
+    files += host_read_files(host)
     with open(profile_path, "w") as f:
         f.write(sandbox_profile(work_dir, data_dir, allow_network, plugin_dir,
-                                python_read_roots(python) + [host_dir], files + python_read_files(python)))
+                                python_read_roots(python), files + python_read_files(python)))
     relay = os.path.join(host_dir, "cns_plugin_relay.py")
     return {"argv": [python, relay, "--work", work_dir, "--timeout", str(timeout), "--"]
             + command(python, host, plugin_dir, action, profile_path),
-            "env": build_env(os.environ, work_dir, data_dir)}
+            "env": build_env(os.environ, work_dir, data_dir, uuid.uuid4().hex)}
 
 
 def _cli(argv):

@@ -24,7 +24,7 @@ def _sandbox_works():
     with tempfile.TemporaryDirectory() as d:
         prof = os.path.join(d, "p.sb")
         with open(prof, "w") as f:
-            f.write(P.sandbox_profile(d, d, False, None, P.python_read_roots(sys.executable) + [os.path.dirname(HOST)], P.python_read_files(sys.executable)))
+            f.write(P.sandbox_profile(d, d, False, None, P.python_read_roots(sys.executable), P.python_read_files(sys.executable)))
         try:
             return subprocess.run(P.command(sys.executable, HOST, d, "x", prof)[:4] + ["-c", "pass"],
                                   capture_output=True, timeout=30).returncode == 0
@@ -197,6 +197,9 @@ class Env(unittest.TestCase):
         self.assertEqual(env["PATH"], "/usr/bin:/bin")
         self.assertEqual((env["HOME"], env["TMPDIR"], env["OV_OFFLINE"]), ("/d", "/w", "1"))
         self.assertNotIn("secret", json.dumps(env).lower())
+        tok = P.build_env({}, "/w", "/d", "abc123")
+        self.assertEqual(tok.pop("CNS_PLUGIN_TOKEN"), "abc123")
+        self.assertEqual(set(tok), set(env))
         self.assertEqual(P.build_env({}, "/w", "/d")["OV_OFFLINE"], "0")
         self.assertEqual(P.build_env({"LANG": "x; rm -rf"}, "/w", "/d")["LANG"], "en_US.UTF-8")
 
@@ -228,7 +231,7 @@ class Sandbox(unittest.TestCase):
         prof = os.path.join(self.tmp, "p.sb")
         with open(prof, "w") as f:
             f.write(P.sandbox_profile(self.work, self.data, allow_network, None,
-                                      P.python_read_roots(sys.executable) + [os.path.dirname(HOST)],
+                                      P.python_read_roots(sys.executable),
                                       list(read_files) + P.python_read_files(sys.executable)))
         argv = P.command(sys.executable, HOST, self.tmp, "x", prof)[:4] + ["-c", code]
         env = P.build_env({}, self.work, self.data)
@@ -302,6 +305,24 @@ class Sandbox(unittest.TestCase):
         # its own folders stay readable
         r = self.run_py("open(%r,'w').write('x'); print(open(%r).read())" % (os.path.join(self.work, "a"), os.path.join(self.work, "a")))
         self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_sandbox_blocks_firmlink_alias_of_home(self):
+        secret = self.home_file("alias.txt")
+        alias = "/System/Volumes/Data" + secret
+        if not os.path.exists(alias):
+            self.skipTest("no firmlink alias here")
+        self.assertNotEqual(self.run_py("open(%r).read()" % alias).returncode, 0)
+        self.assertNotEqual(self.run_py("open(%r).read()" % secret).returncode, 0)
+
+    def test_sandbox_blocks_signalling_other_processes(self):
+        sleeper = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        self.addCleanup(sleeper.kill)
+        r = self.run_py("import os,signal,sys\ntry:\n os.kill(%d, signal.SIGKILL)\nexcept PermissionError: sys.exit(7)" % sleeper.pid)
+        self.assertEqual(r.returncode, 7, r.stderr)
+        r = self.run_py("import os,signal,sys\ntry:\n os.kill(%d, signal.SIGKILL)\nexcept PermissionError: sys.exit(7)" % os.getppid())
+        self.assertEqual(r.returncode, 7, r.stderr)
+        time.sleep(0.2)
+        self.assertIsNone(sleeper.poll())
 
     def test_sandbox_blocks_open_and_osascript(self):
         for prog in ("/usr/bin/open", "/usr/bin/osascript", "/bin/launchctl", "/usr/bin/shortcuts"):
@@ -384,6 +405,72 @@ class Relay(unittest.TestCase):
                 "print(json.dumps({'event':'bogus'}))\nprint(json.dumps({'event':'status','msg':'hi'}))")
         ev = self.events(self.run_relay(code))
         self.assertEqual([e["event"] for e in ev if e["event"] != "log"], ["status"])
+
+    def test_relay_pump_survives_hostile_lines_and_caps(self):
+        code = ("import json,sys,os\n"
+                "sys.stdout.write('['*100000 + '\\n')\n"                                    # deep JSON -> RecursionError
+                "print(json.dumps({'event':'partial','path':'a\\u0000b'}))\n"             # NUL in a path
+                "print(json.dumps({'event':'result','data':{'outputs':['/x\\u0000y']}}))\n"
+                "print(json.dumps({'event':'progress','value':7}))\n"
+                "print(json.dumps({'event':'progress','value':'x'}))\n"
+                "print(json.dumps({'event':'progress','value':0.25}))\n"
+                "sys.stdout.write('x'*(2<<20) + '\\n')\n"                                 # oversized line
+                "print(json.dumps({'event':'status','msg':'m'*10000}))\n"
+                "print(json.dumps({'event':'result','data':{'outputs':[]}}))")
+        r = self.run_relay(code)
+        ev = self.events(r)
+        kinds = [e["event"] for e in ev if e["event"] != "log"]
+        self.assertEqual(kinds, ["result", "progress", "status", "result"])   # the first result is the forged, emptied one
+        self.assertEqual(ev[[e["event"] for e in ev].index("progress")]["value"], 0.25)
+        self.assertEqual(ev[[e["event"] for e in ev].index("result")]["data"]["outputs"], [])
+        self.assertEqual(len([e for e in ev if e["event"] == "status"][0]["msg"]), 4000)
+        self.assertEqual(r.returncode, 0)
+
+    def test_relay_caps_outputs_and_forwards_partial_realpath(self):
+        real = os.path.join(self.tmp, "p.bin")
+        open(real, "w").close()
+        link = os.path.join(self.tmp, "l.bin")
+        os.symlink(real, link)
+        code = ("import json\nprint(json.dumps({'event':'partial','path':%r}))\n"
+                "print(json.dumps({'event':'result','data':{'outputs':[%r]*300}}))" % (link, real))
+        ev = self.events(self.run_relay(code))
+        part = [e for e in ev if e["event"] == "partial"][0]
+        self.assertEqual(part["path"], os.path.realpath(real))
+        self.assertEqual(len([e for e in ev if e["event"] == "result"][0]["data"]["outputs"]), 256)
+
+    def test_relay_kills_double_forked_setsid_orphans_by_token(self):
+        pidfile = os.path.join(self.tmp, "pids")
+        script = os.path.join(self.tmp, "dfork.py")
+        with open(script, "w") as f:
+            f.write("import os, sys, time\n"
+                    "if os.fork() == 0:\n"
+                    "    os.setsid()\n"
+                    "    if os.fork() == 0:\n"
+                    "        open(sys.argv[1], 'a').write(str(os.getpid()) + '\\n')\n"
+                    "        time.sleep(60)\n"
+                    "    os._exit(0)\n"
+                    "time.sleep(2)\n")
+        tok = "tok" + str(os.getpid()) + str(time.time()).replace(".", "")
+        env = dict(os.environ, CNS_PLUGIN_TOKEN=tok)
+        # `ps` cannot read the environment of every binary (not of the app's own Python build), so this test uses the
+        # system Python and skips when even that is hidden.
+        py = "/usr/bin/python3"
+        probe = subprocess.Popen([py, "-c", "import time; time.sleep(20)"], env=env, start_new_session=True)
+        self.addCleanup(probe.kill)
+        time.sleep(1)
+        sys.path.insert(0, os.path.join(ROOT, "Sources"))
+        import cns_plugin_relay
+        if probe.pid not in cns_plugin_relay.token_pids(tok):
+            self.skipTest("ps does not show the environment of %s here" % py)
+        probe.kill()
+        r = subprocess.run([sys.executable, self.RELAY, "--work", self.tmp, "--timeout", "30", "--", py, script, pidfile],
+                           input=b"{}\n", capture_output=True, timeout=60, env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        time.sleep(0.5)
+        pids = self.read_pids(pidfile)
+        self.assertEqual(len(pids), 1)
+        for pid in pids:
+            self.assertFalse(self.pid_alive(pid), "orphan %d survived" % pid)
 
     def test_relay_reports_exit_code_without_event(self):
         r = self.run_relay("import sys; sys.exit(3)")

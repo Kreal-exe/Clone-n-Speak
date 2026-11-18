@@ -205,7 +205,6 @@ static id RunCLI(NSArray<NSString *> *args, NSString **error) {
 
 + (void)registerKind {
     [OVJobs.shared registerKind:OVJobKindPlugin lane:OVJobLaneCompute retryable:NO   // inputs may hold redacted values; run it again from the page
-        
         title:^NSString *(NSDictionary *r) { return r[@"title"] ?: L(@"Plugin"); }
         factory:OVProcessRunnerFactory(^OVProcessSpec *(OVJob *job) { return [OVPlugins.shared specForJob:job]; })
         onSuccess:nil];
