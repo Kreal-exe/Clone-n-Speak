@@ -1,0 +1,6 @@
+/* Speech, training and accent install through the job manager (task 8.2). */
+"The task could not be started." = "Задачу не удалось запустить.";
+"Speech failed." = "Озвучка не удалась.";
+"Training failed." = "Обучение не удалось.";
+"The install failed." = "Установка не удалась.";
+"The install could not be started." = "Установку не удалось начать.";

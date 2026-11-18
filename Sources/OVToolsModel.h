@@ -1,4 +1,4 @@
-/* Logic of the Audio Tools page (task 6.16): worker requests, the long-file rule, how a picked file reaches the worker,
+/* Logic of the Audio Tools page (task 6.16): worker request dictionaries, the long-file rule, how a picked file reaches the worker,
    the format list. Foundation only, so it is tested without the page. */
 #import <Foundation/Foundation.h>
 
@@ -21,7 +21,7 @@ typedef BOOL (^OVToolsDecoder)(NSString *src, NSString *dstWav, NSError *_Nullab
 + (NSDictionary *)effectsRequestWithAudio:(NSString *)audio out:(NSString *)out chain:(NSArray<NSDictionary *> *)chain;
 /// YES when at least one effect of the chain is on.
 + (BOOL)chainHasActiveEffects:(NSArray<NSDictionary *> *)chain;
-/// Formant ratio (1 = off) and/or pitch semitones (0 = off): the requests to run in order, the first reads `audio`,
+/// Formant ratio (1 = off) and/or pitch semitones (0 = off): the request dictionaries to run in order, the first reads `audio`,
 /// the last writes `out`, the one between goes through `tmp`. Empty when both are neutral.
 /// Pitch (pitch_apply, preserve_formants = keepCharacter) comes first, the formant ratio (formant_apply) second.
 + (NSArray<NSDictionary *> *)formantStepsWithAudio:(NSString *)audio out:(NSString *)out tmp:(NSString *)tmp

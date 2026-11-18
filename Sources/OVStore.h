@@ -60,6 +60,12 @@ extern NSNotificationName const OVHistoryDidChangeNotification;
 @property double clarity;                       // 0…1 from auto-improve, <0 = not measured
 @property double likeness;                      // 0…1 voice likeness to the sample (ECAPA), <0 = not measured
 @property (copy) NSArray<NSDictionary *> *problems;  // phrases that stayed unclear
+/// The master `path` is always a WAV. `originalPath`: the dry (before the effects chain) WAV next to it, nil when no chain ran.
+/// `exportedPath`: the copy in `formatId` next to the master (nil for WAV). `formatId` is an OVExport identifier ("wav" for old entries).
+@property (nullable, copy) NSString *originalPath, *exportedPath;
+@property (nonatomic, copy) NSString *formatId;
+/// What Reveal and drag hand out: the exported copy when there is one, else the master.
+@property (readonly) NSString *deliveryPath;
 @end
 
 @interface OVHistory : NSObject
@@ -67,11 +73,21 @@ extern NSNotificationName const OVHistoryDidChangeNotification;
 @property (readonly) NSArray<OVGeneration *> *all;
 - (void)reload;
 - (NSString *)newOutputPathForText:(NSString *)text;
+/// `result` keys beyond the worker's: "dry_path" (the .dry.wav of a chain run), "exported_path" + "format" (the copy in the chosen format).
 - (void)record:(NSString *)path text:(NSString *)text voice:(nullable OVVoice *)voice result:(NSDictionary *)result;
 - (void)remove:(OVGeneration *)g;
 /// The history entry of a finished synth job: its text, voice (request[@"_voiceId"]) and result.
 - (void)recordJob:(OVJob *)job;
+/// Adds the copy in another format to the entry of `path` (the WAV master) and reloads.
+- (void)attachExport:(NSString *)exported format:(NSString *)formatId toPath:(NSString *)path;
 @end
+
+#pragma mark - Synth request helpers
+
+/// "<name>.wav" -> "<name>.dry.wav": where the unprocessed take goes when an effects chain runs.
+NSString *OVDryPathForOutput(NSString *out);
+/// Adds "chain" and "dry_out" to a synth request when `chain` has entries; leaves the request untouched when it is empty or nil.
+void OVSynthApplyChain(NSMutableDictionary *req, NSArray<NSDictionary *> *_Nullable chain, NSString *out);
 
 #pragma mark - Audio helpers
 
@@ -103,6 +119,13 @@ double OVAudioDuration(NSString *path);
 + (NSInteger)asrBits;
 /// Keep only one model in memory at a time and drop Whisper right after use (default on ≤12 GB Macs).
 + (BOOL)lowMemory;
+/// Export format of new recordings (an OVExport identifier, default "wav") and its quality (negative = the format's default).
++ (NSString *)exportFormatId;
++ (NSInteger)exportQuality;
+/// The six style values of generationParams[@"style"] (intonation, energy, pitch, tone, pauses, volume).
++ (NSDictionary *)currentStyle;
+/// Writes the style values a preset carries to the settings (keys it lacks stay), and marks the mood as custom.
++ (void)applyStyle:(NSDictionary *)style;
 @end
 
 NS_ASSUME_NONNULL_END
