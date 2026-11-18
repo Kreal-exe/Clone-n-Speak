@@ -8,6 +8,7 @@
 #import "OVExport.h"
 #import "OVPaths.h"
 #import "OVLocale.h"
+#import "OVPrivacyCatalog.h"
 #import <signal.h>
 
 NSNotificationName const OVAPIDidChangeNotification = @"OVAPIDidChangeNotification";
@@ -36,7 +37,7 @@ static const NSTimeInterval kUploadTTL = 3600;
     NSMutableDictionary<NSString *, OVJob *> *_byRequest;        // reqId -> job (to stop a job the server gave up on)
     NSTimer *_sweepTimer;
     NSUInteger _lastJobCount;
-    BOOL _catalogScheduled;
+    BOOL _catalogScheduled, _startWaiting;
 }
 
 + (instancetype)shared {
@@ -57,11 +58,22 @@ static const NSTimeInterval kUploadTTL = 3600;
         [nc addObserver:self selector:@selector(jobsChanged:) name:OVJobsDidChangeNotification object:nil];
         [nc addObserver:self selector:@selector(catalogChanged:) name:OVVoicesDidChangeNotification object:nil];
         [nc addObserver:self selector:@selector(catalogChanged:) name:OVModelsDidChangeNotification object:nil];
+        [nc addObserver:self selector:@selector(willDeleteAppData:) name:OVPrivacyWillDeleteAppDataNotification object:nil];
     }
     return self;
 }
 
 #pragma mark - Settings
+
+/// "Delete all data" (Data & Privacy): the server goes first, the switch is off and the key leaves the Keychain.
+- (void)willDeleteAppData:(NSNotification *)n {
+    [NSUserDefaults.standardUserDefaults setBool:NO forKey:@"apiEnabled"];
+    [self stop];
+    [OVKeychain deleteAccount:kKeyAccount];
+    _key = nil;
+    self.lastError = nil;
+    [self changed];
+}
 
 - (BOOL)enabled { return [NSUserDefaults.standardUserDefaults boolForKey:@"apiEnabled"]; }
 
@@ -219,6 +231,7 @@ static const NSTimeInterval kUploadTTL = 3600;
     if (_task.running) [self stop];
     _wantRunning = YES;
     self.lastError = nil;
+    _startWaiting = YES;
     NSString *fail = [self launch];
     if (!fail) {
         NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:8];
@@ -226,6 +239,7 @@ static const NSTimeInterval kUploadTTL = 3600;
             [NSRunLoop.mainRunLoop runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.02]];
         if (!_listening) fail = _startError ?: L(@"The API server did not start.");
     }
+    _startWaiting = NO;
     if (fail) {
         [self killTask];
         _wantRunning = NO;
@@ -307,7 +321,12 @@ static const NSTimeInterval kUploadTTL = 3600;
 - (void)consume:(NSData *)d from:(NSTask *)t {
     if (t != _task) return;
     [_inBuf appendData:d];
-    if (_inBuf.length > 4 * 1024 * 1024) { _inBuf = [NSMutableData data]; return; }   // a runaway line
+    if (_inBuf.length > 4 * 1024 * 1024) {                                            // a runaway line
+        static dispatch_once_t once;
+        dispatch_once(&once, ^{ NSLog(@"API: an oversized line from the server was dropped"); });
+        _inBuf = [NSMutableData data];
+        return;
+    }
     for (;;) {
         NSRange nl = [_inBuf rangeOfData:[NSData dataWithBytes:"\n" length:1] options:0 range:NSMakeRange(0, _inBuf.length)];
         if (nl.location == NSNotFound) break;
@@ -322,6 +341,10 @@ static const NSTimeInterval kUploadTTL = 3600;
     NSString *op = [m[@"op"] isKindOfClass:NSString.class] ? m[@"op"] : @"";
     if ([op isEqualToString:@"listening"]) {
         _listening = YES;
+        if (!_startWaiting && !self.running && _wantRunning) {       // the server came back after a crash
+            [_lastSent removeAllObjects];
+            [self afterStart];
+        }
     } else if ([op isEqualToString:@"error"]) {
         NSString *code = [m[@"code"] isKindOfClass:NSString.class] ? m[@"code"] : @"";
         NSString *text = [code isEqualToString:@"EADDRINUSE"] ? [NSString stringWithFormat:L(@"Port %u is in use. Pick another port."), self.port]
@@ -439,7 +462,8 @@ static const NSTimeInterval kUploadTTL = 3600;
     OVJob *job = [OVJobs.shared submitKind:kind request:req origin:origin onFinish:^(OVJob *j) { [self jobFinished:j]; } error:&jerr];
     if (!job) {
         if (cleanup) cleanup();
-        BOOL unavailable = [kind isEqualToString:OVJobKindConvert];     // its kind is registered by the conversion engine (sub-plan C)
+        // convert is registered by the conversion engine (sub-plan C); until then the manager says the kind is unknown
+        BOOL unavailable = [kind isEqualToString:OVJobKindConvert] && [jerr isEqualToString:[NSString stringWithFormat:L(@"Unknown kind of task: %@. Update the app or the plugin."), kind]];
         [self reply:reqId job:nil error:unavailable ? @"rejected: not available" : [@"rejected: " stringByAppendingString:jerr ?: @"queue is full"]];
         return;
     }

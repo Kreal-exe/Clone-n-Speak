@@ -30,7 +30,14 @@ static NSMutableDictionary *Query(NSString *account) {
     if (st == errSecItemNotFound) {
         NSMutableDictionary *q = Query(account);
         q[(__bridge id)kSecValueData] = data;
+        q[(__bridge id)kSecAttrAccessible] = (__bridge id)kSecAttrAccessibleWhenUnlockedThisDeviceOnly;
         st = SecItemAdd((__bridge CFDictionaryRef)q, NULL);
+        if (st != errSecSuccess) {                      // some ad-hoc-signed builds refuse the attribute: store without it, once noted
+            static dispatch_once_t once;
+            dispatch_once(&once, ^{ NSLog(@"Keychain: accessibility attribute refused (%d); stored without it", (int)st); });
+            [q removeObjectForKey:(__bridge id)kSecAttrAccessible];
+            st = SecItemAdd((__bridge CFDictionaryRef)q, NULL);
+        }
     }
     return st == errSecSuccess;
 }

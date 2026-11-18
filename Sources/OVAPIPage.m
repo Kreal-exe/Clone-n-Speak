@@ -78,6 +78,9 @@ static NSStackView *Column(NSArray<NSView *> *rows, CGFloat gap) {
 
 - (NSView *)keyCard {
     self.keyLabel = [self mono:@"" size:13];
+    self.keyLabel.maximumNumberOfLines = 1;                    // never wraps: it truncates in the middle when narrow
+    self.keyLabel.lineBreakMode = NSLineBreakByTruncatingMiddle;
+    [self.keyLabel setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
     self.keyLabel.accessibilityLabel = L(@"API key");
     self.showButton = [self small:L(@"Show") symbol:@"eye" action:@selector(toggleKey:)];
     NSStackView *row = OVHStack(@[self.keyLabel, OVSpacer(), self.showButton, [self small:L(@"Copy") symbol:@"doc.on.doc" action:@selector(copyKey:)],
@@ -114,6 +117,11 @@ static NSStackView *Column(NSArray<NSView *> *rows, CGFloat gap) {
     [self refresh];
 }
 
+- (void)viewDidDisappear {
+    [super viewDidDisappear];
+    if (self.keyShown) { self.keyShown = NO; self.showButton.title = L(@"Show"); [self refresh]; }
+}
+
 - (void)dealloc { [NSNotificationCenter.defaultCenter removeObserver:self]; }
 
 #pragma mark - Showing state
@@ -145,14 +153,17 @@ static NSStackView *Column(NSArray<NSView *> *rows, CGFloat gap) {
     OVAPI *api = OVAPI.shared;
     self.enableSwitch.on = api.enabled;
     self.addressLabel.stringValue = api.baseURL;
-    if (self.view.window.firstResponder != self.portField.currentEditor) self.portField.stringValue = [NSString stringWithFormat:@"%u", api.port];
+    if (!self.portField.currentEditor) self.portField.stringValue = [NSString stringWithFormat:@"%u", api.port];
     NSView *badge = api.running ? OVBadge(L(@"Running"), OVRoleOK) : (api.lastError.length ? OVBadge(L(@"Error"), OVRoleErr) : OVBadge(L(@"Off"), OVRoleMuted));
+    badge.accessibilityLabel = api.running ? L(@"Running") : (api.lastError.length ? L(@"Error") : L(@"Off"));
+    badge.accessibilityRole = NSAccessibilityStaticTextRole;
     for (NSView *v in [self.badgeHolder.arrangedSubviews copy]) { [self.badgeHolder removeArrangedSubview:v]; [v removeFromSuperview]; }
     [self.badgeHolder addArrangedSubview:badge];
     self.portError.stringValue = api.lastError ?: @"";
     self.portError.hidden = !api.lastError.length;
     NSString *key = api.currentKey;
     self.keyLabel.stringValue = self.keyShown ? key : [self maskedKey:key];
+    self.keyLabel.accessibilityValue = self.keyShown ? key : L(@"hidden");
     self.snippetLabel.stringValue = [self snippetWithKey:@"<your key>"];
     [self refreshJobs];
 }
@@ -176,6 +187,8 @@ static NSStackView *Column(NSArray<NSView *> *rows, CGFloat gap) {
         NSButton *open = [self small:L(@"Open in Jobs") symbol:nil action:@selector(openJobs:)];
         NSStackView *row = OVHStack(@[title, OVSpacer(), OVCompactBadge(state, tone), open], 10);
         row.alignment = NSLayoutAttributeCenterY;
+        row.accessibilityElement = YES;
+        row.accessibilityLabel = [NSString stringWithFormat:@"%@, %@", j.title ?: j.kind, state];
         [self.jobRows addArrangedSubview:row];
         [row.widthAnchor constraintEqualToAnchor:self.jobRows.widthAnchor].active = YES;
     }
@@ -183,17 +196,20 @@ static NSStackView *Column(NSArray<NSView *> *rows, CGFloat gap) {
 
 #pragma mark - Actions
 
-- (void)copyText:(NSString *)s from:(NSButton *)b {
+- (void)copyText:(NSString *)s from:(NSButton *)b secret:(BOOL)secret {
     [NSPasteboard.generalPasteboard clearContents];
-    [NSPasteboard.generalPasteboard setString:s forType:NSPasteboardTypeString];
+    NSPasteboardItem *item = [NSPasteboardItem new];
+    [item setString:s forType:NSPasteboardTypeString];
+    if (secret) [item setData:NSData.data forType:@"org.nspasteboard.ConcealedType"];   // clipboard managers skip it
+    [NSPasteboard.generalPasteboard writeObjects:@[item]];
     NSString *old = b.title;
     b.title = L(@"Copied");
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ b.title = old; });
 }
 
-- (void)copyAddress:(NSButton *)b { [self copyText:OVAPI.shared.baseURL from:b]; }
-- (void)copyKey:(NSButton *)b { [self copyText:OVAPI.shared.currentKey from:b]; }
-- (void)copySnippet:(NSButton *)b { [self copyText:[self snippetWithKey:OVAPI.shared.currentKey] from:b]; }
+- (void)copyAddress:(NSButton *)b { [self copyText:OVAPI.shared.baseURL from:b secret:NO]; }
+- (void)copyKey:(NSButton *)b { [self copyText:OVAPI.shared.currentKey from:b secret:YES]; }
+- (void)copySnippet:(NSButton *)b { [self copyText:[self snippetWithKey:OVAPI.shared.currentKey] from:b secret:YES]; }
 - (void)openJobs:(id)s { OVNavigate(@"jobs"); }
 
 - (void)toggleKey:(id)s {
@@ -229,8 +245,6 @@ static NSStackView *Column(NSArray<NSView *> *rows, CGFloat gap) {
     void (^done)(NSModalResponse) = ^(NSModalResponse r) {
         if (r != NSAlertSecondButtonReturn) return;
         [OVAPI.shared rotateKey];
-        self.keyShown = YES;
-        self.showButton.title = L(@"Hide");
         [self refresh];
     };
     if (self.view.window) [a beginSheetModalForWindow:self.view.window completionHandler:done]; else done([a runModal]);

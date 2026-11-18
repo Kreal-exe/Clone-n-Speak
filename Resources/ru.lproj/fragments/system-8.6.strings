@@ -29,3 +29,4 @@
 "The API server stopped unexpectedly. Switch it off and on again." = "Сервер API неожиданно остановился. Выключите его и включите снова.";
 "The key could not be saved to the Keychain. It will change at the next launch." = "Ключ не удалось сохранить в связке ключей. При следующем запуске он изменится.";
 "Use a port between 1024 and 65535." = "Укажите порт от 1024 до 65535.";
+"hidden" = "скрыт";
