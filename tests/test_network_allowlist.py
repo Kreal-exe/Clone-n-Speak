@@ -32,6 +32,8 @@ EXPECTED = {
     "OVAPIPage.m": (3, "the Quick start text shows shell commands for the local API (127.0.0.1); the page makes no network call"),
     "cns_engines.py": (22, "pro-engine installs, started by the user: pinned HTTPS URLs (GitHub, Hugging Face) + sha256, "
                            "https-only redirects, uv/PyPI through the installer; also names edge-tts and yt-dlp as packages"),
+    "cns_rvc.py": (1, "user-started voice-model download (fetch): https links only, cns_engines.download does the transfer; "
+                     "urllib.parse is imported only to split and normalise the link"),
     "cns_realtime.py": (8, "realtime voice process: one local Unix-socket client (AF_UNIX, no internet); sandboxed without network"),
     "cns_rt_proto.py": (12, "realtime block protocol over a local Unix socket (AF_UNIX); no internet"),
     "cns_ytdl.py": (7, "YouTube audio import, started by the user: one https youtube.com / youtu.be video through yt-dlp, "
