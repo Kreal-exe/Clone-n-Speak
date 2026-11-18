@@ -3,6 +3,7 @@
 #import "OVDownloader.h"
 #import "OVRuntime.h"
 #import "OVLocale.h"
+#import "OVNetwork.h"
 
 NSNotificationName const OVModelsDidChangeNotification = @"OVModelsDidChange";
 
@@ -443,6 +444,82 @@ static NSString *PercentPath(NSString *p) {
     [self saveCustom];
     [self rescan];
     return m;
+}
+
+#pragma mark - LoRA by Hugging Face link
+
+static BOOL ValidRepoPart(NSString *p) {
+    if (!p.length || p.length > 96 || [p hasPrefix:@"."]) return NO;
+    static NSCharacterSet *bad;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        bad = [[NSCharacterSet characterSetWithCharactersInString:
+                @"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-"] invertedSet];
+    });
+    return [p rangeOfCharacterFromSet:bad].location == NSNotFound;
+}
+
++ (NSString *)repoFromHuggingFaceString:(NSString *)s {
+    s = [s stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (!s.length || s.length > 200) return nil;
+    NSRange q = [s rangeOfCharacterFromSet:[NSCharacterSet characterSetWithCharactersInString:@"?#"]];
+    if (q.location != NSNotFound) s = [s substringToIndex:q.location];
+    BOOL hasHost = NO;
+    for (NSString *scheme in @[@"https://", @"http://"])
+        if ([s.lowercaseString hasPrefix:scheme]) { s = [s substringFromIndex:scheme.length]; hasHost = YES; }
+    NSMutableArray<NSString *> *parts = [[s componentsSeparatedByString:@"/"] mutableCopy];
+    while (parts.count && !parts.lastObject.length) [parts removeLastObject];   // trailing slash
+    if (!hasHost && parts.count > 2) {
+        NSString *h = parts[0].lowercaseString;
+        hasHost = [h isEqualToString:@"huggingface.co"] || [h isEqualToString:@"hf.co"] || [h isEqualToString:@"www.huggingface.co"];
+        if (!hasHost) return nil;
+    } else if (!hasHost && parts.count == 2) {
+        NSString *h = parts[0].lowercaseString;   // "huggingface.co/owner" is not a repo
+        if ([h isEqualToString:@"huggingface.co"] || [h isEqualToString:@"hf.co"]) return nil;
+    }
+    if (hasHost) {
+        if (!parts.count) return nil;
+        NSString *h = parts[0].lowercaseString;
+        if (![h isEqualToString:@"huggingface.co"] && ![h isEqualToString:@"hf.co"] && ![h isEqualToString:@"www.huggingface.co"]) return nil;
+        [parts removeObjectAtIndex:0];
+    }
+    if (parts.count < 2) return nil;
+    if (parts.count > 2) {
+        NSString *view = parts[2];
+        if (!([view isEqualToString:@"tree"] || [view isEqualToString:@"blob"] || [view isEqualToString:@"resolve"])) return nil;
+        if (parts.count == 3) return nil;
+    }
+    NSString *owner = parts[0], *name = parts[1];
+    if (!ValidRepoPart(owner) || !ValidRepoPart(name)) return nil;
+    if (hasHost && [@[@"datasets", @"spaces", @"docs", @"api", @"models", @"collections"] containsObject:owner]) return nil;
+    return [NSString stringWithFormat:@"%@/%@", owner, name];
+}
+
+- (void)addLoRAFromString:(NSString *)s completion:(void (^)(OVModel *, NSString *))completion {
+    NSString *repo = [OVModels repoFromHuggingFaceString:s];
+    if (!repo) { completion(nil, L(@"Enter a LoRA as “author/name” or a huggingface.co link.")); return; }
+    if (OVNetwork.offline) { completion(nil, L(@"Offline mode is on, so the repository can’t be checked. Turn it off in Settings to add a LoRA by link.")); return; }
+    NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"%@/api/models/%@", [self endpoint], repo]];
+    void (^fetch)(NSURL *, NSDictionary *, void (^)(id, NSError *)) = self.jsonFetcher ?: ^(NSURL *u, NSDictionary *h, void (^d)(id, NSError *)) { OVFetchJSON(u, h, d); };
+    fetch(url, [self headers], ^(id json, NSError *err) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (![json isKindOfClass:NSDictionary.class]) {
+                completion(nil, err ? [NSString stringWithFormat:L(@"Couldn’t reach Hugging Face for “%@”: %@"), repo, err.localizedDescription]
+                                    : [NSString stringWithFormat:L(@"Repository “%@” was not found on Hugging Face. Check the link."), repo]);
+                return;
+            }
+            NSMutableSet *files = [NSMutableSet set];
+            for (id sib in [json[@"siblings"] isKindOfClass:NSArray.class] ? json[@"siblings"] : @[])
+                if ([sib isKindOfClass:NSDictionary.class] && [sib[@"rfilename"] isKindOfClass:NSString.class]) [files addObject:sib[@"rfilename"]];
+            if (![files containsObject:@"adapter_config.json"] || ![files containsObject:@"adapter_model.safetensors"]) {
+                completion(nil, L(@"This repository has no LoRA adapter files (adapter_config.json). Pick a repository made with PEFT."));
+                return;
+            }
+            OVModel *m = [self addCustomRepo:repo kind:OVModelLoRA];
+            if (m && m.kind != OVModelLoRA) m = nil;
+            completion(m, m ? nil : L(@"This repository is already in the list as a different kind of model."));
+        });
+    });
 }
 
 - (void)removeCustom:(OVModel *)m {
