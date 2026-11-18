@@ -15,7 +15,25 @@ static NSDictionary *Loc(NSString *ident, NSString *title, NSString *path, BOOL 
     return @{@"id": ident, @"title": title, @"path": path, @"deletable": @(deletable), @"deleteNote": note};
 }
 
+NSNotificationName const OVPrivacyWillDeleteAppDataNotification = @"OVPrivacyWillDeleteAppData";
+
 @implementation OVPrivacyCatalog
+
++ (NSString *)refusalForDataRoot:(NSString *)root home:(NSString *)home override:(NSString *)override isSymlink:(BOOL)isSymlink {
+    if (!root.length || !home.length) return L(@"The data folder is not set.");
+    NSString *r = [root stringByStandardizingPath], *h = [home stringByStandardizingPath];
+    if ([r isEqualToString:@"/"] || [r isEqualToString:h] || r.pathComponents.count < 3) return L(@"The data folder is too broad to delete.");
+    if (isSymlink) return L(@"The data folder is a link, not a folder.");
+    NSString *rr = [r stringByResolvingSymlinksInPath];
+    if (override.length && [[override stringByStandardizingPath] isEqualToString:r]) {
+        for (NSString *base in @[@"/tmp", @"/private/tmp", @"/private/var/folders", [NSTemporaryDirectory() stringByResolvingSymlinksInPath]])
+            if (base.length && [rr hasPrefix:[base hasSuffix:@"/"] ? base : [base stringByAppendingString:@"/"]]) return nil;
+        return L(@"A custom data folder is only accepted under a temporary folder.");
+    }
+    NSString *appSupport = [[h stringByAppendingPathComponent:@"Library/Application Support"] stringByResolvingSymlinksInPath];
+    if (![rr hasPrefix:[appSupport stringByAppendingString:@"/"]]) return L(@"The data folder is not inside Application Support.");
+    return nil;
+}
 
 // The ids are the ones OVNetwork identifierFor: returns; tests/test_privacy_catalog.py keeps both lists equal.
 + (NSArray<NSDictionary *> *)networkEntries {

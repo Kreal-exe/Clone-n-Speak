@@ -7,6 +7,7 @@
 #import "OVPrivacyCatalog.h"
 #import "OVStore.h"
 #import "OVJobs.h"
+#import "OVWorker.h"
 
 @interface OVPrivacyPage ()
 @property (nonatomic) NSMutableDictionary<NSString *, NSNumber *> *sizes;          // location id -> bytes (absent = not counted yet)
@@ -14,6 +15,7 @@
 @property (nonatomic, copy) NSString *confirming;                                 // location id, @"all1", @"all2" or nil
 @property (nonatomic) NSInteger generation;                                       // bumped to cancel a running count
 @property (nonatomic) NSScrollView *scroll;
+@property (nonatomic) BOOL freshlyBuilt, lastBusy;
 @end
 
 static OVNetFeature FeatureForId(NSString *ident) {
@@ -55,15 +57,30 @@ static long long TreeSize(NSString *path, BOOL (^cancelled)(void)) {
     self.sizeLabels = [NSMutableDictionary dictionary];
     self.view = [NSView new];
     [self rebuild];
+    self.freshlyBuilt = YES;   // viewWillAppear then does not build a second time
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(busyMayHaveChanged:) name:OVJobsDidChangeNotification object:nil];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(busyMayHaveChanged:) name:OVWorkerDidChangeNotification object:nil];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(stateChanged:) name:OVNetworkModeDidChangeNotification object:nil];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(stateChanged:) name:OVUILanguageDidChangeNotification object:nil];
 }
 
 - (void)dealloc { self.generation++; [NSNotificationCenter.defaultCenter removeObserver:self]; }
 
-- (void)viewWillAppear { [super viewWillAppear]; [self rebuild]; }
+- (void)viewWillAppear {
+    [super viewWillAppear];
+    if (self.freshlyBuilt) self.freshlyBuilt = NO; else [self rebuild];
+}
 - (void)viewDidAppear { [super viewDidAppear]; [self startCounting]; }
-- (void)viewDidDisappear { [super viewDidDisappear]; self.generation++; }   // a running count notices and stops
+- (void)viewDidDisappear {   // a running count notices and stops; a half-answered question is dropped
+    [super viewDidDisappear];
+    self.generation++;
+    self.confirming = nil;
+}
+/// Folders in use by a running task or the engine cannot be deleted from under it.
+- (BOOL)appIsBusy { return OVJobs.shared.activeCount > 0 || OVWorker.shared.busy; }
+- (void)busyMayHaveChanged:(NSNotification *)n {
+    if (self.viewLoaded && self.lastBusy != [self appIsBusy]) [self rebuild];
+}
 - (void)stateChanged:(NSNotification *)n { if (self.viewLoaded) [self rebuild]; }
 
 #pragma mark - Sizes
@@ -90,6 +107,7 @@ static long long TreeSize(NSString *path, BOOL (^cancelled)(void)) {
 
 - (void)rebuild {
     NSPoint scrollOrigin = self.scroll ? self.scroll.contentView.bounds.origin : NSZeroPoint;
+    self.lastBusy = [self appIsBusy];
     [self.scroll removeFromSuperview];
     [self.sizeLabels removeAllObjects];
     NSView *header = OVPageHeader(L(@"Data & Privacy"), L(@"What stays on this Mac, what can go online, and where your files live."), nil);
@@ -127,10 +145,13 @@ static long long TreeSize(NSString *path, BOOL (^cancelled)(void)) {
     NSString *ident = e[@"id"];
     BOOL consent = [e[@"consent"] boolValue];
     BOOL granted = consent && [OVNetwork hasConsentFor:FeatureForId(ident)];
-    NSString *status = !consent ? L(@"Asked") : (granted ? L(@"Allowed") : L(@"Never used"));
+    NSString *flag = [@"privacyRevoked." stringByAppendingString:ident];
+    if (granted) [NSUserDefaults.standardUserDefaults removeObjectForKey:flag];
+    BOOL revoked = consent && !granted && [NSUserDefaults.standardUserDefaults boolForKey:flag];
+    NSString *status = !consent ? L(@"Asked") : (granted ? L(@"Allowed") : (revoked ? L(@"Not allowed") : L(@"Never used")));
     NSView *badge = OVBadge(status, granted ? OVRoleOK : (consent ? OVRoleMuted : OVRoleAccent));
     badge.accessibilityLabel = [NSString stringWithFormat:@"%@: %@", e[@"title"], status];
-    badge.toolTip = consent ? L(@"Allowed means you agreed. Never used means nothing has been sent, and you are asked first.")
+    badge.toolTip = consent ? L(@"Allowed means you agreed. Never used and Not allowed mean nothing is sent, and you are asked first.")
                             : L(@"Asked means it only runs when you press a download or install button.");
     NSMutableArray *right = [NSMutableArray arrayWithObject:badge];
     if (granted) {
@@ -162,6 +183,8 @@ static long long TreeSize(NSString *path, BOOL (^cancelled)(void)) {
     return OVStepCard(3, @"folder", L(@"Where your files live"), nil, col);
 }
 
++ (NSSet<NSString *> *)busyFolders { return [NSSet setWithArray:@[@"voices", @"outputs", @"engines", @"rvc", @"plugins", @"api", @"bridge"]]; }
+
 - (NSView *)locationRow:(NSDictionary *)loc {
     NSString *ident = loc[@"id"], *path = loc[@"path"];
     BOOL deletable = [loc[@"deletable"] boolValue];
@@ -173,6 +196,8 @@ static long long TreeSize(NSString *path, BOOL (^cancelled)(void)) {
     NSNumber *known = self.sizes[ident];
     NSTextField *size = OVLabel(known ? OVFormatBytes(known.longLongValue) : @"…", 13, NSFontWeightRegular, OVColor(OVRoleMuted));
     size.accessibilityLabel = [NSString stringWithFormat:L(@"%@ size"), loc[@"title"]];
+    size.alignment = NSTextAlignmentRight;
+    [size.widthAnchor constraintEqualToConstant:76].active = YES;
     self.sizeLabels[ident] = size;
     NSStackView *texts = OVVStack(@[title, where], 2);
     OVFillWidth(texts.arrangedSubviews, texts);
@@ -187,6 +212,8 @@ static long long TreeSize(NSString *path, BOOL (^cancelled)(void)) {
         NSButton *del = OVSmallPill(OVGhostButton(L(@"Delete"), @"trash", self, @selector(askDelete:)));
         del.identifier = ident;
         del.accessibilityLabel = [NSString stringWithFormat:L(@"Delete %@"), loc[@"title"]];
+        BOOL inUse = [self appIsBusy] && [[OVPrivacyPage busyFolders] containsObject:ident];
+        if (inUse) { del.enabled = NO; del.toolTip = L(@"A task or the engine may be using this folder. Wait until it is finished."); }
         [buttons addObject:del];
     } else {
         NSButton *models = OVSmallPill(OVGhostButton(L(@"Open Models"), @"shippingbox", self, @selector(openModels:)));
@@ -222,14 +249,16 @@ static long long TreeSize(NSString *path, BOOL (^cancelled)(void)) {
 
 - (NSView *)deleteAllBlock {
     NSButton *all = OVGhostButton(L(@"Delete all app data…"), @"trash", self, @selector(askDeleteAll:));
-    NSTextField *hint = Muted(L(@"Moves the app's folder (voices, history, engines, settings files) to the Trash. Models in the shared Hugging Face folder and audio in your Music folder stay."), 13);
+    NSTextField *hint = Muted(L(@"Moves the app's data folder to the Trash. Models in the shared Hugging Face folder and audio in your Music folder stay."), 13);
     NSStackView *col = OVVStack(@[hint, OVHStack(@[all, OVSpacer()], 0)], 10);
     OVFillWidth(@[hint], col);
     NSMutableArray *parts = [NSMutableArray arrayWithObject:col];
     if ([self.confirming isEqualToString:@"all1"] || [self.confirming isEqualToString:@"all2"]) {
         BOOL second = [self.confirming isEqualToString:@"all2"];
-        NSTextField *q = OVWrapLabel(second ? L(@"Last check: move everything to the Trash and quit the app now?")
-                                            : L(@"Delete all app data? Your voices, history and installed engines go to the Trash."), 13, nil);
+        NSUInteger active = OVJobs.shared.activeCount;
+        NSString *first = L(@"Delete all app data? These go to the Trash: voices and recordings, history and jobs, logs, engines, voice models and training, plugins, API and Bridge data. Generated audio in Music and the shared Hugging Face folder stay. You can undo this only by restoring from the Trash; once the Trash is emptied it is final.");
+        if (active) first = [first stringByAppendingFormat:@" %@", [NSString stringWithFormat:L(@"%lu running tasks will be stopped."), (unsigned long)active]];
+        NSTextField *q = OVWrapLabel(second ? L(@"Last check: move everything to the Trash and quit the app now?") : first, 13, nil);
         NSButton *go = OVSmallPill(OVPrimaryButton(second ? L(@"Move to Trash and quit") : L(@"Continue"), self, second ? @selector(confirmDeleteAll:) : @selector(continueDeleteAll:)));
         NSButton *no = OVSmallPill(OVGhostButton(L(@"Cancel"), nil, self, @selector(cancelConfirm:)));
         [parts addObject:[self confirmBoxWithText:q buttons:@[go, no]]];
@@ -272,6 +301,7 @@ static long long TreeSize(NSString *path, BOOL (^cancelled)(void)) {
 
 - (void)revoke:(NSButton *)b {
     [OVNetwork revokeConsentFor:FeatureForId(b.identifier)];
+    [NSUserDefaults.standardUserDefaults setBool:YES forKey:[@"privacyRevoked." stringByAppendingString:b.identifier]];
     [self rebuild];
 }
 
@@ -293,40 +323,76 @@ static long long TreeSize(NSString *path, BOOL (^cancelled)(void)) {
 - (void)continueDeleteAll:(id)s { self.confirming = @"all2"; [self rebuild]; }
 - (void)cancelConfirm:(id)s { self.confirming = nil; [self rebuild]; }
 
-static void Trash(NSString *path) {
-    if ([NSFileManager.defaultManager fileExistsAtPath:path])
-        [NSFileManager.defaultManager trashItemAtURL:[NSURL fileURLWithPath:path] resultingItemURL:nil error:nil];
+/// Moves `path` to the Trash; on failure adds its name to `failed`.
+static void Trash(NSString *path, NSMutableArray<NSString *> *failed) {
+    if (![NSFileManager.defaultManager fileExistsAtPath:path]) return;
+    NSError *err = nil;
+    if (![NSFileManager.defaultManager trashItemAtURL:[NSURL fileURLWithPath:path] resultingItemURL:nil error:&err]) [failed addObject:path];
+}
+
+- (void)alert:(NSString *)title text:(NSString *)text {
+    NSAlert *a = [NSAlert new];
+    a.messageText = title;
+    a.informativeText = text;
+    [a addButtonWithTitle:L(@"OK")];
+    [a beginSheetModalForWindow:self.view.window completionHandler:^(NSModalResponse r) {}];
 }
 
 - (void)confirmDelete:(NSButton *)b {
     NSString *ident = b.identifier;
     NSString *path = [self locationWithId:ident][@"path"];
     self.confirming = nil;
+    if ([[OVPrivacyPage busyFolders] containsObject:ident] && [self appIsBusy]) { [self rebuild]; return; }
+    NSMutableArray *failed = [NSMutableArray array];
     if ([ident isEqualToString:@"history"]) {
         [OVJobs.shared clearFinished];                                  // running jobs stay; finished ones lose their folder
     } else if ([ident isEqualToString:@"logs"]) {
-        for (NSString *n in [NSFileManager.defaultManager contentsOfDirectoryAtPath:path error:nil])
-            [NSFileManager.defaultManager removeItemAtPath:[path stringByAppendingPathComponent:n] error:nil];
+        // The log being written is not touched: files changed in the last two minutes stay.
+        for (NSString *n in [NSFileManager.defaultManager contentsOfDirectoryAtPath:path error:nil]) {
+            NSString *f = [path stringByAppendingPathComponent:n];
+            NSDate *m = [NSFileManager.defaultManager attributesOfItemAtPath:f error:nil].fileModificationDate;
+            if (m && -[m timeIntervalSinceNow] < 120) continue;
+            Trash(f, failed);
+        }
     } else if (path) {
-        Trash(path);
+        Trash(path, failed);
         [OVPaths ensure];
         if ([ident isEqualToString:@"voices"]) [OVVoices.shared reload];
     }
     [self.sizes removeObjectForKey:ident];
     [self rebuild];
     [self startCounting];
+    if (failed.count) [self alert:L(@"Some files could not be moved to the Trash") text:[failed componentsJoinedByString:@"\n"]];
 }
 
 - (void)confirmDeleteAll:(id)s {
     self.confirming = nil;
     NSString *support = [OVPaths support];
+    BOOL link = [[[NSFileManager.defaultManager attributesOfItemAtPath:support error:nil] fileType] isEqualToString:NSFileTypeSymbolicLink];
+    NSString *refusal = [OVPrivacyCatalog refusalForDataRoot:support home:NSHomeDirectory() override:NSProcessInfo.processInfo.environment[@"OV_DATA_DIR"] isSymlink:link];
+    if (refusal) { [self rebuild]; [self alert:L(@"Nothing was deleted") text:refusal]; return; }
+    // Stop everything that writes there first; quitting must not be refused for running tasks, and nothing may recreate files.
+    [NSNotificationCenter.defaultCenter postNotificationName:OVPrivacyWillDeleteAppDataNotification object:nil];
+    [OVJobs.shared stopAllAndWait:5];
+    [OVWorker.shared stop];
+    if (OVJobs.shared.activeCount > 0) {
+        [self rebuild];
+        [self alert:L(@"Nothing was deleted") text:L(@"Some tasks did not stop. Try again in a moment.")];
+        return;
+    }
     NSString *hub = [self hubCachePath];
+    NSMutableArray *failed = [NSMutableArray array];
     for (NSString *n in [NSFileManager.defaultManager contentsOfDirectoryAtPath:support error:nil]) {
         NSString *p = [support stringByAppendingPathComponent:n];
         if ([hub isEqualToString:p] || [hub hasPrefix:[p stringByAppendingString:@"/"]]) continue;   // the shared Hugging Face folder is never touched
-        Trash(p);
+        Trash(p, failed);
     }
-    [NSApp terminate:nil];
+    if (failed.count) {
+        [self rebuild];
+        [self alert:L(@"Some data could not be moved to the Trash, so the app stays open") text:[failed componentsJoinedByString:@"\n"]];
+        return;
+    }
+    [NSApp terminate:nil];   // no task is active any more: no "tasks are running" question
 }
 
 - (NSString *)hubCachePath {

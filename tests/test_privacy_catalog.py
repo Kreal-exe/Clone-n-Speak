@@ -12,6 +12,9 @@ SOURCES = ROOT / "Sources"
 sys.path.insert(0, str(ROOT / "tests"))
 import test_network_allowlist as allowlist  # noqa: E402
 
+# Files that other tasks add (7.1, 7.6, 6.20, 8.7, 8.8); rows are ready for them. Remove a name when its file lands.
+PENDING = {"cns_engines.py", "cns_pins.py", "OVBridge.m", "OVBridge.h", "OVPlugins.m", "cns_youtube.py", "cns_edge.py", "cns_lora.py"}
+
 CATALOG = (SOURCES / "OVPrivacyCatalog.m").read_text()
 
 
@@ -85,16 +88,23 @@ class PrivacyCatalog(unittest.TestCase):
         self.assertEqual(by_id["models"][3], "NO", "the shared Hugging Face cache is never deleted from this page")
 
     def test_catalog_mentions_every_allowlisted_network_file(self):
-        known = {a[0].strip('@"'): a[1].strip('@"') for a in entries("networkSources", "Src")}
+        known = {a[0].strip('@"'): ("model_download" if a[1] == "dl" else a[1].strip('@"')) for a in entries("networkSources", "Src")}  # dl = the model_download id variable
         feature_ids = {re.match(r'@"([a-z_]+)"', a[0]).group(1) for a in entries("networkEntries", "Net")}
         missing = sorted(set(allowlist.EXPECTED) - set(known))
         self.assertFalse(missing, "files in test_network_allowlist.EXPECTED without a row in OVPrivacyCatalog networkSources: %s" % missing)
         for f in allowlist.FORWARD:
             self.assertIn(f, known, "forward file %s is not described" % f)
         for f, feature in known.items():
-            if feature == "dl":
-                continue
             self.assertTrue(feature == "internal" or feature in feature_ids, "%s: unknown feature %s" % (f, feature))
+
+    def test_every_source_row_names_an_existing_file_or_a_pending_one(self):
+        existing = {p.name for p in SOURCES.rglob("*")}
+        for a in entries("networkSources", "Src"):
+            name = a[0].strip('@"')
+            self.assertTrue(name in existing or name in PENDING,
+                            "%s does not exist and is not in PENDING (a stale or misspelled row?)" % name)
+        for name in PENDING:   # a pending file that has landed must leave the set
+            self.assertNotIn(name, existing, "%s now exists: remove it from PENDING" % name)
 
     def test_no_network_markers_in_header_and_page(self):
         for name in ("OVPrivacyCatalog.h", "OVPrivacyPage.m"):

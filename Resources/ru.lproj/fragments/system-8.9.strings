@@ -11,7 +11,6 @@
 "Allowed" = "Разрешено";
 "Never used" = "Не использовалось";
 "Asked" = "По запросу";
-"Allowed means you agreed. Never used means nothing has been sent, and you are asked first." = "«Разрешено» — вы согласились. «Не использовалось» — ничего не отправлялось, и сначала мы спросим вас.";
 "Asked means it only runs when you press a download or install button." = "«По запросу» — работает только когда вы сами нажимаете кнопку загрузки или установки.";
 "Revoke consent" = "Отозвать согласие";
 "Revoke consent for %@" = "Отозвать согласие: %@";
@@ -44,8 +43,6 @@
 "Delete files received and produced by the local API? They are moved to the Trash." = "Удалить файлы, полученные и созданные локальным API? Они будут перемещены в Корзину.";
 "Delete Bridge devices and their keys? They are moved to the Trash; devices must pair again." = "Удалить устройства Bridge и их ключи? Они будут перемещены в Корзину, устройства придётся подключить заново.";
 "Delete all app data…" = "Удалить все данные приложения…";
-"Moves the app's folder (voices, history, engines, settings files) to the Trash. Models in the shared Hugging Face folder and audio in your Music folder stay." = "Перемещает папку приложения (голоса, историю, движки, файлы настроек) в Корзину. Модели в общей папке Hugging Face и аудио в папке «Музыка» останутся.";
-"Delete all app data? Your voices, history and installed engines go to the Trash." = "Удалить все данные приложения? Ваши голоса, история и установленные движки будут перемещены в Корзину.";
 "Last check: move everything to the Trash and quit the app now?" = "Последняя проверка: переместить всё в Корзину и закрыть приложение?";
 "Move to Trash and quit" = "В Корзину и выйти";
 "Voice rights and consent" = "Права на голос и согласие";
@@ -54,3 +51,18 @@
 "Laws about voices and recordings differ between countries; you are responsible for following yours." = "Законы о голосах и записях различаются в разных странах; соблюдать свои — ваша ответственность.";
 "Importing from YouTube and cloning through the local API (POST /v1/clone) ask you to confirm you have those rights." = "Импорт с YouTube и клонирование через локальный API (POST /v1/clone) просят подтвердить, что у вас есть эти права.";
 "Install plugins and switch on Bridge only for people and sources you trust." = "Устанавливайте плагины и включайте Bridge только для тех людей и источников, которым доверяете.";
+"Not allowed" = "Не разрешено";
+"Allowed means you agreed. Never used and Not allowed mean nothing is sent, and you are asked first." = "«Разрешено» — вы согласились. «Не использовалось» и «Не разрешено» — ничего не отправляется, и сначала мы спросим вас.";
+"A task or the engine may be using this folder. Wait until it is finished." = "Папку может использовать задача или движок. Дождитесь, пока они закончат.";
+"Moves the app's data folder to the Trash. Models in the shared Hugging Face folder and audio in your Music folder stay." = "Перемещает папку данных приложения в Корзину. Модели в общей папке Hugging Face и аудио в папке «Музыка» останутся.";
+"Delete all app data? These go to the Trash: voices and recordings, history and jobs, logs, engines, voice models and training, plugins, API and Bridge data. Generated audio in Music and the shared Hugging Face folder stay. You can undo this only by restoring from the Trash; once the Trash is emptied it is final." = "Удалить все данные приложения? В Корзину попадут: голоса и записи, история и задачи, журналы, движки, голосовые модели и обучение, плагины, данные API и Bridge. Созданное аудио в «Музыке» и общая папка Hugging Face останутся. Отменить можно только восстановлением из Корзины; после очистки Корзины данные пропадут насовсем.";
+"%lu running tasks will be stopped." = "Запущенных задач, которые будут остановлены: %lu.";
+"Some files could not be moved to the Trash" = "Не удалось переместить часть файлов в Корзину";
+"Nothing was deleted" = "Ничего не удалено";
+"Some tasks did not stop. Try again in a moment." = "Не все задачи остановились. Попробуйте ещё раз через минуту.";
+"Some data could not be moved to the Trash, so the app stays open" = "Не удалось переместить часть данных в Корзину, поэтому приложение остаётся открытым";
+"The data folder is not set." = "Папка данных не задана.";
+"The data folder is too broad to delete." = "Папка данных слишком общая, чтобы её удалять.";
+"The data folder is a link, not a folder." = "Папка данных — это ссылка, а не папка.";
+"A custom data folder is only accepted under a temporary folder." = "Своя папка данных допускается только во временной папке.";
+"The data folder is not inside Application Support." = "Папка данных находится не в Application Support.";
