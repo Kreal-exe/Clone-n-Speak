@@ -7,6 +7,7 @@
 #import "OVPaths.h"
 #import "OVLocale.h"
 #import "OVMemory.h"
+#import "OVExport.h"
 
 #pragma mark - Palette tile
 
@@ -147,6 +148,7 @@ static NSStackView *Rows(NSArray<NSView *> *rows, CGFloat gap) {
 @property NSString *pendingPalette;
 @property NSTextField *previewValue;
 @property NSStackView *engineEnvs;
+@property OVPopup *exportFormatPopup, *exportQualityPopup;
 @end
 
 @implementation OVSettingsPage
@@ -367,7 +369,90 @@ static NSStackView *Rows(NSArray<NSView *> *rows, CGFloat gap) {
         OVFieldBlock(L(@"Free memory when idle"), nil, idle),
         lowMem,
         OVWrapLabel(ramNote, 13, nil)], 16));
-    return CardColumn(@[generation, memory]);
+    return CardColumn(@[generation, [self exportCard], memory]);
+}
+
+/// Quality choices of a format: @[@[title, value]]; empty when the format has no quality (WAV, FLAC, ALAC).
+static NSArray<NSArray *> *QualityChoices(NSString *formatId) {
+    if ([formatId isEqualToString:@"m4a"] || [formatId isEqualToString:@"mp3"])
+        return @[@[L(@"Default (192 kbps)"), @-1], @[@"128 kbps", @128], @[@"192 kbps", @192], @[@"256 kbps", @256], @[@"320 kbps", @320]];
+    if ([formatId isEqualToString:@"ogg"])
+        return @[@[L(@"Default (5)"), @-1], @[L(@"3 · smaller"), @3], @[@"5", @5], @[L(@"7 · better"), @7], @[L(@"10 · best"), @10]];
+    return @[];
+}
+
+- (NSView *)exportCard {
+    self.exportFormatPopup = [OVPopup popup];
+    self.exportFormatPopup.target = self;
+    self.exportFormatPopup.action = @selector(exportFormatPicked:);
+    self.exportFormatPopup.autoenablesItems = NO;
+    self.exportFormatPopup.accessibilityLabel = L(@"Export format");
+    [self.exportFormatPopup addItemWithTitle:@"WAV"];
+    self.exportFormatPopup.lastItem.representedObject = @"wav";
+    self.exportQualityPopup = [OVPopup popup];
+    self.exportQualityPopup.target = self;
+    self.exportQualityPopup.action = @selector(exportQualityPicked:);
+    self.exportQualityPopup.accessibilityLabel = L(@"Export quality");
+    [self loadExportFormats];
+    return OVStepCard(0, @"square.and.arrow.down", L(@"Export"),
+        L(@"New recordings are kept as WAV, and a copy in this format is saved next to each one. Greyed formats need ffmpeg."),
+        Rows(@[OVColumns(@[OVFieldBlock(L(@"Export format"), nil, OVFillPopup(self.exportFormatPopup)),
+                           OVFieldBlock(L(@"Quality"), nil, OVFillPopup(self.exportQualityPopup))], 16)], 16));
+}
+
+/// The ffmpeg lookup can block for a moment, so the list is read off the main thread (and again each time the page appears).
+- (void)loadExportFormats {
+    __weak OVSettingsPage *w = self;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        [OVExport resetFFmpegCache];
+        NSArray<NSDictionary *> *formats = [OVExport formats];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            OVSettingsPage *me = w;
+            if (!me) return;
+            [me.exportFormatPopup removeAllItems];
+            for (NSDictionary *f in formats) {
+                [me.exportFormatPopup addItemWithTitle:f[@"title"]];
+                me.exportFormatPopup.lastItem.representedObject = f[@"id"];
+                BOOL ok = [f[@"available"] boolValue];
+                me.exportFormatPopup.lastItem.enabled = ok;
+                me.exportFormatPopup.lastItem.toolTip = ok ? nil : f[@"reason"];
+            }
+            [me syncExportControls];
+        });
+    });
+}
+
+- (void)syncExportControls {
+    NSString *fid = [OVSettings exportFormatId];
+    NSInteger i = [self.exportFormatPopup indexOfItemWithRepresentedObject:fid];
+    if (i >= 0) [self.exportFormatPopup selectItemAtIndex:i];
+    NSArray<NSArray *> *choices = QualityChoices(fid);
+    [self.exportQualityPopup removeAllItems];
+    if (!choices.count) {
+        [self.exportQualityPopup addItemWithTitle:L(@"Lossless: no setting")];
+        self.exportQualityPopup.enabled = NO;
+        return;
+    }
+    self.exportQualityPopup.enabled = YES;
+    for (NSArray *c in choices) {
+        [self.exportQualityPopup addItemWithTitle:c[0]];
+        self.exportQualityPopup.lastItem.representedObject = c[1];
+    }
+    NSInteger q = [OVSettings exportQuality], qi = [self.exportQualityPopup indexOfItemWithRepresentedObject:@(q)];
+    [self.exportQualityPopup selectItemAtIndex:qi >= 0 ? qi : 0];
+}
+
+- (void)exportFormatPicked:(NSPopUpButton *)p {
+    NSString *fid = p.selectedItem.representedObject;
+    if (!fid) return;
+    [NSUserDefaults.standardUserDefaults setObject:fid forKey:@"exportFormat"];
+    [NSUserDefaults.standardUserDefaults setInteger:-1 forKey:@"exportQuality"];   // a quality of another format means something else
+    [self syncExportControls];
+}
+
+- (void)exportQualityPicked:(NSPopUpButton *)p {
+    NSNumber *q = p.selectedItem.representedObject;
+    if (q) [NSUserDefaults.standardUserDefaults setInteger:q.integerValue forKey:@"exportQuality"];
 }
 
 - (NSView *)storageTab {
@@ -435,6 +520,7 @@ static NSStackView *Rows(NSArray<NSView *> *rows, CGFloat gap) {
     [super viewWillAppear];
     [self refreshControls];
     [self syncTiles];
+    [self loadExportFormats];
 }
 
 - (void)refreshControls {
