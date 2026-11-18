@@ -1,0 +1,1 @@
+{"schema":1,"id":"bad-entry","name":"Bad entry","version":"1","author":"Test","description":"Entry outside.","entry":"../main.py","actions":[{"id":"x"}]}

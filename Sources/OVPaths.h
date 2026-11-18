@@ -20,6 +20,8 @@ NS_ASSUME_NONNULL_BEGIN
 + (NSString *)engines;       // …/engines (pro engines, downloaded on demand)
 + (NSString *)proEngine;     // …/engines/pro (Python 3.11 env for the 16 GB tier)
 + (NSString *)edgeEngine;    // …/engines/edge (Edge TTS venv)
++ (NSString *)plugins;       // …/plugins (installed plugin folders: plugins/<id>/)
++ (NSString *)pluginData;    // …/plugin-data (a plugin's own writable folder: plugin-data/<id>/)
 + (NSString *)rvc;           // …/rvc
 + (NSString *)rvcModels;     // …/rvc/models (voice models: .pth + .index)
 + (NSString *)rvcTraining;   // …/rvc/training (experiment workspaces)
