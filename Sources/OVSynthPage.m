@@ -8,6 +8,12 @@
 #import "OVPaths.h"
 #import "OVLocale.h"
 #import "OVMemory.h"
+#import "OVExport.h"
+#import "OVPresets.h"
+#import "OVEffectsView.h"
+#import "OVPlayerBar.h"
+#import "OVBatchSheet.h"
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
 static NSString *const kAutoVoice = @"__auto__";
 static const CGFloat kTakeRowHeight = 56;
@@ -76,14 +82,60 @@ static NSView *BlockWithHint(NSString *label, NSView *control, NSTextField *hint
     return OVFillStack(@[OVFieldBlock(label, nil, control), hint], 6);
 }
 
+/// A modal one-line text question. nil when cancelled or empty.
+static NSString *AskName(NSString *title, NSString *button, NSString *initial) {
+    NSAlert *a = [NSAlert new];
+    a.messageText = title;
+    [a addButtonWithTitle:button];
+    [a addButtonWithTitle:L(@"Cancel")];
+    NSTextField *f = OVField(L(@"Name"));
+    f.stringValue = initial ?: @"";
+    f.accessibilityLabel = L(@"Name");
+    f.frame = NSMakeRect(0, 0, 300, 34);
+    a.accessoryView = f;
+    a.window.initialFirstResponder = f;
+    if ([a runModal] != NSAlertFirstButtonReturn) return nil;
+    NSString *n = [f.stringValue stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    return n.length ? n : nil;
+}
+
+/// Fills a popup with the export formats (the ffmpeg lookup can block, so it runs off the main thread); formats this Mac cannot write
+/// are grey with the reason as the tooltip. The selected item follows `selectedId`.
+static void FillFormatPopup(OVPopup *popup, NSString *selectedId) {
+    popup.autoenablesItems = NO;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        [OVExport resetFFmpegCache];
+        NSArray<NSDictionary *> *formats = [OVExport formats];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [popup removeAllItems];
+            for (NSDictionary *f in formats) {
+                [popup addItemWithTitle:f[@"title"]];
+                popup.lastItem.representedObject = f[@"id"];
+                BOOL ok = [f[@"available"] boolValue];
+                popup.lastItem.enabled = ok;
+                popup.lastItem.toolTip = ok ? nil : f[@"reason"];
+            }
+            NSInteger i = [popup indexOfItemWithRepresentedObject:selectedId];
+            if (i >= 0 && !popup.itemArray[i].enabled) {   // saved format that cannot be made now (no ffmpeg): WAV
+                [NSUserDefaults.standardUserDefaults setObject:@"wav" forKey:@"exportFormat"];
+                [NSUserDefaults.standardUserDefaults setInteger:-1 forKey:@"exportQuality"];
+                popup.toolTip = [NSString stringWithFormat:L(@"%@ isn’t available now (ffmpeg is missing), so WAV is used."), [selectedId uppercaseString]];
+                i = [popup indexOfItemWithRepresentedObject:@"wav"];
+            }
+            [popup selectItemAtIndex:MAX(0, i)];
+        });
+    });
+}
+
 #pragma mark - History cell
 
 @interface OVHistoryCell : NSTableCellView
 @property NSButton *play, *improve, *reveal, *trash;
 @property NSTextField *text, *meta;
 @property NSStackView *metaRow;
-@property NSView *badge;
+@property NSView *badge, *formatBadge;
 - (void)setLikeness:(double)likeness;   // < 0 = not measured: no badge
+- (void)setFormat:(NSString *)formatId effects:(BOOL)effects;   // a badge for a non-WAV copy and for a take with effects
 @end
 
 @implementation OVHistoryCell
@@ -117,6 +169,16 @@ static NSView *BlockWithHint(NSString *label, NSView *control, NSTextField *hint
     self.badge = OVBadge([NSString stringWithFormat:L(@"voice %.0f%%"), l * 100], tone);
     [self.metaRow insertArrangedSubview:self.badge atIndex:1];
 }
+- (void)setFormat:(NSString *)formatId effects:(BOOL)effects {
+    [self.formatBadge removeFromSuperview];
+    self.formatBadge = nil;
+    NSMutableArray *parts = [NSMutableArray array];
+    if (![formatId isEqualToString:@"wav"]) [parts addObject:formatId.uppercaseString];
+    if (effects) [parts addObject:L(@"FX")];
+    if (!parts.count) return;
+    self.formatBadge = OVCompactBadge([parts componentsJoinedByString:@" · "], OVRoleMuted);
+    [self.metaRow insertArrangedSubview:self.formatBadge atIndex:1];
+}
 @end
 
 #pragma mark - Page
@@ -139,11 +201,15 @@ static NSView *BlockWithHint(NSString *label, NSView *control, NSTextField *hint
 @property NSTableView *table;
 @property NSLayoutConstraint *tableHeight;
 @property NSView *bannerCard, *playerBar, *emptyHistory;
-@property NSTextField *historyTitle, *playerTitle, *playerTime;
-@property NSButton *playerButton;
-@property OVSlider *playerSlider;
+@property NSTextField *historyTitle, *playerTitle;
+@property OVPlayerBar *abBar;
+@property OVPopup *presetPopup, *formatPopup;
+@property BOOL exporting;   // a copy in the chosen format is being written: no new synth until it is done
+@property NSButton *presetRename, *presetDelete, *saveAsButton, *batchButton;
+@property OVEffectsView *effects;
+@property (copy) NSString *presetId, *lastResultPath;
 @property NSPopover *tunePopover;
-@property NSTimer *timer, *playerTimer;
+@property NSTimer *timer;
 @property CFAbsoluteTime started;
 @property BOOL lastAdaptAccent;
 @end
@@ -312,13 +378,34 @@ static NSView *BlockWithHint(NSString *label, NSView *control, NSTextField *hint
     NSButton *reset = OVButtonHeight(OVGhostButton(L(@"Reset"), nil, self, @selector(resetStyle:)), 28);
     reset.toolTip = L(@"Reset the voice style");
     NSStackView *resetRow = OVHStack(@[OVSpacer(), reset], 8);
-    NSStackView *styleContent = OVFillStack(@[sliderColumns, design, resetRow], 16);
+    // presets: style + format + effects chain + formants
+    self.presetPopup = [OVPopup popup];
+    self.presetPopup.target = self;
+    self.presetPopup.action = @selector(presetPicked:);
+    self.presetPopup.accessibilityLabel = L(@"Preset");
+    self.presetPopup.autoenablesItems = NO;
+    Squeezable(self.presetPopup);
+    OVFlowRow *presetButtons = [OVFlowRow new];
+    NSButton *presetSave = OVButtonHeight(OVGhostButton(L(@"Save current as preset…"), nil, self, @selector(presetSave:)), 28);
+    self.presetRename = OVButtonHeight(OVGhostButton(L(@"Rename"), nil, self, @selector(presetRename:)), 28);
+    self.presetDelete = OVButtonHeight(OVGhostButton(L(@"Delete"), nil, self, @selector(presetDelete:)), 28);
+    NSButton *presetImport = OVButtonHeight(OVGhostButton(L(@"Import…"), nil, self, @selector(presetImport:)), 28);
+    NSButton *presetExport = OVButtonHeight(OVGhostButton(L(@"Export…"), nil, self, @selector(presetExport:)), 28);
+    [presetButtons setItems:@[presetSave, self.presetRename, self.presetDelete, presetImport, presetExport]];
+    NSView *presetBlock = OVFieldBlock(L(@"Preset"), L(@"A preset keeps the voice style, the file format and the effects chain."),
+                                       OVFillStack(@[OVFillPopup(self.presetPopup), presetButtons], 8));
+    NSStackView *styleContent = OVFillStack(@[presetBlock, sliderColumns, design, resetRow], 16);
     self.styleDisclosure = [OVDisclosure disclosureWithTitle:L(@"Voice style") subtitle:L(@"Default") symbol:@"slider.horizontal.3" content:styleContent];
     self.styleDisclosure.expanded = [NSUserDefaults.standardUserDefaults boolForKey:@"stylePanel"];
     self.styleDisclosure.onToggle = ^(BOOL expanded) { [NSUserDefaults.standardUserDefaults setBool:expanded forKey:@"stylePanel"]; };
 
+    self.effects = [OVEffectsView new];
+    NSArray *savedChain = [NSUserDefaults.standardUserDefaults arrayForKey:@"effectsChain"];
+    if (savedChain) self.effects.chain = savedChain;
+    self.effects.onChange = ^{ [NSUserDefaults.standardUserDefaults setObject:w.effects.chain forKey:@"effectsChain"]; };
+
     NSView *card2 = OVStepCardWithAccessory(2, @"person.wave.2", L(@"Voice and style"), cardAccessory,
-        OVFillStack(@[OVColumns(@[voiceBlock, langBlock], 16), self.pronRow, moodBlock, qualitySpeed, self.styleDisclosure], 16));
+        OVFillStack(@[OVColumns(@[voiceBlock, langBlock], 16), self.pronRow, moodBlock, qualitySpeed, self.styleDisclosure, self.effects], 16));
 
     // ── 3 · Result
     self.improveSwitch = [OVSwitch new];
@@ -342,7 +429,9 @@ static NSView *BlockWithHint(NSString *label, NSView *control, NSTextField *hint
     [self.synthButton.widthAnchor constraintGreaterThanOrEqualToConstant:118].active = YES;
     self.stopButton = OVGhostButton(L(@"Stop"), nil, self, @selector(stop:));
     self.stopButton.hidden = YES;
-    NSStackView *actionRow = OVHStack(@[improveBox, OVSpacer(), self.stopButton, self.synthButton], 12);
+    self.batchButton = OVGhostButton(L(@"Batch…"), @"list.bullet.rectangle", self, @selector(showBatch:));
+    self.batchButton.toolTip = L(@"Speak many texts from a file or a list, with one voice and preset");
+    NSStackView *actionRow = OVHStack(@[improveBox, OVSpacer(), self.stopButton, self.batchButton, self.synthButton], 12);
 
     self.progress = OVProgressBar();
     self.progress.hidden = YES;
@@ -354,27 +443,31 @@ static NSView *BlockWithHint(NSString *label, NSView *control, NSTextField *hint
     self.status = status;
     self.status.lineBreakMode = NSLineBreakByTruncatingTail;
 
-    // player (visible while something is loaded)
-    self.playerButton = OVPlayButton(self, @selector(playerToggle:));
+    // player: play / scrubber / time, and Original | Result when the take went through the effects chain
     self.playerTitle = OVLabel(@"", 14, NSFontWeightMedium, nil);
-    self.playerSlider = [OVSlider sliderWithValue:0 minValue:0 maxValue:1 target:self action:@selector(playerSeek:)];
-    self.playerTime = OVLabel(@"", 12, NSFontWeightRegular, OVColor(OVRoleMuted));
-    self.playerTime.font = [NSFont monospacedDigitSystemFontOfSize:12 weight:NSFontWeightRegular];
-    [self.playerTime setContentCompressionResistancePriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
-    NSButton *playerClose = OVIconButton(@"xmark", L(@"Stop"), self, @selector(playerStop:));
-    playerClose.accessibilityLabel = L(@"Stop");
-    [self.playerTitle.widthAnchor constraintLessThanOrEqualToConstant:220].active = YES;
-    [self.playerSlider setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
-    [self.playerSlider.widthAnchor constraintGreaterThanOrEqualToConstant:80].active = YES;
-    self.playerBar = OVHStack(@[self.playerButton, self.playerTitle, self.playerSlider, self.playerTime, playerClose], 10);
+    self.playerTitle.maximumNumberOfLines = 1;
+    self.playerTitle.lineBreakMode = NSLineBreakByTruncatingTail;
+    ShrinkOnly(self.playerTitle);
+    self.abBar = [OVPlayerBar new];
+    self.playerBar = OVFillStack(@[self.playerTitle, self.abBar], 6);
     self.playerBar.hidden = YES;
+
+    // the file format of new recordings, and a copy to any place
+    self.formatPopup = [OVPopup popup];
+    self.formatPopup.target = self;
+    self.formatPopup.action = @selector(formatPicked:);
+    self.formatPopup.accessibilityLabel = L(@"File format");
+    FillFormatPopup(self.formatPopup, [OVSettings exportFormatId]);
+    self.saveAsButton = OVButtonHeight(OVGhostButton(L(@"Save as…"), @"square.and.arrow.down", self, @selector(saveAs:)), 28);
+    self.saveAsButton.toolTip = L(@"Save the last recording in this format wherever you like. New recordings are also saved next to the WAV in this format.");
+    NSStackView *exportRow = OVHStack(@[OVLabel(L(@"Format"), 13, NSFontWeightRegular, OVColor(OVRoleMuted)), self.formatPopup, self.saveAsButton, OVSpacer()], 10);
 
     self.memoryLabel = OVLabel(@"", 12, NSFontWeightMedium, OVColor(OVRoleMuted));
     self.memoryLabel.font = [NSFont monospacedDigitSystemFontOfSize:12 weight:NSFontWeightMedium];
     self.memoryLabel.toolTip = L(@"Memory used by the speech engine and memory still free on this Mac");
     [self.memoryLabel setContentCompressionResistancePriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
     NSStackView *memoryRow = OVHStack(@[OVSpacer(), OVSymbol(@"memorychip", 12, OVColor(OVRoleMuted)), self.memoryLabel], 6);
-    NSView *card3 = OVStepCard(3, @"waveform", L(@"Result"), nil, OVFillStack(@[actionRow, self.progress, self.status, self.playerBar, memoryRow], 12));
+    NSView *card3 = OVStepCard(3, @"waveform", L(@"Result"), nil, OVFillStack(@[actionRow, self.progress, self.status, self.playerBar, exportRow, memoryRow], 12));
 
     // ── recent takes
     NSButton *openFolder = OVButtonHeight(OVGhostButton(L(@"Open folder"), @"folder", self, @selector(openOutputs:)), 28);
@@ -421,8 +514,10 @@ static NSView *BlockWithHint(NSString *label, NSView *control, NSTextField *hint
     [nc addObserver:self selector:@selector(refreshMemory) name:OVWorkerMemoryDidChangeNotification object:nil];
     [nc addObserver:self selector:@selector(syncControls) name:NSUserDefaultsDidChangeNotification object:nil];
     [nc addObserver:self selector:@selector(themeChanged) name:OVThemeDidChangeNotification object:nil];
+    [nc addObserver:self selector:@selector(reloadPresets) name:OVPresetsDidChangeNotification object:nil];
 
     [self buildTunePopover];
+    [self reloadPresets];
     self.lastAdaptAccent = [OVSettings adaptAccent];
     [self reloadVoices];
     [self reloadLoRAs];
@@ -440,7 +535,6 @@ static NSView *BlockWithHint(NSString *label, NSView *control, NSTextField *hint
 - (void)dealloc {
     [NSNotificationCenter.defaultCenter removeObserver:self];
     [self.timer invalidate];
-    [self.playerTimer invalidate];
 }
 
 - (void)themeChanged {
@@ -559,6 +653,8 @@ static NSView *BlockWithHint(NSString *label, NSView *control, NSTextField *hint
     self.quality.selectedIndex = steps <= 20 ? 0 : steps <= 40 ? 1 : 2;
     self.adaptCheck.state = [OVSettings adaptAccent] ? NSControlStateValueOn : NSControlStateValueOff;
     for (OVSliderRow *s in self.styleSliders) [s refresh];
+    NSInteger fi = [self.formatPopup indexOfItemWithRepresentedObject:[OVSettings exportFormatId]];
+    if (fi >= 0 && fi != self.formatPopup.indexOfSelectedItem) [self.formatPopup selectItemAtIndex:fi];
     [self refreshMood];
     if ([OVSettings adaptAccent] != self.lastAdaptAccent) {   // the accent checkbox (or Settings) changed it: the voice hint depends on it
         self.lastAdaptAccent = [OVSettings adaptAccent];
@@ -582,7 +678,8 @@ static NSView *BlockWithHint(NSString *label, NSView *control, NSTextField *hint
     self.banner.stringValue = problem ?: @"";
     self.banner.toolTip = problem;
     BOOL busy = [OVWorker shared].busy;
-    self.synthButton.enabled = !busy && problem == nil;
+    self.synthButton.enabled = !busy && !self.exporting && problem == nil;
+    self.batchButton.enabled = self.synthButton.enabled;
     self.stopButton.hidden = !busy;
     self.progress.hidden = !busy && self.progress.doubleValue <= 0;
     // a ghost pill cannot be tinted, so an active adapter is shown by name
@@ -838,6 +935,164 @@ static BOOL IsVowel(unichar c) {
     }
 }
 
+#pragma mark Presets
+
+- (nullable OVPreset *)selectedPreset {
+    for (OVPreset *p in [OVPresets shared].all) if ([p.identifier isEqualToString:self.presetId ?: @""]) return p;
+    return nil;
+}
+
+- (void)reloadPresets {
+    [self.presetPopup removeAllItems];
+    [self.presetPopup addItemWithTitle:L(@"No preset")];
+    for (OVPreset *p in [OVPresets shared].all) {
+        [self.presetPopup addItemWithTitle:p.name];
+        self.presetPopup.lastItem.representedObject = p.identifier;
+    }
+    NSInteger i = self.presetId ? [self.presetPopup indexOfItemWithRepresentedObject:self.presetId] : 0;
+    if (i < 0) { i = 0; self.presetId = nil; }
+    [self.presetPopup selectItemAtIndex:i];
+    self.presetRename.enabled = self.presetDelete.enabled = i > 0;
+}
+
+/// Style, format (when the preset has one) and effects chain, the formants included.
+- (void)applyPreset:(OVPreset *)p {
+    NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
+    if (p.style.count) [OVSettings applyStyle:p.style];
+    if (p.formatId.length) {
+        [d setObject:p.formatId forKey:@"exportFormat"];
+        [d setInteger:p.quality forKey:@"exportQuality"];
+    }
+    NSMutableArray *chain = [p.chain mutableCopy] ?: [NSMutableArray array];
+    BOOL hasFormant = NO;
+    for (NSDictionary *e in chain) if ([e[@"type"] isEqualToString:@"formant"]) hasFormant = YES;
+    if (!hasFormant && fabs(p.formant - 1.0) > 0.001) [chain addObject:@{@"type": @"formant", @"on": @YES, @"params": @{@"ratio": @(p.formant)}}];
+    self.effects.chain = chain;
+    [d setObject:self.effects.chain forKey:@"effectsChain"];
+    [self syncControls];
+    [self textDidChange:[NSNotification notificationWithName:NSTextDidChangeNotification object:nil]];
+}
+
+- (void)presetPicked:(NSPopUpButton *)pop {
+    self.presetId = pop.selectedItem.representedObject;
+    self.presetRename.enabled = self.presetDelete.enabled = self.presetId != nil;
+    OVPreset *p = [self selectedPreset];
+    if (p) [self applyPreset:p];
+}
+
+- (void)presetSave:(id)s {
+    NSString *name = AskName(L(@"Save the current settings as a preset"), L(@"Save"), nil);
+    if (!name) return;
+    OVPreset *p = [OVPreset new];
+    p.name = name;
+    p.style = [OVSettings currentStyle];
+    p.formatId = [OVSettings exportFormatId];
+    p.quality = [OVSettings exportQuality];
+    p.chain = self.effects.activeChain;
+    p.formant = 1.0;
+    for (NSDictionary *e in p.chain)
+        if ([e[@"type"] isEqualToString:@"formant"]) p.formant = [e[@"params"][@"ratio"] doubleValue] ?: 1.0;
+    OVPreset *saved = [[OVPresets shared] add:p];
+    if (!saved) return;
+    self.presetId = saved.identifier;
+    [self reloadPresets];
+}
+
+- (void)presetRename:(id)s {
+    OVPreset *p = [self selectedPreset];
+    if (!p) return;
+    NSString *name = AskName(L(@"Rename the preset"), L(@"Rename"), p.name);
+    if (name) [[OVPresets shared] rename:p to:name];
+}
+
+- (void)presetDelete:(id)s {
+    OVPreset *p = [self selectedPreset];
+    if (!p) return;
+    NSAlert *a = [NSAlert new];
+    a.messageText = [NSString stringWithFormat:L(@"Delete the preset “%@”?"), p.name];
+    a.informativeText = L(@"The voice style and the effects stay as they are now.");
+    [a addButtonWithTitle:L(@"Delete")];
+    [a addButtonWithTitle:L(@"Cancel")];
+    if ([a runModal] != NSAlertFirstButtonReturn) return;
+    self.presetId = nil;
+    [[OVPresets shared] remove:p];
+}
+
+- (void)presetImport:(id)s {
+    NSOpenPanel *panel = [NSOpenPanel openPanel];
+    panel.allowedContentTypes = @[UTTypeJSON];
+    panel.message = L(@"Choose a preset exported from Clone’n’Speak");
+    if ([panel runModal] != NSModalResponseOK || !panel.URL) return;
+    NSData *data = [NSData dataWithContentsOfFile:panel.URL.path];
+    __weak typeof(self) w = self;
+    [[OVPresets shared] importData:data ?: [NSData data] completion:^(OVPreset *preset, NSArray<NSString *> *warnings, NSString *error) {
+        if (!preset) { w.status.stringValue = error ?: L(@"This is not a preset file."); return; }
+        OVPreset *saved = [[OVPresets shared] add:preset];
+        if (!saved) return;
+        w.presetId = saved.identifier;
+        [w reloadPresets];
+        w.status.stringValue = warnings.count ? [NSString stringWithFormat:L(@"Preset imported. %@"), [warnings componentsJoinedByString:@" "]]
+                                              : L(@"Preset imported");
+        [w applyPreset:saved];
+    }];
+}
+
+- (void)presetExport:(id)s {
+    OVPreset *p = [self selectedPreset];
+    if (!p) { self.status.stringValue = L(@"Pick a preset to export"); return; }
+    NSSavePanel *panel = [NSSavePanel savePanel];
+    panel.allowedContentTypes = @[UTTypeJSON];
+    NSString *safe = [[p.name componentsSeparatedByCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@"/:"]] componentsJoinedByString:@"-"];
+    panel.nameFieldStringValue = [safe stringByAppendingPathExtension:@"json"];
+    if ([panel runModal] != NSModalResponseOK || !panel.URL) return;
+    NSError *err = nil;
+    if (![[[OVPresets shared] exportData:p] writeToURL:panel.URL options:NSDataWritingAtomic error:&err])
+        self.status.stringValue = err.localizedDescription ?: L(@"The preset could not be saved");
+}
+
+#pragma mark Export format
+
+- (void)formatPicked:(NSPopUpButton *)pop {
+    NSString *fid = pop.selectedItem.representedObject;
+    if (!fid) return;
+    [NSUserDefaults.standardUserDefaults setObject:fid forKey:@"exportFormat"];
+    if (![fid isEqualToString:@"wav"]) [NSUserDefaults.standardUserDefaults setInteger:-1 forKey:@"exportQuality"];
+}
+
+/// The last recording in the chosen format, wherever the user says.
+- (void)saveAs:(id)s {
+    OVGeneration *g = self.lastResultPath ? [self generationForPath:self.lastResultPath] : [OVHistory shared].all.firstObject;
+    if (!g) { self.status.stringValue = L(@"Make a recording first"); return; }
+    NSString *fid = self.formatPopup.selectedItem.representedObject ?: @"wav";
+    OVExportFormat fmt = [OVExport formatForIdentifier:fid];
+    NSSavePanel *panel = [NSSavePanel savePanel];
+    NSString *ext = [fid isEqualToString:@"alac"] ? @"m4a" : fid;
+    UTType *type = ext.length ? [UTType typeWithFilenameExtension:ext] : nil;
+    if (type) panel.allowedContentTypes = @[type];
+    panel.nameFieldStringValue = [g.path.lastPathComponent.stringByDeletingPathExtension stringByAppendingPathExtension:ext ?: @"wav"];
+    panel.message = [NSString stringWithFormat:L(@"Save as %@"), fid.uppercaseString];
+    if ([panel runModal] != NSModalResponseOK || !panel.URL) return;
+    NSString *dst = panel.URL.path.stringByDeletingPathExtension, *src = g.path;
+    // the panel already asked about overwriting; OVExport never overwrites ("name 2"), so the confirmed target goes to the Trash first
+    if ([NSFileManager.defaultManager fileExistsAtPath:panel.URL.path]) [NSFileManager.defaultManager trashItemAtURL:panel.URL resultingItemURL:nil error:nil];
+    NSInteger quality = [OVSettings exportQuality];
+    self.status.stringValue = [NSString stringWithFormat:L(@"Saving as %@…"), fid.uppercaseString];
+    __weak typeof(self) w = self;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSError *err = nil;
+        NSString *out = [OVExport exportFile:src to:dst format:fmt quality:quality error:&err];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (!out) { w.status.stringValue = err.localizedDescription ?: L(@"unknown error"); return; }
+            w.status.stringValue = [NSString stringWithFormat:L(@"Saved: %@"), out.lastPathComponent];
+            [NSWorkspace.sharedWorkspace activateFileViewerSelectingURLs:@[[NSURL fileURLWithPath:out]]];
+        });
+    });
+}
+
+- (void)showBatch:(id)s {
+    if (self.view.window) [OVBatchSheet showInWindow:self.view.window];
+}
+
 #pragma mark Actions
 
 - (void)openSetup:(id)s { OVNavigate(@"setup"); }
@@ -875,6 +1130,8 @@ static BOOL IsVowel(unichar c) {
     NSString *language = [OVLocale speechLanguageForText:text];
     NSMutableDictionary *req = [@{@"cmd": @"synth", @"model": spec, @"text": text, @"out": out,
                                   @"language": language, @"params": [OVSettings generationParams]} mutableCopy];
+    OVSynthApplyChain(req, self.effects.activeChain, out);
+    NSString *dryOut = req[@"dry_out"];
     if (voice) req[@"voice"] = [voice workerSpecForLanguage:language];
     // accent removal picks its best take with Whisper when it is there (it works without, too)
     if ([voice adaptsToLanguage:language] && [OVModels shared].asrModel) req[@"asr_path"] = [OVModels shared].asrModel.localPath;
@@ -908,12 +1165,38 @@ static BOOL IsVowel(unichar c) {
             w.status.stringValue = error;
             return;
         }
-        [[OVHistory shared] record:data[@"path"] text:text voice:voice result:data];
-        [w showResult:data];
-        [w refreshVoiceHint];  // the voice may have just learned a language
-        if ([NSUserDefaults.standardUserDefaults boolForKey:@"autoPlay"]) [[OVPlayer shared] play:data[@"path"]];
-        [w.table scrollRowToVisible:0];
+        NSMutableDictionary *rec = [data mutableCopy];
+        if (dryOut && [NSFileManager.defaultManager fileExistsAtPath:dryOut]) rec[@"dry_path"] = dryOut;
+        [w finishSynth:rec text:text voice:voice];
     }];
+}
+
+/// Writes the history entry (with the copy in the chosen format next to the WAV master) and shows the result.
+- (void)finishSynth:(NSMutableDictionary *)rec text:(NSString *)text voice:(OVVoice *)voice {
+    NSString *master = rec[@"path"], *formatId = [OVSettings exportFormatId];
+    OVExportFormat fmt = [OVExport formatForIdentifier:formatId];
+    __weak typeof(self) w = self;
+    void (^finish)(NSString *, NSString *) = ^(NSString *exported, NSString *exportError) {
+        if (exported) { rec[@"exported_path"] = exported; rec[@"format"] = formatId; }
+        [[OVHistory shared] record:master text:text voice:voice result:rec];
+        [w showResult:rec];
+        if (exportError) w.status.stringValue = [w.status.stringValue stringByAppendingFormat:L(@" · not saved as %@: %@"), formatId.uppercaseString, exportError];
+        w.lastResultPath = master;
+        [w refreshVoiceHint];  // the voice may have just learned a language
+        [w showBarForPath:master];
+        if ([NSUserDefaults.standardUserDefaults boolForKey:@"autoPlay"]) [[OVPlayer shared] play:master];
+        [w.table scrollRowToVisible:0];
+    };
+    if (fmt == OVExportWAV) { finish(nil, nil); return; }
+    self.exporting = YES;
+    [self refreshState];
+    self.status.stringValue = [NSString stringWithFormat:L(@"Saving as %@…"), formatId.uppercaseString];
+    NSInteger quality = [OVSettings exportQuality];
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSError *err = nil;
+        NSString *out = [OVExport exportFile:master to:master.stringByDeletingPathExtension format:fmt quality:quality error:&err];
+        dispatch_async(dispatch_get_main_queue(), ^{ w.exporting = NO; finish(out, out ? nil : (err.localizedDescription ?: L(@"unknown error"))); });
+    });
 }
 
 - (void)showResult:(NSDictionary *)data {
@@ -940,40 +1223,30 @@ static BOOL IsVowel(unichar c) {
 
 #pragma mark Player bar
 
+- (nullable OVGeneration *)generationForPath:(NSString *)path {
+    for (OVGeneration *g in [OVHistory shared].all)
+        if ([g.path isEqualToString:path] || [g.exportedPath isEqualToString:path] || [g.originalPath isEqualToString:path]) return g;
+    return nil;
+}
+
+/// Points the bar at a take (master as B, the dry file as A when the take has effects) or at any other file.
+- (void)showBarForPath:(NSString *)path {
+    OVGeneration *g = [self generationForPath:path];
+    NSString *result = g ? g.path : path, *original = g.originalPath;
+    if (![self.abBar.path isEqualToString:result]) self.abBar.path = result;
+    if (self.abBar.originalPath != original && ![self.abBar.originalPath isEqualToString:original]) self.abBar.originalPath = original;
+    self.playerTitle.stringValue = g ? [[g.text componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet] componentsJoinedByString:@" "]
+                                     : L(@"Voice sample");
+    self.playerBar.hidden = NO;
+}
+
 - (void)playerChanged {
     OVPlayer *p = [OVPlayer shared];
-    BOOL loaded = p.currentPath != nil;
-    self.playerBar.hidden = !loaded;
-    self.playerButton.image = [NSImage imageWithSystemSymbolName:p.playing ? @"pause.fill" : @"play.fill" accessibilityDescription:nil];
-    self.playerButton.accessibilityLabel = p.playing ? L(@"Pause") : L(@"Play");
     self.sampleButton.title = [p.currentPath isEqualToString:[self selectedVoice].referencePath] && p.playing ? L(@"Stop") : L(@"Voice sample");
-    if (loaded) {
-        OVGeneration *g = nil;
-        for (OVGeneration *x in [OVHistory shared].all) if ([x.path isEqualToString:p.currentPath]) g = x;
-        self.playerTitle.stringValue = g ? [[g.text componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet] componentsJoinedByString:@" "]
-                                         : L(@"Voice sample");
-        self.playerSlider.maxValue = MAX(0.1, p.duration);
-        if (!self.playerTimer) {
-            __weak typeof(self) w = self;
-            self.playerTimer = [NSTimer scheduledTimerWithTimeInterval:0.1 repeats:YES block:^(NSTimer *t) { [w tickPlayer]; }];
-        }
-        [self tickPlayer];
-    } else {
-        [self.playerTimer invalidate];
-        self.playerTimer = nil;
-    }
+    if (p.currentPath) [self showBarForPath:p.currentPath];
+    else self.playerBar.hidden = self.lastResultPath == nil;
     [self.table reloadData];
 }
-
-- (void)tickPlayer {
-    OVPlayer *p = [OVPlayer shared];
-    self.playerSlider.doubleValue = p.currentTime;
-    self.playerTime.stringValue = [NSString stringWithFormat:@"%@ / %@", OVFormatDuration(p.currentTime), OVFormatDuration(p.duration)];
-}
-
-- (void)playerToggle:(id)s { [[OVPlayer shared] pauseOrResume]; }
-- (void)playerSeek:(NSSlider *)s { [[OVPlayer shared] seek:s.doubleValue]; }
-- (void)playerStop:(id)s { [[OVPlayer shared] stop]; }
 
 #pragma mark History table
 
@@ -983,6 +1256,10 @@ static BOOL IsVowel(unichar c) {
     self.emptyHistory.hidden = n > 0;
     self.table.enclosingScrollView.hidden = n == 0;
     self.tableHeight.constant = MAX(1, MIN(n, kTakeRowsVisible)) * kTakeRowHeight;   // more rows scroll inside the list
+    if (self.lastResultPath && ![self generationForPath:self.lastResultPath]) {
+        self.lastResultPath = nil;
+        if (![OVPlayer shared].currentPath) self.playerBar.hidden = YES;
+    }
     self.historyTitle.stringValue = n ? [NSString stringWithFormat:L(@"Recent takes · %lu"), (unsigned long)n] : L(@"Recent takes");
 }
 
@@ -1001,9 +1278,10 @@ static BOOL IsVowel(unichar c) {
     cell.meta.stringValue = [NSString stringWithFormat:@"%@ · %@ · %@%@", g.voiceName.length ? g.voiceName : @"—", OVFormatDuration(g.seconds), when, clarity];
     cell.meta.toolTip = g.problems.count ? [NSString stringWithFormat:L(@"Unclear: %@"), [[g.problems valueForKey:@"text"] componentsJoinedByString:@" / "]] : nil;
     [cell setLikeness:g.likeness];
+    [cell setFormat:g.formatId effects:g.originalPath != nil];
     cell.improve.enabled = self.synthButton.enabled;
     OVPlayer *p = [OVPlayer shared];
-    BOOL playing = [p.currentPath isEqualToString:g.path] && p.playing;
+    BOOL playing = ([p.currentPath isEqualToString:g.path] || (g.originalPath && [p.currentPath isEqualToString:g.originalPath])) && p.playing;
     cell.play.image = [NSImage imageWithSystemSymbolName:playing ? @"pause.fill" : @"play.fill" accessibilityDescription:nil];
     cell.play.accessibilityLabel = playing ? L(@"Pause") : L(@"Listen");
     return cell;
@@ -1025,7 +1303,12 @@ static BOOL IsVowel(unichar c) {
 }
 - (void)revealRow:(id)s {
     OVGeneration *g = [self genFor:s];
-    if (g) [NSWorkspace.sharedWorkspace activateFileViewerSelectingURLs:@[[NSURL fileURLWithPath:g.path]]];
+    if (g) [NSWorkspace.sharedWorkspace activateFileViewerSelectingURLs:@[[NSURL fileURLWithPath:g.deliveryPath]]];
+}
+/// Dragging a row out hands over the file in the chosen format.
+- (id<NSPasteboardWriting>)tableView:(NSTableView *)t pasteboardWriterForRow:(NSInteger)row {
+    NSArray<OVGeneration *> *all = [OVHistory shared].all;
+    return row >= 0 && row < (NSInteger)all.count ? [NSURL fileURLWithPath:all[row].deliveryPath] : nil;
 }
 - (void)deleteRow:(id)s {
     OVGeneration *g = [self genFor:s];

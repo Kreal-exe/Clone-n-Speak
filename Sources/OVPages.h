@@ -41,6 +41,8 @@ extern NSNotificationName const OVSeparatorUseInToolsNotification;   // userInfo
 /// The file "Use in Audio Tools" handed over (nil if none); Audio Tools may read it when it appears.
 + (nullable NSString *)pendingToolsInputPath;
 @end
+/// Audio Tools: analyzer, effects, formant / pitch, DeepFilterNet cleanup and conversion of any audio or video file.
+@interface OVToolsPage : NSViewController @end
 /// Pro-engine pages (16 GB tier); stubs until their own tasks land.
 @interface OVConvertPage : NSViewController @end
 @interface OVRealtimePage : NSViewController @end
@@ -49,6 +51,8 @@ extern NSNotificationName const OVSeparatorUseInToolsNotification;   // userInfo
 /// API & Bridge: the local API card here (8.6); the Bridge card is added by 8.7.
 @interface OVAPIPage : NSViewController @end
 @interface OVBlenderPage : NSViewController @end
+/// Data & Privacy: what goes online, where files live, voice rights.
+@interface OVPrivacyPage : NSViewController @end
 /// Developer-only page with every OVDesign component (not in the sidebar; OVNavigate(@"gallery") or -OVStartPage gallery).
 @interface OVGalleryPage : NSViewController @end
 
