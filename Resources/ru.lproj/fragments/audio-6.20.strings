@@ -12,3 +12,5 @@
 "Paste a Hugging Face link to a LoRA made with PEFT. It is checked first, then downloaded." = "Вставьте ссылку Hugging Face на LoRA, сделанный через PEFT. Сначала репозиторий проверяется, потом скачивается.";
 "Checking the repository…" = "Проверяю репозиторий…";
 "Couldn’t add this LoRA." = "Не удалось добавить этот LoRA.";
+"The Hugging Face address in the settings is not https, so the repository isn’t checked (your token must not go over an unencrypted connection)." = "Адрес Hugging Face в настройках не https, поэтому репозиторий не проверяется (токен нельзя отправлять по незащищённому соединению).";
+".bin adapters aren’t supported — the repository needs adapter_model.safetensors." = "Адаптеры .bin не поддерживаются: в репозитории нужен файл adapter_model.safetensors.";

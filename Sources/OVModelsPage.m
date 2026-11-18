@@ -31,7 +31,7 @@ static NSString *DetailsText(NSString *details) {
 @property (weak) id target;
 @property NSString *repo;
 @property NSButton *radio;
-@property NSTextField *title, *details, *meta;
+@property NSTextField *title,*details, *meta;
 @property NSProgressIndicator *bar;
 @property NSStackView *buttons, *titleRow;
 @property (nonatomic) NSView *statusBadge;
@@ -163,7 +163,8 @@ static NSString *DetailsText(NSString *details) {
 @property NSStackView *ttsList, *loraList, *asrList, *catalogList;
 @property NSMutableDictionary<NSString *, OVModelRow *> *rows;
 @property OVSegmented *catalogKind, *tabs;
-@property NSTextField *catalogStatus, *repoField, *hfLinkField, *hfStatus, *addStatus, *endpointField, *cacheLabel;
+@property NSButton *addLinkButton;
+@property NSTextField *catalogStatus,*repoField, *hfLinkField, *hfStatus, *addStatus, *endpointField, *cacheLabel;
 @property OVPopup *kindPopup;
 @property NSSecureTextField *tokenField;
 @property NSTextField *accentMeta;
@@ -253,6 +254,7 @@ static NSString *DetailsText(NSString *details) {
     self.hfLinkField.target = self;
     self.hfLinkField.action = @selector(addLoRAFromLink:);
     NSButton *addLink = OVGhostButton(L(@"Add LoRA"), @"link", self, @selector(addLoRAFromLink:));
+    self.addLinkButton = addLink;
     addLink.accessibilityLabel = L(@"Add LoRA from a Hugging Face link");
     self.hfStatus = OVWrapLabel(L(@"Paste a Hugging Face link to a LoRA made with PEFT. It is checked first, then downloaded."), 13, nil);
     NSStackView *linkRow = OVHStack(@[self.hfLinkField, addLink], 8);
@@ -515,15 +517,23 @@ static NSString *DetailsText(NSString *details) {
 - (void)addLoRAFromLink:(id)s {
     NSString *text = self.hfLinkField.stringValue;
     if (![text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet].length) return;
-    self.hfStatus.stringValue = L(@"Checking the repository…");
+    self.addLinkButton.enabled = NO;
+    [self setHFStatus:L(@"Checking the repository…")];
     [[OVModels shared] addLoRAFromString:text completion:^(OVModel *m, NSString *error) {
-        if (!m) { self.hfStatus.stringValue = error ?: L(@"Couldn’t add this LoRA."); return; }
+        self.addLinkButton.enabled = YES;
+        if (!m) { [self setHFStatus:error ?: L(@"Couldn’t add this LoRA.")]; return; }
         self.hfLinkField.stringValue = @"";
         [[OVModels shared] selectLoRA:m];
         [self reloadEngine];
-        self.hfStatus.stringValue = m.installed ? [NSString stringWithFormat:L(@"LoRA “%@” is connected."), m.title]
-                                                : [NSString stringWithFormat:L(@"LoRA “%@” is selected and downloading."), m.title];
+        [self setHFStatus:m.installed ? [NSString stringWithFormat:L(@"LoRA “%@” is connected."), m.title]
+                                      : [NSString stringWithFormat:L(@"LoRA “%@” is selected and downloading."), m.title]];
     }];
+}
+
+- (void)setHFStatus:(NSString *)text {
+    self.hfStatus.stringValue = text;
+    NSAccessibilityPostNotificationWithUserInfo(self.hfStatus, NSAccessibilityAnnouncementRequestedNotification,
+                                                @{NSAccessibilityAnnouncementKey: text});
 }
 
 - (void)saveAccess:(id)s {

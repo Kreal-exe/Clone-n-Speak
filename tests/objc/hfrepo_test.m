@@ -80,6 +80,38 @@ static void testApiMissingFilesError(void) {
     ASSERT(done && !m && err.length && !called);
 }
 
+static NSString *runAdd(NSString *s) {
+    __block NSString *err = nil; __block BOOL done = NO;
+    [OVModels.shared addLoRAFromString:s completion:^(OVModel *m, NSString *e) { err = e ?: @"(added)"; done = YES; }];
+    spin(&done);
+    return err;
+}
+
+static void testErrorKinds(void) {
+    NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
+    OVModels.shared.jsonFetcher = ^(NSURL *u, NSDictionary *h, void (^done)(id, NSError *)) {
+        done(nil, [NSError errorWithDomain:@"OV" code:404 userInfo:@{NSLocalizedDescriptionKey: @"Model not found on Hugging Face"}]);
+    };
+    ASSERT([runAdd(@"user/typo") containsString:@"was not found"]);
+    OVModels.shared.jsonFetcher = ^(NSURL *u, NSDictionary *h, void (^done)(id, NSError *)) {
+        done(nil, [NSError errorWithDomain:NSURLErrorDomain code:-1009 userInfo:@{NSLocalizedDescriptionKey: @"The Internet connection appears to be offline."}]);
+    };
+    NSString *e = runAdd(@"user/lora");
+    ASSERT([e containsString:@"Couldn’t reach"] && [e containsString:@"offline."]);
+    fake(@[@"adapter_config.json", @"adapter_model.bin"]);
+    ASSERT([runAdd(@"user/oldlora") containsString:@"adapter_model.safetensors"]);
+    // offline mode: no request
+    __block BOOL called = NO;
+    OVModels.shared.jsonFetcher = ^(NSURL *u, NSDictionary *h, void (^dn)(id, NSError *)) { called = YES; dn(nil, nil); };
+    [d setBool:YES forKey:@"offlineMode"];
+    ASSERT([runAdd(@"user/lora") containsString:@"Offline mode"] && !called);
+    [d removeObjectForKey:@"offlineMode"];
+    // http endpoint with a token: refused, no request
+    [d setObject:@"http://huggingface.co" forKey:@"hfEndpoint"];
+    ASSERT([runAdd(@"user/lora") containsString:@"not https"] && !called);
+    [d removeObjectForKey:@"hfEndpoint"];
+}
+
 int main(void) {
     @autoreleasepool {
         NSString *dir = [NSTemporaryDirectory() stringByAppendingPathComponent:[NSString stringWithFormat:@"hfrepo-%d", getpid()]];
@@ -89,6 +121,7 @@ int main(void) {
         testParse();
         testAddUsesLoRAKind();
         testApiMissingFilesError();
+        testErrorKinds();
         [NSFileManager.defaultManager removeItemAtPath:dir error:nil];
     }
     if (gFailures) { fprintf(stderr, "%d failure(s)\n", gFailures); return 1; }

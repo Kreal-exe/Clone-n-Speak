@@ -499,18 +499,27 @@ static BOOL ValidRepoPart(NSString *p) {
     NSString *repo = [OVModels repoFromHuggingFaceString:s];
     if (!repo) { completion(nil, L(@"Enter a LoRA as “author/name” or a huggingface.co link.")); return; }
     if (OVNetwork.offline) { completion(nil, L(@"Offline mode is on, so the repository can’t be checked. Turn it off in Settings to add a LoRA by link.")); return; }
+    if (![[self endpoint].lowercaseString hasPrefix:@"https://"]) {
+        completion(nil, L(@"The Hugging Face address in the settings is not https, so the repository isn’t checked (your token must not go over an unencrypted connection)."));
+        return;
+    }
     NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"%@/api/models/%@", [self endpoint], repo]];
     void (^fetch)(NSURL *, NSDictionary *, void (^)(id, NSError *)) = self.jsonFetcher ?: ^(NSURL *u, NSDictionary *h, void (^d)(id, NSError *)) { OVFetchJSON(u, h, d); };
     fetch(url, [self headers], ^(id json, NSError *err) {
         dispatch_async(dispatch_get_main_queue(), ^{
             if (![json isKindOfClass:NSDictionary.class]) {
-                completion(nil, err ? [NSString stringWithFormat:L(@"Couldn’t reach Hugging Face for “%@”: %@"), repo, err.localizedDescription]
-                                    : [NSString stringWithFormat:L(@"Repository “%@” was not found on Hugging Face. Check the link."), repo]);
+                BOOL notFound = !err || ([err.domain isEqualToString:@"OV"] && err.code == 404);
+                completion(nil, notFound ? [NSString stringWithFormat:L(@"Repository “%@” was not found on Hugging Face. Check the link."), repo]
+                                         : [NSString stringWithFormat:L(@"Couldn’t reach Hugging Face for “%@”: %@"), repo, err.localizedDescription]);
                 return;
             }
             NSMutableSet *files = [NSMutableSet set];
             for (id sib in [json[@"siblings"] isKindOfClass:NSArray.class] ? json[@"siblings"] : @[])
                 if ([sib isKindOfClass:NSDictionary.class] && [sib[@"rfilename"] isKindOfClass:NSString.class]) [files addObject:sib[@"rfilename"]];
+            if ([files containsObject:@"adapter_config.json"] && [files containsObject:@"adapter_model.bin"] && ![files containsObject:@"adapter_model.safetensors"]) {
+                completion(nil, L(@".bin adapters aren’t supported — the repository needs adapter_model.safetensors."));
+                return;
+            }
             if (![files containsObject:@"adapter_config.json"] || ![files containsObject:@"adapter_model.safetensors"]) {
                 completion(nil, L(@"This repository has no LoRA adapter files (adapter_config.json). Pick a repository made with PEFT."));
                 return;
