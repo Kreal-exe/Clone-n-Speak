@@ -509,6 +509,7 @@ NSScrollView *OVScrollPage(NSStackView *content) {
         for (NSView *v in @[self.titleLabel, self.slider, self.valuePill]) [self addArrangedSubview:v];
         [self.slider setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
         [fills addObject:[self.slider.widthAnchor constraintGreaterThanOrEqualToConstant:110]];
+        [fills addObject:[self.valuePill.widthAnchor constraintEqualToConstant:96]];   // one width for every value, so the tracks of stacked rows line up
     } else {
         self.orientation = NSUserInterfaceLayoutOrientationVertical;
         self.alignment = NSLayoutAttributeLeading;

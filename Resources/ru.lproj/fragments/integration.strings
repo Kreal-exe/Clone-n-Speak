@@ -16,3 +16,8 @@
 "The model folder is on %@, which isn’t connected — connect it or choose another folder" = "Папка моделей на диске «%@», который не подключён: подключите его или выберите другую папку";
 "The Hugging Face address in the settings is not https, so nothing was downloaded. Fix it on the Models page." = "Адрес Hugging Face в настройках не https, поэтому ничего не загружено. Исправьте его на странице «Модели».";
 "Open Setup" = "Открыть «Подготовка к работе»";
+/* Shorter Russian names: the sidebar and the settings checkbox were cut off at the 820 pt window. */
+"Realtime" = "Живой голос";
+"Voice Blender" = "Микс голосов";
+"Engine not installed" = "Нет движка";
+"Remove the sample’s accent when the text is in another language (learned once per voice, about a minute)" = "Убирать акцент образца в другом языке (учится раз, около минуты)";

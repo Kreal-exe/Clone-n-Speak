@@ -528,7 +528,7 @@
 "Engine (onnxruntime, about 76 MB): not installed" = "Движок (onnxruntime, около 76 МБ): не установлен";
 "engine idle · %@" = "движок выгружен · %@";
 "Engine idle — memory released" = "Движок простаивает — память освобождена";
-"Engine not installed" = "Движок не установлен";
+"Engine not installed" = "Нет движка";
 "Engines" = "Движки";
 "Enter a LoRA as “author/name” or a huggingface.co link." = "Введите LoRA как «автор/название» или ссылку huggingface.co.";
 "Enter a model as “author/name”, a link, or an existing folder." = "Укажите модель как «автор/название», ссылкой или существующей папкой.";
@@ -985,8 +985,8 @@
 "Open plugins folder" = "Открыть папку плагинов";
 "Open Privacy Settings" = "Открыть настройки конфиденциальности";
 "Open Settings" = "Открыть Настройки";
-"Open setup" = "Открыть подготовку";
 "Open Setup" = "Открыть «Подготовка к работе»";
+"Open setup" = "Открыть подготовку";
 "Open Speech" = "Открыть озвучку";
 "Open the model page" = "Открыть страницу модели";
 "Optional" = "По желанию";
@@ -1111,7 +1111,7 @@
 "Ready · %@" = "Готово · %@";
 "Ready! Here is how the clone sounds. The voice is selected on the Speech page." = "Готово! Так звучит клон. Голос выбран на странице «Озвучка».";
 "Ready! The recording was long, so its best %@ became the sample (the original is kept)." = "Готово! Запись была длинной, поэтому образцом стали её лучшие %@ (оригинал сохранён).";
-"Realtime" = "В реальном времени";
+"Realtime" = "Живой голос";
 "Realtime is running" = "Realtime работает";
 "Realtime voice" = "Голос в реальном времени";
 "Recent API jobs" = "Последние задачи API";
@@ -1139,7 +1139,7 @@
 "Remove music: %@" = "Убрать музыку: %@";
 "Remove reverb" = "Убрать реверберацию";
 "Remove the sample’s accent in other languages" = "Убирать акцент образца в других языках";
-"Remove the sample’s accent when the text is in another language (learned once per voice, about a minute)" = "Убирать акцент образца, когда текст на другом языке (учится один раз для голоса, около минуты)";
+"Remove the sample’s accent when the text is in another language (learned once per voice, about a minute)" = "Убирать акцент образца в другом языке (учится раз, около минуты)";
 "Remove “%@”?" = "Удалить «%@»?";
 "Removes background noise and rumble, trims long pauses and evens out loudness. The original is kept." = "Убирает фоновый шум и гул, сокращает длинные паузы и выравнивает громкость. Оригинал сохраняется.";
 "Removes background noise from the result." = "Убирает фоновый шум из результата.";
@@ -1669,7 +1669,7 @@
 "Voice A" = "Голос A";
 "Voice and style" = "Голос и стиль";
 "Voice B" = "Голос B";
-"Voice Blender" = "Смешивание голосов";
+"Voice Blender" = "Микс голосов";
 "Voice change" = "Смена голоса";
 "Voice cloning" = "Клонирование голоса";
 "voice cloning · 600+ languages" = "клонирование голоса · 600+ языков";

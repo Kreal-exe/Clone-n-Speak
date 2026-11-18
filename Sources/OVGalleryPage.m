@@ -290,7 +290,7 @@ static NSDictionary *SampleAnalysis(void) {
 
     OVEffectsView *effects = [OVEffectsView new];
     effects.chain = @[];
-    NSView *effectsBlock = OVVStack(@[Cap(L(@"The list of effects comes from the engine")), effects], 6);
+    NSView *effectsBlock = OVFillStack(@[Cap(L(@"The list of effects comes from the engine")), effects], 6);
 
     NSArray *cards = @[
         OVStepCard(0, @"button.horizontal", L(@"Buttons"), nil, buttons),

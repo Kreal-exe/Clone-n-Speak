@@ -494,10 +494,10 @@ static NSArray<NSArray *> *QualityChoices(NSString *formatId) {
 - (void)refreshModelFolder {
     NSString *dir = [OVModels hubCache];
     self.modelPath.stringValue = [dir stringByAbbreviatingWithTildeInPath];
-    long long free = [OVModels freeBytesForFolder:dir];
+    NSString *warn = [OVModels hubCacheWarning];
+    long long free = warn ? -1 : [OVModels freeBytesForFolder:dir];   // a missing volume has no free space; "/" would answer for it
     self.modelFree.stringValue = free >= 0 ? [NSString stringWithFormat:L(@"%@ free"), OVFormatBytes(free)] : @"";
     self.modelFree.hidden = free < 0;
-    NSString *warn = [OVModels hubCacheWarning];
     self.modelWarning.stringValue = warn ?: @"";
     self.modelWarning.hidden = warn == nil;
 }
