@@ -35,6 +35,22 @@ typedef NS_ENUM(NSInteger, OVModelKind) { OVModelTTS, OVModelASR, OVModelLoRA };
 @interface OVModels : NSObject
 + (instancetype)shared;
 + (NSString *)hubCache;
+/// The folder the user chose in Settings (defaults key hfCacheDir), or nil for the default one.
++ (nullable NSString *)hubCacheOverride;
+/// Chooses the model folder (nil = back to the default), stops the engine so it restarts with the new HF_HUB_CACHE,
+/// rescans and posts OVModelsDidChangeNotification.
++ (void)setHubCacheOverride:(nullable NSString *)path;
+/// Pure form of +hubCache: override (already tilde-expanded or not) → HF_HUB_CACHE → HF_HOME/hub → <home>/.cache/huggingface/hub.
++ (NSString *)hubCacheWithOverride:(nullable NSString *)override environment:(NSDictionary<NSString *, NSString *> *)env home:(NSString *)home;
+/// The name of the external volume a folder lives on when that volume is not connected (/Volumes/<name>/… and no
+/// /Volumes/<name>), else nil. `volumesRoot` is "/Volumes" (a parameter for tests).
++ (nullable NSString *)disconnectedVolumeForFolder:(NSString *)path volumesRoot:(NSString *)volumesRoot;
+/// The warning of Settings and Setup for the current model folder, or nil when its volume is there.
++ (nullable NSString *)hubCacheWarning;
+/// Free bytes on the volume that holds `path` (the nearest existing parent is asked); -1 when unknown.
++ (long long)freeBytesForFolder:(NSString *)path;
+/// "https://…" only. A plain http endpoint, a missing scheme or a missing host is refused.
++ (BOOL)endpointIsSecure:(NSString *)endpoint;
 
 @property (readonly) NSArray<OVModel *> *all;
 - (NSArray<OVModel *> *)modelsOfKind:(OVModelKind)kind;         // listed (non-catalog, non-hidden)

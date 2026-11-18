@@ -19,10 +19,8 @@ _NAMES = {"edge_tts": "Edge TTS", "youtube": "YouTube import", "bridge": "Bridge
 
 
 def require_online(feature, env=None):
-    """Raises OfflineError (with what to do) when Offline mode is on. Model downloads the user starts are never blocked."""
+    """Raises OfflineError (with what to do) when Offline mode is on. Every feature is blocked, model downloads included."""
     if feature not in FEATURES:
         raise ValueError("unknown network feature: %r" % (feature,))
-    if feature == "model_download":
-        return
     if is_offline(env):
         raise OfflineError("Offline mode is on. Turn it off in Settings to use %s." % _NAMES[feature])

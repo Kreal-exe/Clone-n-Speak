@@ -15,6 +15,7 @@ static NSError *ExportError(NSInteger code, NSString *message) {
 
 static NSString *gFFmpegPath;
 static BOOL gFFmpegResolved;
+static NSArray<NSDictionary *> *gFormats;   // the last formats list; cleared with the ffmpeg cache
 static NSString *gEncoders;     // output of `ffmpeg -hide_banner -encoders`, nil = not read yet
 static NSObject *gLock;
 
@@ -126,7 +127,18 @@ static void CompactM4A(NSString *path) {
         gFFmpegPath = nil;
         gFFmpegResolved = NO;
         gEncoders = nil;
+        gFormats = nil;
     }
+}
+
++ (void)warmFormats {
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{ (void)[self formats]; });
+}
+
++ (NSArray<NSDictionary *> *)formatsWithoutBlocking {
+    @synchronized (gLock) { if (gFormats) return gFormats; }
+    [self warmFormats];
+    return [self formatsAssumingNoFFmpeg];
 }
 
 + (BOOL)ffmpegHasEncoder:(NSString *)name {
@@ -150,8 +162,17 @@ static void CompactM4A(NSString *path) {
 #pragma mark - formats
 
 + (NSArray<NSDictionary *> *)formats {
+    @synchronized (gLock) { if (gFormats) return gFormats; }
     BOOL mp3 = [self ffmpegHasEncoder:@"libmp3lame"];
     BOOL ogg = [self ffmpegHasEncoder:@"libvorbis"];
+    NSArray *list = [self formatsWithMP3:mp3 ogg:ogg];
+    @synchronized (gLock) { if (gFFmpegResolved) gFormats = list; }
+    return list;
+}
+
++ (NSArray<NSDictionary *> *)formatsAssumingNoFFmpeg { return [self formatsWithMP3:NO ogg:NO]; }
+
++ (NSArray<NSDictionary *> *)formatsWithMP3:(BOOL)mp3 ogg:(BOOL)ogg {
     NSString *reason = NEEDS_FFMPEG_TEXT;
     NSDictionary *(^mk)(NSString *, NSString *, NSString *, BOOL, BOOL) = ^NSDictionary *(NSString *i, NSString *t, NSString *e, BOOL lossless, BOOL avail) {
         NSMutableDictionary *d = [@{@"id": i, @"title": t, @"ext": e, @"lossless": @(lossless), @"available": @(avail)} mutableCopy];

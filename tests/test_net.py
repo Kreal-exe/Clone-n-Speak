@@ -24,8 +24,10 @@ class Net(unittest.TestCase):
         self.assertIn("Settings", str(cm.exception))
         self.assertIn("Offline mode is on", str(cm.exception))
 
-    def test_model_download_is_never_blocked(self):
-        cns_net.require_online("model_download", {"OV_OFFLINE": "1"})
+    def test_model_download_is_blocked_offline(self):
+        with self.assertRaises(cns_net.OfflineError):
+            cns_net.require_online("model_download", {"OV_OFFLINE": "1"})
+        cns_net.require_online("model_download", {})
 
     def test_unknown_feature_rejected(self):
         with self.assertRaises(ValueError):

@@ -1,4 +1,5 @@
 #import "OVEdgeTTS.h"
+#import "OVRvcStore.h"
 #import "OVDesign.h"
 #import "OVUI.h"
 #import "OVPages.h"
@@ -506,15 +507,7 @@ static NSString *CachePath(void) {
 
 - (NSArray<NSDictionary *> *)scanRvcModels {
     NSMutableArray *a = [NSMutableArray array];
-    NSString *root = OVPaths.rvcModels;
-    for (NSString *f in [[NSFileManager.defaultManager contentsOfDirectoryAtPath:root error:nil] sortedArrayUsingSelector:@selector(compare:)]) {
-        NSString *dir = [root stringByAppendingPathComponent:f];
-        NSData *d = [NSData dataWithContentsOfFile:[dir stringByAppendingPathComponent:@"meta.json"]];
-        if (!d) continue;   // a finished import always has meta.json
-        NSDictionary *meta = [NSJSONSerialization JSONObjectWithData:d options:0 error:nil];
-        NSString *name = [meta isKindOfClass:NSDictionary.class] && [meta[@"name"] isKindOfClass:NSString.class] ? meta[@"name"] : f;
-        [a addObject:@{@"name": name, @"folder": dir}];
-    }
+    for (OVRvcModel *m in OVRvcStore.shared.models) [a addObject:@{@"name": m.name, @"folder": m.folder}];
     return a;
 }
 

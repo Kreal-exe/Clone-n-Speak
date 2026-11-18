@@ -94,7 +94,7 @@ static OVBatchSheet *shown;  // the sheet keeps its controller alive
         self.presetPopup.lastItem.representedObject = c[@"preset"];
     }
     self.formatPopup = [OVPopup popup];
-    for (NSDictionary *f in [OVExport formats]) {
+    for (NSDictionary *f in [OVExport formatsWithoutBlocking]) {
         if (![f[@"available"] boolValue]) continue;
         [self.formatPopup addItemWithTitle:f[@"title"]];
         self.formatPopup.lastItem.representedObject = f[@"id"];

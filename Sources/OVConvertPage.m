@@ -13,38 +13,12 @@
 #import "OVStore.h"
 #import "OVExport.h"
 #import "OVYouTubeSheet.h"
+#import "OVRvcStore.h"
 
 static const NSUInteger kMaxBatch = 200;
 static const NSTimeInterval kMaxSeconds = 2 * 3600;
 static NSString *const kPage = @"convert";
 static NSString *sLastJobID;   // the page is rebuilt when the user comes back; the job it started is found again by this id
-
-#pragma mark - RVC models on disk
-
-/// Minimal reader of rvc/models/<id>/meta.json (task 7.14 replaces it with the shared OVRvcModels).
-@interface OVConvertModelReader : NSObject
-+ (NSArray<NSDictionary *> *)models;   // @{id, name, folder, info}
-@end
-@implementation OVConvertModelReader
-+ (NSArray<NSDictionary *> *)models {
-    NSFileManager *fm = NSFileManager.defaultManager;
-    NSString *root = [OVPaths rvcModels];
-    NSMutableArray *out = [NSMutableArray array];
-    for (NSString *n in [fm contentsOfDirectoryAtPath:root error:nil]) {
-        NSString *folder = [root stringByAppendingPathComponent:n];
-        NSData *d = [NSData dataWithContentsOfFile:[folder stringByAppendingPathComponent:@"meta.json"]];
-        NSDictionary *m = d ? [NSJSONSerialization JSONObjectWithData:d options:0 error:nil] : nil;
-        if (![m isKindOfClass:NSDictionary.class]) continue;
-        NSString *name = [m[@"name"] isKindOfClass:NSString.class] && [m[@"name"] length] ? m[@"name"] : n;
-        NSDictionary *info = [m[@"info"] isKindOfClass:NSDictionary.class] ? m[@"info"] : @{};
-        [out addObject:@{@"id": n, @"name": name, @"folder": folder, @"info": info}];
-    }
-    [out sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
-        return [a[@"name"] localizedCaseInsensitiveCompare:b[@"name"]];
-    }];
-    return out;
-}
-@end
 
 #pragma mark - Page
 
@@ -75,7 +49,7 @@ static void SetEnabledDeep(NSView *v, BOOL on, NSArray<NSView *> *skip) {
 @property (nonatomic) OVPopup *modelPopup, *voicePopup;
 @property (nonatomic) NSTextField *modelHint, *voiceHint;
 @property (nonatomic) NSView *rvcBox, *voiceBox;
-@property (nonatomic) NSArray<NSDictionary *> *models;
+@property (nonatomic) NSArray<OVRvcModel *> *models;
 @property (nonatomic) NSArray<OVVoice *> *voices;
 // settings
 @property (nonatomic) NSView *rvcSettings, *seedSettings;
@@ -406,16 +380,16 @@ static void SetEnabledDeep(NSView *v, BOOL on, NSArray<NSView *> *skip) {
 
 - (void)reloadTargets {
     NSString *wantModel = [D() stringForKey:@"convert.model"], *wantVoice = [D() stringForKey:@"convert.voice"];
-    self.models = [OVConvertModelReader models];
+    self.models = OVRvcStore.shared.models;
     [self.modelPopup removeAllItems];
     if (!self.models.count) {
         [self.modelPopup addItemWithTitle:L(@"No voice models yet")];
         self.modelPopup.enabled = NO;
     } else {
         self.modelPopup.enabled = YES;
-        for (NSDictionary *m in self.models) [self.modelPopup addItemWithTitle:m[@"name"]];
+        for (OVRvcModel *m in self.models) [self.modelPopup addItemWithTitle:m.name];
         NSUInteger idx = 0;
-        for (NSUInteger i = 0; i < self.models.count; i++) if ([self.models[i][@"id"] isEqual:wantModel]) idx = i;
+        for (NSUInteger i = 0; i < self.models.count; i++) if ([self.models[i].identifier isEqual:wantModel]) idx = i;
         [self.modelPopup selectItemAtIndex:idx];
     }
     NSMutableArray<OVVoice *> *vs = [NSMutableArray array];
@@ -434,7 +408,7 @@ static void SetEnabledDeep(NSView *v, BOOL on, NSArray<NSView *> *skip) {
     [self refreshTargetHints];
 }
 
-- (NSDictionary *)selectedModel {
+- (OVRvcModel *)selectedModel {
     NSInteger i = self.modelPopup.indexOfSelectedItem;
     return i >= 0 && i < (NSInteger)self.models.count ? self.models[i] : nil;
 }
@@ -444,13 +418,12 @@ static void SetEnabledDeep(NSView *v, BOOL on, NSArray<NSView *> *skip) {
 }
 
 - (void)refreshTargetHints {
-    NSDictionary *m = [self selectedModel];
+    OVRvcModel *m = [self selectedModel];
     if (m) {
-        NSDictionary *info = m[@"info"];
         NSMutableArray *parts = [NSMutableArray array];
-        if (info[@"version"]) [parts addObject:[NSString stringWithFormat:@"%@", info[@"version"]]];
-        if ([info[@"sample_rate"] doubleValue] > 0) [parts addObject:[NSString stringWithFormat:@"%.0f kHz", [info[@"sample_rate"] doubleValue] / 1000]];
-        [parts addObject:[info[@"has_index"] boolValue] ? L(@"has an index file") : L(@"no index file")];
+        if (m.version.length) [parts addObject:m.version];
+        if (m.sampleRate > 0) [parts addObject:[OVRvcStore kHzText:m.sampleRate]];
+        [parts addObject:m.hasIndex ? L(@"has an index file") : L(@"no index file")];
         self.modelHint.stringValue = [parts componentsJoinedByString:@" · "];
     } else {
         self.modelHint.stringValue = L(@"Import a voice model on the Models page, or train one.");
@@ -461,8 +434,8 @@ static void SetEnabledDeep(NSView *v, BOOL on, NSArray<NSView *> *skip) {
 }
 
 - (void)modelChanged:(id)s {
-    NSDictionary *m = [self selectedModel];
-    if (m) [D() setObject:m[@"id"] forKey:@"convert.model"];
+    OVRvcModel *m = [self selectedModel];
+    if (m) [D() setObject:m.identifier forKey:@"convert.model"];
     [self refreshTargetHints];
     [self updateUI];
 }
@@ -522,7 +495,7 @@ static void SetEnabledDeep(NSView *v, BOOL on, NSArray<NSView *> *skip) {
     self.cleanBox.hidden = [[self cleanMode] isEqual:@"off"];
     BOOL fcpeOK = [self fcpeReady];
     self.f0Hint.hidden = fcpeOK;
-    self.fcpeGate.hidden = fcpeOK;
+    self.fcpeGate.hidden = fcpeOK || !OVEngines.shared.statusLoaded;   // without a status the main gate above already says what to do
 
     BOOL on = [self bodyEnabled];
     SetEnabledDeep(self.body, on, @[self.fcpeGate, self.inputBar, self.resultBox, self.stopButton]);   // Stop and the result stay usable while the gate is closed
@@ -531,7 +504,7 @@ static void SetEnabledDeep(NSView *v, BOOL on, NSArray<NSView *> *skip) {
     // controls that depend on more than the gate
     self.modelPopup.enabled = on && self.models.count > 0;
     self.voicePopup.enabled = on && self.voices.count > 0;
-    self.indexRow.enabled = on && [[self selectedModel][@"info"][@"has_index"] boolValue];
+    self.indexRow.enabled = on && [self selectedModel].hasIndex;
     self.body.alphaValue = on ? 1 : 0.5;
 
     BOOL haveInput = batch ? self.batchFiles.count > 0 : (self.sourcePath.length && !self.decoding);
@@ -562,11 +535,11 @@ static void SetEnabledDeep(NSView *v, BOOL on, NSArray<NSView *> *skip) {
         r[@"_name"] = self.sourcePath.lastPathComponent;
         return r;
     }
-    NSDictionary *m = [self selectedModel];
+    OVRvcModel *m = [self selectedModel];
     if (!m) return nil;
     NSArray *f0s = @[@"rmvpe", @"crepe", @"fcpe"];
     r[@"engine"] = @"rvc";
-    r[@"model"] = m[@"folder"];
+    r[@"model"] = m.folder;
     r[@"pitch"] = @((NSInteger)self.pitchRow.value);
     r[@"f0_method"] = f0s[MAX(0, self.f0Picker.selectedIndex)];
     r[@"index_rate"] = @(self.indexRow.value);

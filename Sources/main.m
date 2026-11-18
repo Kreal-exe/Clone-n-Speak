@@ -17,6 +17,7 @@
 #import "OVProKit.h"
 #import "OVAPI.h"
 #import "OVBridge.h"
+#import "OVExport.h"
 
 @interface OVSeparatorPage (LaunchSweep)
 /// Removes decoded inputs older than a day that no running or retryable task needs (implemented in OVSeparatorPage.m).
@@ -484,6 +485,7 @@ static void OVRedrawTree(NSView *v) {
     [OVSettings registerDefaults];
     [NSUserDefaults.standardUserDefaults registerDefaults:@{@"autoPlay": @YES, @"autoSetup": @YES}];
     [OVPaths ensure];
+    [OVExport warmFormats];   // so no page waits for the ffmpeg lookup
     [OVLocale applyTheme];
     // Colors are dynamic: a palette change only needs the whole view tree redrawn.
     [NSNotificationCenter.defaultCenter addObserverForName:OVThemeDidChangeNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *note) {
@@ -667,7 +669,7 @@ static void OVWriteSnapshot(NSView *v, NSString *file) {
         }
         if (sv) {
             CGFloat step = NSHeight(sv.contentView.bounds) - 40, max = NSHeight(sv.documentView.frame) - NSHeight(sv.contentView.bounds);
-            for (int n = 2; n <= 8 && step > 0; n++) {
+            for (int n = 2; n <= 12 && step > 0; n++) {
                 CGFloat y = MIN((n - 1) * step, max);
                 [sv.contentView scrollToPoint:NSMakePoint(0, y)];
                 [sv reflectScrolledClipView:sv.contentView];

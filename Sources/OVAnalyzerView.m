@@ -346,21 +346,31 @@ static NSError *Err(NSString *why) {
 
     // Frequency grid and labels.
     double top = [_rowHz.lastObject doubleValue];
+    CGFloat lastLabelY = -1000;   // the scale is logarithmic: 0.5 and 1 kHz sit close together, so a label that would touch the last one is left out
     for (NSNumber *f in @[@500, @1000, @2000, @4000, @8000]) {
         if (f.doubleValue > top) continue;
         CGFloat y = round([self yForHz:f.doubleValue inRect:r]) + 0.5;
         [OVColorAlpha(OVRoleText, 0.12) setStroke];
         CGContextSetLineWidth(ctx, 1);
         CGContextMoveToPoint(ctx, NSMinX(r), y); CGContextAddLineToPoint(ctx, NSMaxX(r), y); CGContextStrokePath(ctx);
+        if (fabs(y - lastLabelY) < 14) continue;
+        lastLabelY = y;
         NSString *num = f.doubleValue < 1000 ? @"0.5" : [NSString stringWithFormat:@"%d", f.intValue / 1000];
         [self drawLabel:[NSString stringWithFormat:L(@"%@ kHz"), num] at:NSMakePoint(NSMinX(r) - 5, y - 6) align:1];
     }
     // Time labels under the picture.
     double dur = [self duration];
-    int ticks = MAX(2, MIN(8, (int)(r.size.width / 90)));
-    for (int i = 0; i <= ticks; i++) {
-        double t = dur * i / ticks;
-        [self drawLabel:ClockString(t) at:NSMakePoint([self xForTime:t inRect:r], 5) align:i == 0 ? 0 : (i == ticks ? 1 : 0.5)];
+    // Whole-second steps only: the clock has no fractions, so a 3 s clip would otherwise read 0:00 0:00 0:01 0:01.
+    int maxTicks = MAX(2, MIN(8, (int)(r.size.width / 90)));
+    double step = 1;
+    for (NSNumber *n in @[@1, @2, @5, @10, @15, @30, @60, @120, @300, @600, @1800, @3600]) {
+        step = n.doubleValue;
+        if (dur / step <= maxTicks) break;
+    }
+    for (int i = 0; i * step <= dur + 0.001; i++) {
+        double t = i * step;
+        BOOL last = t + step > dur + 0.001 && i > 0 && [self xForTime:t inRect:r] > NSMaxX(r) - 24;
+        [self drawLabel:ClockString(t) at:NSMakePoint([self xForTime:t inRect:r], 5) align:i == 0 ? 0 : (last ? 1 : 0.5)];
     }
 
     if (_showsCentroid) [self strokeCurve:_centroid hop:_centroidHop color:OVColor(OVRoleWarn) dashed:YES ctx:ctx];

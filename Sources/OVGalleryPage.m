@@ -2,6 +2,10 @@
 #import "OVDesign.h"
 #import "OVLocale.h"
 #import "OVPages.h"
+#import "OVWaveformView.h"
+#import "OVPlayerBar.h"
+#import "OVAnalyzerView.h"
+#import "OVEffectsView.h"
 
 @interface OVGalleryPage () <NSTableViewDataSource, NSTableViewDelegate>
 @property NSTableView *rowTable;
@@ -15,6 +19,55 @@ static NSTextField *Cap(NSString *s) { return OVLabel(s, 11, NSFontWeightMedium,
 /// A caption above a row of controls.
 static NSView *Variant(NSString *caption, NSArray<NSView *> *views) {
     return OVVStack(@[Cap(caption), OVHStack(views, 10)], 6);
+}
+
+
+#pragma mark - Audio components (the samples are made here; nothing is read from the user's files)
+
+/// A short mono 16-bit WAV in the temporary folder (a two-note beep), for the player bar.
+static NSString *SampleWav(void) {
+    NSString *path = [NSTemporaryDirectory() stringByAppendingPathComponent:@"ov-gallery-sample.wav"];
+    if ([NSFileManager.defaultManager fileExistsAtPath:path]) return path;
+    const int rate = 16000, n = rate * 3;
+    NSMutableData *pcm = [NSMutableData dataWithLength:n * 2];
+    int16_t *p = pcm.mutableBytes;
+    for (int i = 0; i < n; i++) {
+        double t = (double)i / rate, f = t < 1.5 ? 440 : 660, env = 0.5 * (1 - fabs(fmod(t, 1.5) / 0.75 - 1));
+        p[i] = (int16_t)(sin(2 * M_PI * f * t) * env * 12000);
+    }
+    NSMutableData *wav = [NSMutableData data];
+    uint32_t dataLen = (uint32_t)pcm.length, riff = 36 + dataLen, fmtLen = 16, sr = rate, br = rate * 2;
+    uint16_t pcmFmt = 1, ch = 1, align = 2, bits = 16;
+    [wav appendBytes:"RIFF" length:4]; [wav appendBytes:&riff length:4]; [wav appendBytes:"WAVEfmt " length:8];
+    [wav appendBytes:&fmtLen length:4]; [wav appendBytes:&pcmFmt length:2]; [wav appendBytes:&ch length:2];
+    [wav appendBytes:&sr length:4]; [wav appendBytes:&br length:4]; [wav appendBytes:&align length:2]; [wav appendBytes:&bits length:2];
+    [wav appendBytes:"data" length:4]; [wav appendBytes:&dataLen length:4]; [wav appendData:pcm];
+    [wav writeToFile:path atomically:YES];
+    return path;
+}
+
+/// An analyze_audio style result: a 160 x 64 spectrogram with a gliding harmonic series and a pitch curve.
+static NSDictionary *SampleAnalysis(void) {
+    const int cols = 160, rows = 64;
+    NSMutableData *u8 = [NSMutableData dataWithLength:cols * rows];
+    uint8_t *b = u8.mutableBytes;
+    NSMutableArray *rowHz = [NSMutableArray array], *f0 = [NSMutableArray array], *cen = [NSMutableArray array];
+    for (int r = 0; r < rows; r++) [rowHz addObject:@(r * 8000.0 / (rows - 1))];
+    for (int c = 0; c < cols; c++) {
+        double base = 6 + 4 * sin(c / 18.0);
+        for (int r = 0; r < rows; r++) {
+            double v = 0;
+            for (int h = 1; h <= 5; h++) v += exp(-pow((r - base * h) / 1.4, 2)) / h;
+            b[r * cols + c] = (uint8_t)MIN(255, v * 255 + 8);
+        }
+        [f0 addObject:(c > 120 && c < 135) ? @0 : @(120 + 20 * sin(c / 18.0))];
+        [cen addObject:@(1500 + 500 * sin(c / 30.0))];
+    }
+    NSString *path = [NSTemporaryDirectory() stringByAppendingPathComponent:@"ov-gallery-spectrogram.u8"];
+    [u8 writeToFile:path atomically:YES];
+    return @{@"seconds": @(cols * 0.02),
+             @"spectrogram": @{@"path": path, @"cols": @(cols), @"rows": @(rows), @"row_hz": rowHz, @"col_s": @0.02, @"db_floor": @(-90), @"db_ceil": @0},
+             @"f0": @{@"values": f0, @"hop_s": @0.02, @"median_hz": @120}, @"centroid": @{@"values_hz": cen, @"hop_s": @0.02}};
 }
 
 @implementation OVGalleryPage
@@ -205,6 +258,40 @@ static NSView *Variant(NSString *caption, NSArray<NSView *> *views) {
     self.logText.string = @"12:00:01  engine ready\n12:00:02  model loaded: 4-bit\n12:00:09  synthesized 3 phrases in 2.1 s";
     [log.heightAnchor constraintEqualToConstant:90].active = YES;
 
+    // Audio components
+    OVWaveformView *wave = [OVWaveformView new];
+    NSMutableArray *peaks = [NSMutableArray array];
+    for (int i = 0; i < 300; i++) { double a = 0.7 * fabs(sin(i / 23.0)) * (0.4 + 0.6 * fabs(sin(i / 7.0))); [peaks addObject:@[@(-a), @(a)]]; }
+    wave.peaks = peaks;
+    wave.duration = 12;
+    wave.position = 4.5;
+    wave.regions = @[@{@"start": @1.0, @"end": @1.8, @"kind": @"clipping", @"severity": @0.9},
+                     @{@"start": @5.0, @"end": @6.5, @"kind": @"noise", @"severity": @0.5},
+                     @{@"start": @8.0, @"end": @9.0, @"kind": @"pause", @"severity": @0.3}];
+    wave.accessibilityLabel = L(@"Waveform");
+    wave.translatesAutoresizingMaskIntoConstraints = NO;
+    [wave.heightAnchor constraintEqualToConstant:90].active = YES;
+    NSView *waveBlock = OVVStack(@[Cap(L(@"Clipping, noise and a pause marked; playhead at 4.5 s")), wave], 6);
+
+    OVPlayerBar *bar = [OVPlayerBar new];
+    bar.path = SampleWav();
+    OVPlayerBar *barAB = [OVPlayerBar new];
+    barAB.path = SampleWav();
+    barAB.originalPath = SampleWav();
+    NSView *barBlock = OVVStack(@[Cap(L(@"Player bar")), bar, Cap(L(@"With the Original / Result switch")), barAB], 8);
+
+    OVAnalyzerView *analyzer = [OVAnalyzerView new];
+    analyzer.showsCentroid = YES;
+    [analyzer loadResult:SampleAnalysis() error:nil];
+    analyzer.accessibilityLabel = L(@"Spectrogram");
+    analyzer.translatesAutoresizingMaskIntoConstraints = NO;
+    [analyzer.heightAnchor constraintEqualToConstant:170].active = YES;
+    NSView *analyzerBlock = OVVStack(@[Cap(L(@"Spectrogram with the pitch and brightness curves")), analyzer], 6);
+
+    OVEffectsView *effects = [OVEffectsView new];
+    effects.chain = @[];
+    NSView *effectsBlock = OVFillStack(@[Cap(L(@"The list of effects comes from the engine")), effects], 6);
+
     NSArray *cards = @[
         OVStepCard(0, @"button.horizontal", L(@"Buttons"), nil, buttons),
         OVStepCard(0, @"rectangle.on.rectangle", L(@"Cards and headers"), nil, cardsStack),
@@ -222,6 +309,10 @@ static NSView *Variant(NSString *caption, NSArray<NSView *> *views) {
         OVStepCard(0, @"square.and.arrow.down", L(@"Drop zone"), nil, zone),
         OVStepCard(0, @"tray", L(@"Empty state"), nil, emptyState),
         OVStepCard(0, @"terminal", L(@"Log"), nil, log),
+        OVStepCard(0, @"waveform", L(@"Waveform"), nil, waveBlock),
+        OVStepCard(0, @"play.circle", L(@"Player bar"), nil, barBlock),
+        OVStepCard(0, @"chart.xyaxis.line", L(@"Analyzer"), nil, analyzerBlock),
+        OVStepCard(0, @"slider.horizontal.below.rectangle", L(@"Effects chain"), nil, effectsBlock),
     ];
     NSMutableArray *rows = [NSMutableArray arrayWithObject:
         OVPageHeader(L(@"Design gallery"), L(@"Every component in each state. A developer page, not in the sidebar."), nil)];

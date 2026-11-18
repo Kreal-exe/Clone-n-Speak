@@ -206,7 +206,7 @@ BOOL OVEverythingReady(void) {
 @implementation OVSetupPage
 
 - (void)loadView {
-    NSString *subtitle = [NSString stringWithFormat:L(@"%@ speaks over 600 languages, with first-class support for Ukrainian. Models come from the Hugging Face cache (~/.cache/huggingface), shared with VoiceStudio, so anything already downloaded isn’t downloaded again. The app downloads whatever is missing on its own."), OVAppName];
+    NSString *subtitle = [NSString stringWithFormat:L(@"%@ speaks over 600 languages, with first-class support for Ukrainian. Models come from the Hugging Face cache (%@), shared with VoiceStudio, so anything already downloaded isn’t downloaded again. The app downloads whatever is missing on its own."), OVAppName, [[OVModels hubCache] stringByAbbreviatingWithTildeInPath]];
     NSView *header = OVPageHeaderWrapped(L(@"Getting started"), subtitle, nil, YES);
 
     self.engineStep = [OVStepView stepWithNumber:1 title:L(@"OmniVoice engine (Python + Apple MLX)")];
@@ -388,6 +388,8 @@ BOOL OVEverythingReady(void) {
                [[OVModels hubCache] stringByAbbreviatingWithTildeInPath]]
             : L(@"Whisper fills in the sample text when cloning and checks clarity in Auto-improve mode. "
               @"If you skip it, it downloads automatically when first needed.");
+        NSString *gone = [OVModels hubCacheWarning];
+        if (gone) what = [what stringByAppendingFormat:@"\n%@", gone];
         [s setDetail:err ? [NSString stringWithFormat:L(@"%@\nError: %@"), what, err] : what path:nil];
         NSString *dlTitle = [NSString stringWithFormat:L(@"Download %@ (%@)"), rec.title, OVFormatBytes(rec.approxBytes)];
         NSButton *dl = kind == OVModelTTS ? OVPrimaryButton(dlTitle, self, @selector(download:))

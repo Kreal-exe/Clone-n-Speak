@@ -13,6 +13,11 @@ extern NSErrorDomain const OVExportErrorDomain;
 @interface OVExport : NSObject
 /// @[@{@"id": @"wav", @"title", @"ext", @"lossless": @NO/YES, @"available": @YES, @"reason": nullable}] in enum order.
 + (NSArray<NSDictionary *> *)formats;
+/// The formats list without ever waiting for ffmpeg: the cached list, or (while it is still being read) the four native
+/// formats with MP3 and OGG greyed. Safe on the main thread.
++ (NSArray<NSDictionary *> *)formatsWithoutBlocking;
+/// Reads the ffmpeg lookup and the encoder list on a background queue so the first +formats call is instant. Call at launch.
++ (void)warmFormats;
 /// Unknown identifier → WAV.
 + (OVExportFormat)formatForIdentifier:(NSString *)identifier;
 /// May block (up to ~3 s for the shell lookup, `ffmpeg -encoders` on the first formats call): call off the main thread.

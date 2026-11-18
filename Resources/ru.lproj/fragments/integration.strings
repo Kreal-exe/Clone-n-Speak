@@ -1,0 +1,23 @@
+/* Integration task: gallery audio components, size cap of the JSON answers. */
+"Waveform" = "Волна";
+"Clipping, noise and a pause marked; playhead at 4.5 s" = "Отмечены клиппинг, шум и пауза; метка воспроизведения на 4,5 с";
+"Player bar" = "Плеер";
+"With the Original / Result switch" = "С переключателем «Оригинал / Результат»";
+"Analyzer" = "Анализатор";
+"Spectrogram with the pitch and brightness curves" = "Спектрограмма с кривыми высоты тона и яркости";
+"Effects chain" = "Цепочка эффектов";
+"The list of effects comes from the engine" = "Список эффектов приходит от движка";
+"The answer was larger than expected, so it was stopped." = "Ответ оказался больше ожидаемого, поэтому загрузка остановлена.";
+"Model folder" = "Папка моделей";
+"Where the speech and recognition models are stored (the Hugging Face cache). Models already downloaded there are found; new ones are saved there. Change it to keep them on an external disk." = "Где хранятся модели речи и распознавания (кеш Hugging Face). Уже скачанные модели там находятся, новые сохраняются туда же. Смените папку, чтобы держать модели на внешнем диске.";
+"Default folder" = "Папка по умолчанию";
+"%@ free" = "Свободно: %@";
+"Choose the folder for the models" = "Выберите папку для моделей";
+"The model folder is on %@, which isn’t connected — connect it or choose another folder" = "Папка моделей на диске «%@», который не подключён: подключите его или выберите другую папку";
+"The Hugging Face address in the settings is not https, so nothing was downloaded. Fix it on the Models page." = "Адрес Hugging Face в настройках не https, поэтому ничего не загружено. Исправьте его на странице «Модели».";
+"Open Setup" = "Открыть «Подготовка к работе»";
+/* Shorter Russian names: the sidebar and the settings checkbox were cut off at the 820 pt window. */
+"Realtime" = "Живой голос";
+"Voice Blender" = "Микс голосов";
+"Engine not installed" = "Нет движка";
+"Remove the sample’s accent when the text is in another language (learned once per voice, about a minute)" = "Убирать акцент образца в другом языке (учится раз, около минуты)";

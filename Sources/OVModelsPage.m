@@ -368,6 +368,8 @@ static NSString *DetailsText(NSString *details) {
         L(@"Models are stored in the Hugging Face cache — %@ — in the same format as VoiceStudio, "
           @"so anything downloaded by one app is visible to the other. Downloads can be stopped and resumed later."),
         [[OVModels hubCache] stringByAbbreviatingWithTildeInPath]];
+    NSString *gone = [OVModels hubCacheWarning];
+    if (gone) self.cacheLabel.stringValue = [self.cacheLabel.stringValue stringByAppendingFormat:@"\n%@", gone];
 
     NSArray *catalog = [self visibleCatalog];
     // rebuild rows when the set of listed models changes (e.g. a catalog entry was added)
@@ -477,14 +479,10 @@ static NSString *DetailsText(NSString *details) {
     p.showsHiddenFiles = YES;
     p.message = L(@"Hugging Face cache folder (usually …/huggingface/hub)");
     if ([p runModal] != NSModalResponseOK) return;
-    [NSUserDefaults.standardUserDefaults setObject:p.URL.path forKey:@"hfCacheDir"];
-    [[OVWorker shared] stop];
-    [[OVModels shared] rescan];
+    [OVModels setHubCacheOverride:p.URL.path];
 }
 - (void)resetCache:(id)s {
-    [NSUserDefaults.standardUserDefaults removeObjectForKey:@"hfCacheDir"];
-    [[OVWorker shared] stop];
-    [[OVModels shared] rescan];
+    [OVModels setHubCacheOverride:nil];
 }
 
 - (void)chooseFolder:(id)s {

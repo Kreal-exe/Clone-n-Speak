@@ -273,7 +273,11 @@ void OVSynthApplyChain(NSMutableDictionary *req, NSArray<NSDictionary *> *chain,
 - (void)attachExport:(NSString *)exported format:(NSString *)formatId toPath:(NSString *)path {
     NSString *plist = [path.stringByDeletingPathExtension stringByAppendingPathExtension:@"plist"];
     NSMutableDictionary *meta = [NSMutableDictionary dictionaryWithContentsOfFile:plist];
-    if (!meta || !exported.length) return;
+    if (!exported.length) return;
+    if (!meta) {   // the entry was deleted while the export ran: the finished copy would stay behind with nothing pointing at it
+        if (![exported isEqualToString:path]) [NSFileManager.defaultManager removeItemAtPath:exported error:nil];
+        return;
+    }
     meta[@"exportedPath"] = exported;
     if (formatId.length) meta[@"formatId"] = formatId;
     [meta writeToFile:plist atomically:YES];

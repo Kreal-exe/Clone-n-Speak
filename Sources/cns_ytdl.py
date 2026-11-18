@@ -148,6 +148,19 @@ def _cleanup(dest, vid):
             pass
 
 
+def allowed_roots(work_dir):
+    """Where the audio may be written: the app sets CNS_ALLOWED_ROOTS (os.pathsep-separated). Without it (CLI, tests):
+    <app data>/outputs and the work folder. Never taken from the request's own output fields."""
+    env = os.environ.get("CNS_ALLOWED_ROOTS")
+    if env:
+        roots = [r for r in env.split(os.pathsep) if r]
+    else:
+        roots = [os.path.join(os.path.expanduser("~/Library/Application Support/Clone'n'Speak"), "outputs")]
+        if work_dir:
+            roots.append(work_dir)
+    return [os.path.realpath(r) for r in roots]
+
+
 def fetch(req, run=None):
     run = run or _run
     cns_net.require_online("youtube")
@@ -159,8 +172,8 @@ def fetch(req, run=None):
     except (TypeError, ValueError):
         raise YtError("Bad length limit.")
     max_minutes = max(1, min(MAX_MINUTES, max_minutes))
-    roots = [r for r in (req.get("outputs_dir"), req.get("work_dir")) if r]
-    dest = cns_proto.safe_output_dir(req.get("dest_dir") or req.get("outputs_dir") or "", roots)
+    roots = allowed_roots(req.get("work_dir"))
+    dest = cns_proto.safe_output_dir(req.get("dest_dir") or (roots[0] if roots else ""), roots)
     ffmpeg = find_ffmpeg()
     if not ffmpeg:
         raise YtError(FFMPEG_MESSAGE)

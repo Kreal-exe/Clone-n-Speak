@@ -4,6 +4,7 @@
 #import "OVRuntime.h"
 #import "OVLocale.h"
 #import "OVNetwork.h"
+#import "OVWorker.h"
 
 NSNotificationName const OVModelsDidChangeNotification = @"OVModelsDidChange";
 
@@ -39,12 +40,56 @@ static NSString *const kBaseRepo = @"k2-fsa/OmniVoice";
 
 /// Settings override → $HF_HUB_CACHE → $HF_HOME/hub → ~/.cache/huggingface/hub
 + (NSString *)hubCache {
-    NSString *custom = [[NSUserDefaults.standardUserDefaults stringForKey:@"hfCacheDir"] stringByExpandingTildeInPath];
+    return [self hubCacheWithOverride:[self hubCacheOverride] environment:NSProcessInfo.processInfo.environment home:NSHomeDirectory()];
+}
+
++ (NSString *)hubCacheWithOverride:(NSString *)override environment:(NSDictionary<NSString *, NSString *> *)env home:(NSString *)home {
+    NSString *custom = [override stringByExpandingTildeInPath];
     if (custom.length) return custom;
-    NSDictionary *env = NSProcessInfo.processInfo.environment;
     if ([env[@"HF_HUB_CACHE"] length]) return [env[@"HF_HUB_CACHE"] stringByExpandingTildeInPath];
     if ([env[@"HF_HOME"] length]) return [[env[@"HF_HOME"] stringByExpandingTildeInPath] stringByAppendingPathComponent:@"hub"];
-    return [NSHomeDirectory() stringByAppendingPathComponent:@".cache/huggingface/hub"];
+    return [home stringByAppendingPathComponent:@".cache/huggingface/hub"];
+}
+
++ (NSString *)hubCacheOverride {
+    NSString *c = [NSUserDefaults.standardUserDefaults stringForKey:@"hfCacheDir"];
+    return c.length ? c : nil;
+}
+
++ (void)setHubCacheOverride:(NSString *)path {
+    if (path.length) [NSUserDefaults.standardUserDefaults setObject:path forKey:@"hfCacheDir"];
+    else [NSUserDefaults.standardUserDefaults removeObjectForKey:@"hfCacheDir"];
+    [[OVWorker shared] stop];   // the engine reads HF_HUB_CACHE when it starts
+    [[OVModels shared] rescan];
+}
+
++ (NSString *)disconnectedVolumeForFolder:(NSString *)path volumesRoot:(NSString *)volumesRoot {
+    NSArray<NSString *> *p = path.stringByStandardizingPath.pathComponents;
+    NSArray<NSString *> *v = volumesRoot.pathComponents;
+    if (p.count <= v.count || ![[p subarrayWithRange:NSMakeRange(0, v.count)] isEqualToArray:v]) return nil;
+    NSString *name = p[v.count];
+    NSString *mount = [volumesRoot stringByAppendingPathComponent:name];
+    return [NSFileManager.defaultManager fileExistsAtPath:mount] ? nil : name;
+}
+
++ (NSString *)hubCacheWarning {
+    NSString *vol = [self disconnectedVolumeForFolder:[self hubCache] volumesRoot:@"/Volumes"];
+    if (!vol) return nil;
+    return [NSString stringWithFormat:L(@"The model folder is on %@, which isn’t connected — connect it or choose another folder"), vol];
+}
+
++ (long long)freeBytesForFolder:(NSString *)path {
+    NSFileManager *fm = NSFileManager.defaultManager;
+    NSString *p = path.stringByStandardizingPath;
+    while (p.length > 1 && ![fm fileExistsAtPath:p]) p = p.stringByDeletingLastPathComponent;
+    if (![fm fileExistsAtPath:p]) return -1;
+    NSDictionary *a = [fm attributesOfFileSystemForPath:p error:nil];
+    return a[NSFileSystemFreeSize] ? [a[NSFileSystemFreeSize] longLongValue] : -1;
+}
+
++ (BOOL)endpointIsSecure:(NSString *)endpoint {
+    NSURLComponents *c = [NSURLComponents componentsWithString:[endpoint stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet]];
+    return c && [c.scheme.lowercaseString isEqualToString:@"https"] && c.host.length > 0;
 }
 
 static OVModel *M(NSString *repo, NSString *title, NSString *details, OVModelKind kind, double gb, BOOL rec) {
@@ -285,6 +330,12 @@ static NSString *PercentPath(NSString *p) {
     m.downloadStatus = L(@"Getting the file list…");
     [self.cancelled removeObject:m.repo];
     [self changed];
+    if (![OVModels endpointIsSecure:[self endpoint]]) {
+        [self finish:m error:L(@"The Hugging Face address in the settings is not https, so nothing was downloaded. Fix it on the Models page.")];
+        return;
+    }
+    NSString *gone = [OVModels hubCacheWarning];
+    if (gone) { [self finish:m error:gone]; return; }
     [[OVRuntime shared] log:[NSString stringWithFormat:L(@"Downloading %@ to the Hugging Face cache: %@"), m.repo, [OVModels hubCache]]];
 
     NSString *rev = [NSString stringWithFormat:@"%@/api/models/%@/revision/main", [self endpoint], m.repo];
