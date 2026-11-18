@@ -34,15 +34,18 @@ EXPECTED = {
                            "https-only redirects, uv/PyPI through the installer; also names edge-tts and yt-dlp as packages"),
     "cns_rvc.py": (1, "user-started voice-model download (fetch): https links only, cns_engines.download does the transfer; "
                      "urllib.parse is imported only to split and normalise the link"),
-    "cns_realtime.py": (8, "realtime voice process: one local Unix-socket client (AF_UNIX, no internet); sandboxed without network"),
+    "cns_realtime.py": (9, "realtime voice process: one local Unix-socket client (AF_UNIX, no internet); sandboxed without network"),
     "cns_rt_proto.py": (12, "realtime block protocol over a local Unix socket (AF_UNIX); no internet"),
+    "OVRealtimeIO.h": (5, "realtime audio client: talks to the local voice process over its AF_UNIX socket (no internet)"),
+    "OVRealtimeIO.m": (2, "the same: send/recv on the AF_UNIX socket of the realtime process, SO_NOSIGPIPE"),
+    "OVRealtimePage.m": (1, "a comment: the session's socket lives in the job folder; the page makes no network call"),
     "cns_ytdl.py": (7, "YouTube audio import, started by the user: one https youtube.com / youtu.be video through yt-dlp, "
                        "after cns_net.require_online(\"youtube\") and the rights confirmation; no cookies, no plugins"),
     "cns_edge.py": (12, "Edge TTS: sends the typed text to Microsoft's online voices (edge-tts, own process), "
                         "after cns_net.require_online(\"edge_tts\")"),
     "cns_pins.py": (7, "generated pins: the requirement lines that name requests / edge-tts packages (no network code)"),
     "OVEngines.h": (2, "pro-engine manager API: names yt-dlp, and the local Unix-socket connect helper of the realtime engine"),
-    "OVEngines.m": (3, "pro-engine manager: runs cns_engines.py and the pro job processes (the network kinds ask OVNetwork first); "
+    "OVEngines.m": (5, "pro-engine manager: runs cns_engines.py and the pro job processes (the network kinds ask OVNetwork first); "
                        "the AF_UNIX connect to the realtime process; kind names edge_tts / yt_import"),
     "OVProKit.m": (2, "pro-run preflight asks OVNetwork before Edge / YouTube jobs; the yt-dlp update title"),
     "OVPrivacyCatalog.m": (3, "descriptions only: feature ids and the word \"requests\" in the Bridge text"),

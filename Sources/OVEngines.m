@@ -483,6 +483,8 @@ static NSString *DarwinDir(int name, NSString *fallback) {
     r[@"outputs_dir"] = [OVPaths outputs];
     r[@"job_id"] = job.identifier;
     r[@"root"] = _root;
+    // the realtime session's socket lives in the job folder (the page reads the same path from job.workDirectory)
+    if ([job.kind isEqualToString:OVProKindRealtime] && !r[@"socket"]) r[@"socket"] = J(job.workDirectory, @"rt.sock");
     if (reduced) r[@"batch_size"] = @2;
     NSMutableData *d = [[NSJSONSerialization dataWithJSONObject:r options:0 error:nil] mutableCopy];
     [d appendBytes:"\n" length:1];
