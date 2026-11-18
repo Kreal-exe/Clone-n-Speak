@@ -42,6 +42,7 @@ static NSString *const kOffline = @"offlineMode";
 
 + (NSString *)consentKey:(OVNetFeature)f { return [@"netConsent." stringByAppendingString:[self identifierFor:f]]; }
 + (BOOL)hasConsentFor:(OVNetFeature)f { return [NSUserDefaults.standardUserDefaults boolForKey:[self consentKey:f]]; }
++ (void)grantConsentFor:(OVNetFeature)f { [NSUserDefaults.standardUserDefaults setBool:YES forKey:[self consentKey:f]]; }
 + (void)revokeConsentFor:(OVNetFeature)f { [NSUserDefaults.standardUserDefaults removeObjectForKey:[self consentKey:f]]; }
 
 + (OVNetDecision)decisionFor:(OVNetFeature)f {

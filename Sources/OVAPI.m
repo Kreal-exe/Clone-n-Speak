@@ -9,6 +9,7 @@
 #import "OVPaths.h"
 #import "OVLocale.h"
 #import "OVPrivacyCatalog.h"
+#import "OVBridge.h"
 #import <signal.h>
 
 NSNotificationName const OVAPIDidChangeNotification = @"OVAPIDidChangeNotification";
@@ -222,6 +223,7 @@ static const NSTimeInterval kUploadTTL = 3600;
     cfg[@"uploads_dir"] = [OVPaths apiUploads];
     cfg[@"outputs_dir"] = [OVPaths apiOut];
     cfg[@"port"] = @(self.port);
+    cfg[@"devices"] = [OVBridge.shared devicesForServer];        // Bridge: id, name and the SHA-256 of each token
     [self send:cfg];
     return nil;
 }
@@ -361,8 +363,12 @@ static const NSTimeInterval kUploadTTL = 3600;
         OVJob *j = [m[@"reqId"] isKindOfClass:NSString.class] ? _byRequest[m[@"reqId"]] : nil;
         if (j && j.active) [OVJobs.shared stop:j];
     }
-    // pair_request, device_seen: the Bridge (task 8.7)
+    else if ([op hasPrefix:@"tunnel_"] || [op isEqualToString:@"pair_request"] || [op isEqualToString:@"device_added"] || [op isEqualToString:@"device_seen"]
+             || ([op isEqualToString:@"listening"] && m[@"bridgePort"]) || ([op isEqualToString:@"error"] && [m[@"code"] isEqual:@"BRIDGE"]))
+        [OVBridge.shared handleServerMessage:m];
 }
+
+- (void)sendMessage:(NSDictionary *)message { [self send:message]; }
 
 - (BOOL)isRemote:(OVJob *)j { return [j.origin isEqualToString:@"api"] || [j.origin hasPrefix:@"bridge:"]; }
 

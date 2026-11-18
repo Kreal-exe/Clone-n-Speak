@@ -1,7 +1,10 @@
-// "API & Bridge" page: the local API (this task) and, below it, the Bridge card (task 8.7).
+// "API & Bridge" page: the local API cards and, below them, the Bridge card.
 #import "OVPages.h"
 #import "OVDesign.h"
 #import "OVAPI.h"
+#import "OVBridge.h"
+#import "OVNetwork.h"
+#import <CoreImage/CoreImage.h>
 #import "OVJobs.h"
 #import "OVLocale.h"
 
@@ -18,6 +21,11 @@ static NSStackView *Column(NSArray<NSView *> *rows, CGFloat gap) {
 @property NSButton *showButton;
 @property NSStackView *jobRows;
 @property BOOL keyShown;
+@property NSStackView *bridgeBadgeHolder, *bridgeAddressBlock, *deviceRows;
+@property NSButton *bridgeButton, *offlineButton;
+@property NSTextField *bridgeStatus, *bridgeError, *bridgeAddress, *emptyDevices;
+@property NSImageView *bridgeQR;
+@property NSString *lastAnnounced;
 @end
 
 @implementation OVAPIPage
@@ -106,15 +114,180 @@ static NSStackView *Column(NSArray<NSView *> *rows, CGFloat gap) {
     return OVStepCard(0, @"clock.arrow.circlepath", L(@"Recent API jobs"), nil, col);
 }
 
+#pragma mark - Bridge card
+
+/// A QR code of `text`: black modules on a white plate with a quiet zone, crisp at any size.
+static NSImage *QRImage(NSString *text, CGFloat side) {
+    CIFilter *f = [CIFilter filterWithName:@"CIQRCodeGenerator"];
+    [f setValue:[text dataUsingEncoding:NSUTF8StringEncoding] forKey:@"inputMessage"];
+    [f setValue:@"M" forKey:@"inputCorrectionLevel"];
+    CIImage *ci = f.outputImage;
+    if (!ci) return nil;
+    CIContext *ctx = [CIContext contextWithOptions:nil];
+    CGImageRef cg = [ctx createCGImage:ci fromRect:ci.extent];
+    if (!cg) return nil;
+    NSImage *img = [NSImage imageWithSize:NSMakeSize(side, side) flipped:NO drawingHandler:^BOOL(NSRect r) {
+        [NSColor.whiteColor setFill];
+        NSRectFill(r);
+        CGFloat margin = side * 0.08;
+        CGContextRef c = NSGraphicsContext.currentContext.CGContext;
+        CGContextSetInterpolationQuality(c, kCGInterpolationNone);
+        CGContextDrawImage(c, NSInsetRect(r, margin, margin), cg);
+        return YES;
+    }];
+    CGImageRelease(cg);
+    return img;
+}
+
+- (NSView *)bridgeCard {
+    self.bridgeBadgeHolder = OVHStack(@[], 0);
+    NSView *warnBadge = OVBadge(L(@"Internet"), OVRoleWarn);
+    NSTextField *warn = OVWrapLabel(L(@"While Bridge is on, this Mac can be reached from the internet through Cloudflare. Anyone who learns the address can ask to connect, but only devices you approve on this Mac get access. Stop Bridge when you are done."), 13, OVColor(OVRoleMuted));
+    NSStackView *warnRow = OVHStack(@[warnBadge, warn], 10);
+    warnRow.alignment = NSLayoutAttributeTop;
+
+    self.bridgeButton = OVButtonHeight(OVPillButtonMake(L(@"Start Bridge"), @"play.fill", self, @selector(bridgeToggle:), NO), 34);
+    self.bridgeStatus = OVWrapLabel(@"", 13, OVColor(OVRoleMuted));
+    self.bridgeStatus.accessibilityLabel = L(@"Bridge status");
+    self.offlineButton = [self small:L(@"Open Settings") symbol:nil action:@selector(openSettings:)];
+    NSStackView *controls = OVHStack(@[self.bridgeButton, self.bridgeStatus, self.offlineButton, OVSpacer()], 12);
+    controls.alignment = NSLayoutAttributeCenterY;
+    self.bridgeError = OVWrapLabel(@"", 13, OVColor(OVRoleErr));
+    self.bridgeError.hidden = YES;
+
+    self.bridgeAddress = [self mono:@"" size:13];
+    self.bridgeAddress.accessibilityLabel = L(@"Bridge address");
+    self.bridgeAddress.maximumNumberOfLines = 1;
+    self.bridgeAddress.lineBreakMode = NSLineBreakByTruncatingMiddle;
+    [self.bridgeAddress setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+    NSStackView *addrRow = OVHStack(@[self.bridgeAddress, OVSpacer(), [self small:L(@"Copy") symbol:@"doc.on.doc" action:@selector(copyBridgeAddress:)]], 8);
+    addrRow.alignment = NSLayoutAttributeCenterY;
+    self.bridgeQR = [NSImageView new];
+    self.bridgeQR.imageScaling = NSImageScaleProportionallyUpOrDown;
+    self.bridgeQR.accessibilityLabel = L(@"QR code of the Bridge address");
+    self.bridgeQR.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.bridgeQR.widthAnchor constraintEqualToConstant:150].active = YES;
+    [self.bridgeQR.heightAnchor constraintEqualToConstant:150].active = YES;
+    NSTextField *change = OVWrapLabel(L(@"This address changes every time you start Bridge."), 13, OVColor(OVRoleMuted));
+    NSStackView *qrRow = OVHStack(@[self.bridgeQR, change, OVSpacer()], 16);
+    qrRow.alignment = NSLayoutAttributeTop;
+    self.bridgeAddressBlock = Column(@[[self boxed:addrRow], qrRow], 12);
+
+    NSTextField *devTitle = OVLabel(L(@"Devices"), 14, NSFontWeightSemibold, nil);
+    self.deviceRows = OVVStack(@[], 8);
+    self.emptyDevices = OVWrapLabel(L(@"No devices yet. Open the address on another device and ask to connect; you approve it here."), 13, OVColor(OVRoleMuted));
+    NSStackView *devices = Column(@[devTitle, self.emptyDevices, self.deviceRows], 8);
+
+    return OVStepCardWithAccessory(0, @"antenna.radiowaves.left.and.right", L(@"Bridge"), self.bridgeBadgeHolder,
+                                   Column(@[warnRow, controls, self.bridgeError, self.bridgeAddressBlock, devices], 14));
+}
+
+static NSString *DateText(NSDate *d) {
+    static NSDateFormatter *f;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ f = [NSDateFormatter new]; f.dateStyle = NSDateFormatterMediumStyle; f.timeStyle = NSDateFormatterShortStyle; });
+    return [f stringFromDate:d];
+}
+
+- (void)refreshBridge {
+    OVBridge *b = OVBridge.shared;
+    BOOL offline = OVNetwork.offline;
+    NSView *badge = b.running ? OVBadge(L(@"Running"), OVRoleOK) : (b.busy ? OVBadge(L(@"Starting"), OVRoleAccent)
+                    : (b.lastError.length ? OVBadge(L(@"Error"), OVRoleErr) : OVBadge(L(@"Off"), OVRoleMuted)));
+    badge.accessibilityLabel = b.running ? L(@"Running") : (b.busy ? L(@"Starting") : (b.lastError.length ? L(@"Error") : L(@"Off")));
+    badge.accessibilityRole = NSAccessibilityStaticTextRole;
+    for (NSView *v in [self.bridgeBadgeHolder.arrangedSubviews copy]) { [self.bridgeBadgeHolder removeArrangedSubview:v]; [v removeFromSuperview]; }
+    [self.bridgeBadgeHolder addArrangedSubview:badge];
+
+    self.bridgeButton.title = b.busy ? L(@"Stop Bridge") : L(@"Start Bridge");
+    self.bridgeButton.image = [NSImage imageWithSystemSymbolName:b.busy ? @"stop.fill" : @"play.fill" accessibilityDescription:nil];
+    self.bridgeButton.enabled = b.busy || !offline;
+    self.bridgeStatus.stringValue = b.status ?: (offline && !b.busy ? [OVNetwork blockedMessageFor:OVNetBridge] : @"");
+    self.bridgeStatus.hidden = !self.bridgeStatus.stringValue.length;
+    self.offlineButton.hidden = !(offline && !b.busy);
+    self.bridgeError.stringValue = b.lastError ?: @"";
+    self.bridgeError.hidden = !b.lastError.length;
+    [self announceBridge:b.lastError.length ? b.lastError : b.status];
+
+    // the address goes to the screen only while Bridge runs, and only here
+    self.bridgeAddressBlock.hidden = !b.running;
+    if (b.running) {
+        self.bridgeAddress.stringValue = b.tunnelURL ?: @"";
+        self.bridgeAddress.accessibilityValue = b.tunnelURL;
+        self.bridgeQR.image = b.tunnelURL ? QRImage(b.tunnelURL, 150) : nil;
+    } else {
+        self.bridgeAddress.stringValue = @"";
+        self.bridgeQR.image = nil;
+    }
+
+    for (NSView *v in [self.deviceRows.arrangedSubviews copy]) { [self.deviceRows removeArrangedSubview:v]; [v removeFromSuperview]; }
+    NSArray *devices = b.devices;
+    self.emptyDevices.hidden = devices.count > 0;
+    for (NSDictionary *d in devices) {
+        NSTextField *name = OVLabel(d[@"name"], 14, NSFontWeightRegular, nil);
+        name.lineBreakMode = NSLineBreakByTruncatingTail;
+        NSString *seen = d[@"lastSeen"] ? [NSString stringWithFormat:L(@"Last seen %@"), DateText(d[@"lastSeen"])] : L(@"Never connected");
+        NSString *detail = [NSString stringWithFormat:L(@"Added %@"), DateText(d[@"created"])];
+        NSTextField *meta = OVLabel([NSString stringWithFormat:@"%@  ·  %@", detail, seen], 13, NSFontWeightRegular, OVColor(OVRoleMuted));
+        meta.lineBreakMode = NSLineBreakByTruncatingTail;
+        NSStackView *texts = OVVStack(@[name, meta], 2);
+        [texts setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+        NSButton *revoke = [self small:L(@"Revoke") symbol:nil action:@selector(revokeDevice:)];
+        revoke.identifier = d[@"id"];
+        revoke.accessibilityLabel = [NSString stringWithFormat:L(@"Revoke %@"), d[@"name"]];
+        NSStackView *row = OVHStack(@[texts, OVSpacer(), revoke], 10);
+        row.alignment = NSLayoutAttributeCenterY;
+        [self.deviceRows addArrangedSubview:row];
+        [row.widthAnchor constraintEqualToAnchor:self.deviceRows.widthAnchor].active = YES;
+    }
+}
+
+/// VoiceOver hears Bridge's status and errors without looking at the card. A percentage tick is not repeated.
+- (void)announceBridge:(NSString *)text {
+    if (!text.length) { self.lastAnnounced = nil; return; }
+    NSString *key = [text stringByReplacingOccurrencesOfString:@"[0-9]+" withString:@"" options:NSRegularExpressionSearch range:NSMakeRange(0, text.length)];
+    if ([key isEqualToString:self.lastAnnounced]) return;
+    self.lastAnnounced = key;
+    NSAccessibilityPostNotificationWithUserInfo(NSApp, NSAccessibilityAnnouncementRequestedNotification,
+        @{NSAccessibilityAnnouncementKey: text, NSAccessibilityPriorityKey: @(NSAccessibilityPriorityMedium)});
+}
+
+- (void)bridgeToggle:(id)s {
+    if (OVBridge.shared.busy) [OVBridge.shared stop]; else [OVBridge.shared startInWindow:self.view.window];
+}
+
+- (void)copyBridgeAddress:(NSButton *)b { if (OVBridge.shared.tunnelURL) [self copyText:OVBridge.shared.tunnelURL from:b secret:YES]; }
+
+- (void)revokeDevice:(NSButton *)b {
+    NSString *did = b.identifier;
+    if (!did.length) return;
+    NSAlert *a = [NSAlert new];
+    a.messageText = L(@"Revoke this device?");
+    a.informativeText = L(@"It loses access at once and has to ask to connect again.");
+    [a addButtonWithTitle:L(@"Cancel")];
+    [a addButtonWithTitle:L(@"Revoke")];
+    ((NSButton *)a.buttons.lastObject).hasDestructiveAction = YES;
+    void (^done)(NSModalResponse) = ^(NSModalResponse r) { if (r == NSAlertSecondButtonReturn) [OVBridge.shared revokeDevice:did]; };
+    if (self.view.window) [a beginSheetModalForWindow:self.view.window completionHandler:done]; else done([a runModal]);
+}
+
+- (void)openSettings:(id)s {
+    [NSUserDefaults.standardUserDefaults setObject:@"general" forKey:@"settingsTab"];
+    [NSApp sendAction:NSSelectorFromString(@"showSettings:") to:nil from:nil];
+}
+
 - (void)loadView {
     NSView *header = OVPageHeader(L(@"API & Bridge"), L(@"Let other apps and scripts on this Mac use your voices."), nil);
     NSMutableArray *views = [NSMutableArray arrayWithObjects:header, [self localCard], [self keyCard], [self quickStartCard], [self jobsCard], nil];
-    // Task 8.7: the Bridge card is added here (views.addObject:), below the API cards.
+    [views addObject:[self bridgeCard]];
     self.view = OVPageScroll(views);
     NSNotificationCenter *nc = NSNotificationCenter.defaultCenter;
     [nc addObserver:self selector:@selector(refresh) name:OVAPIDidChangeNotification object:nil];
     [nc addObserver:self selector:@selector(refreshJobs) name:OVJobsDidChangeNotification object:nil];
+    [nc addObserver:self selector:@selector(refreshBridge) name:OVBridgeDidChangeNotification object:nil];
+    [nc addObserver:self selector:@selector(refreshBridge) name:OVNetworkModeDidChangeNotification object:nil];
     [self refresh];
+    [self refreshBridge];
 }
 
 - (void)viewDidDisappear {

@@ -902,5 +902,144 @@ class BridgeTests(Base):
         self.assertEqual(self.bcall("GET", "/v1/voices", auth=tok_b)[0], 200)
 
 
+class TunnelOwnership(unittest.TestCase):
+    """The server child owns the tunnel program: it never outlives the app (a fake long-running program stands in)."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(self.tmp, ignore_errors=True))
+        self.fake = os.path.join(self.tmp, "cloudflared-fake")
+        with open(self.fake, "w") as f:
+            f.write("#!/bin/sh\necho 'INF |  https://quiet-river-123.trycloudflare.com  |' >&2\nexec sleep 300\n")
+        os.chmod(self.fake, 0o755)
+        self.sha = hashlib.sha256(pathlib.Path(self.fake).read_bytes()).hexdigest()
+        self.pids = []
+        self.addCleanup(self.reap)
+
+    def reap(self):
+        for pid in self.pids:
+            try:
+                os.kill(pid, 9)
+            except OSError:
+                pass
+
+    def gone(self, pid, timeout=8):
+        end = time.time() + timeout
+        while time.time() < end:
+            try:
+                os.kill(pid, 0)
+            except OSError:
+                return True
+            time.sleep(0.1)
+        return False
+
+    def start_server(self, cmd, stdin):
+        p = subprocess.Popen(cmd, stdin=stdin, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+        self.addCleanup(lambda: (p.kill(), p.wait()))
+        return p
+
+    def send(self, proc, obj):
+        proc.stdin.write(json.dumps(obj) + "\n")
+        proc.stdin.flush()
+
+    def read_until(self, proc, op):
+        while True:
+            line = proc.stdout.readline()
+            self.assertTrue(line, "server ended before %s" % op)
+            m = json.loads(line)
+            if m.get("op") == op:
+                return m
+
+    def boot(self, proc):
+        up, out = os.path.join(self.tmp, "up"), os.path.join(self.tmp, "out")
+        os.makedirs(up, exist_ok=True)
+        os.makedirs(out, exist_ok=True)
+        self.send(proc, {"op": "config", "key_sha256": KEY_SHA, "uploads_dir": up, "outputs_dir": out, "port": 0})
+        self.read_until(proc, "listening")
+        self.send(proc, {"op": "bridge", "host": "bridge-starting.invalid"})
+        self.assertTrue(self.read_until(proc, "listening")["bridgePort"])
+
+    def tunnel_msg(self, **kw):
+        m = {"op": "tunnel_start", "path": self.fake, "sha256": self.sha, "config": os.path.join(self.tmp, "t.yml"),
+             "home": self.tmp, "cwd": self.tmp}
+        m.update(kw)
+        return m
+
+    def test_stdin_eof_kills_the_tunnel(self):
+        p = self.start_server([sys.executable, "-u", str(SOURCES / "cns_api.py")], subprocess.PIPE)
+        self.boot(p)
+        self.send(p, self.tunnel_msg())
+        pid = self.read_until(p, "tunnel_started")["pid"]
+        self.pids.append(pid)
+        self.assertIn("trycloudflare.com", self.read_until(p, "tunnel_line")["line"])
+        p.stdin.close()
+        p.wait(timeout=10)
+        self.assertTrue(self.gone(pid), "the tunnel program is still running after the server ended")
+
+    def test_tunnel_stop_and_sigterm(self):
+        p = self.start_server([sys.executable, "-u", str(SOURCES / "cns_api.py")], subprocess.PIPE)
+        self.boot(p)
+        self.send(p, self.tunnel_msg())
+        pid = self.read_until(p, "tunnel_started")["pid"]
+        self.pids.append(pid)
+        self.send(p, {"op": "tunnel_stop"})
+        self.assertTrue(self.gone(pid))
+        self.send(p, self.tunnel_msg())
+        pid2 = self.read_until(p, "tunnel_started")["pid"]
+        self.pids.append(pid2)
+        p.terminate()
+        p.wait(timeout=10)
+        self.assertTrue(self.gone(pid2))
+
+    def test_parent_death_without_eof_kills_the_tunnel(self):
+        fifo = os.path.join(self.tmp, "in.fifo")
+        os.mkfifo(fifo)
+        outfile = os.path.join(self.tmp, "events.txt")
+        # sh forks the server (the trailing ; true); the test keeps the fifo open so stdin never reaches EOF
+        sh = subprocess.Popen(["/bin/sh", "-c", '"%s" -u "%s" < "%s" > "%s"; true' % (sys.executable, SOURCES / "cns_api.py", fifo, outfile)],
+                              stderr=subprocess.DEVNULL)
+        self.addCleanup(lambda: (sh.kill(), sh.wait()))
+        w = open(fifo, "w")
+        self.addCleanup(w.close)
+        up, out = os.path.join(self.tmp, "up"), os.path.join(self.tmp, "out")
+        os.makedirs(up, exist_ok=True)
+        os.makedirs(out, exist_ok=True)
+        for m in ({"op": "config", "key_sha256": KEY_SHA, "uploads_dir": up, "outputs_dir": out, "port": 0},
+                  {"op": "bridge", "host": "bridge-starting.invalid"}):
+            w.write(json.dumps(m) + "\n")
+            w.flush()
+            time.sleep(0.6)
+        w.write(json.dumps(self.tunnel_msg()) + "\n")
+        w.flush()
+        pid = None
+        end = time.time() + 8
+        while time.time() < end and pid is None:
+            for line in pathlib.Path(outfile).read_text().splitlines():
+                if '"tunnel_started"' in line:
+                    pid = json.loads(line)["pid"]
+            time.sleep(0.1)
+        self.assertIsNotNone(pid)
+        self.pids.append(pid)
+        os.kill(sh.pid, 9)                       # the parent dies; stdin stays open
+        sh.wait()
+        self.assertTrue(self.gone(pid, 10), "the tunnel program outlived its parent")
+
+    def test_refuses_a_changed_or_unsafe_file(self):
+        p = self.start_server([sys.executable, "-u", str(SOURCES / "cns_api.py")], subprocess.PIPE)
+        self.boot(p)
+        self.send(p, self.tunnel_msg(sha256="0" * 64))
+        self.assertEqual(self.read_until(p, "tunnel_error")["code"], "hash")
+        other = os.path.join(self.tmp, "not-the-helper")
+        os.rename(self.fake, other)
+        self.send(p, self.tunnel_msg(path=other))
+        self.assertEqual(self.read_until(p, "tunnel_error")["code"], "unsafe_file")
+        os.rename(other, self.fake)
+        os.chmod(self.fake, 0o777)
+        self.send(p, self.tunnel_msg())
+        self.assertEqual(self.read_until(p, "tunnel_error")["code"], "unsafe_file")
+        p.stdin.close()
+        p.wait(timeout=10)
+
+
 if __name__ == "__main__":
     unittest.main()

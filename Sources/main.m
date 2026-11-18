@@ -15,6 +15,7 @@
 #import "OVDesign.h"
 #import "OVJobs.h"
 #import "OVAPI.h"
+#import "OVBridge.h"
 
 @interface OVSeparatorPage (LaunchSweep)
 /// Removes decoded inputs older than a day that no running or retryable task needs (implemented in OVSeparatorPage.m).
@@ -496,6 +497,7 @@ static void OVRedrawTree(NSView *v) {
     [[OVHistory shared] reload];
     [OVJobs registerBuiltinKinds];
     [OVSeparatorPage sweepInputFolder];
+    [OVBridge.shared cleanupOrphans];               // a tunnel an earlier crash left behind; Bridge itself never starts here
     [OVAPI.shared startIfEnabled];
     OVBatchRegister();
     [OVPlugins shared];   // registers the plugin job kind
@@ -918,6 +920,7 @@ static void OVWriteSnapshot(NSView *v, NSString *file) {
 - (BOOL)applicationSupportsSecureRestorableState:(NSApplication *)a { return YES; }
 
 - (void)applicationWillTerminate:(NSNotification *)n {
+    [OVBridge.shared shutdown];                    // the tunnel goes before the server it points to
     [OVAPI.shared stop];
     [[OVWorker shared] stop];
     [[OVRuntime shared] cancelInstall];

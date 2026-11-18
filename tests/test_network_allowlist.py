@@ -40,12 +40,19 @@ EXPECTED = {
                         "after cns_net.require_online(\"edge_tts\")"),
     "cns_pins.py": (7, "generated pins: the requirement lines that name requests / edge-tts packages (no network code)"),
     "OVPrivacyCatalog.m": (3, "descriptions only: feature ids and the word \"requests\" in the Bridge text"),
-    "cns_api.py": (4, "local API / Bridge listeners on 127.0.0.1, server side only (no outgoing calls)"),
+    "OVBridge.m": (5, "Bridge: after OVNetwork consent / Offline check and an explicit Start, downloads the tunnel program through "
+                      "OVDownloader from the one pinned GitHub release address (sha256 of archive and binary, codesign and TeamIdentifier "
+                      "checked before chmod +x), runs it with a clean environment, and stops it on Stop / quit / Offline / key change; "
+                      "the markers are the program's name and path"),
+    "OVBridge.h": (1, "Bridge's interface: one comment naming the tunnel program; no network code"),
+    "cns_api.py": (6, "local API / Bridge listeners on 127.0.0.1, server side only (no outgoing calls); it also owns the Bridge "
+                      "tunnel program (the file name and path markers) so the tunnel ends with the server, only after OVBridge "
+                      "verified it and only when the app sends tunnel_start"),
 }
 
-# Files other tasks add (6.8 deep-filter download, 6.10 onnxruntime/model download, Bridge 8.7, Edge TTS, YouTube,
+# Files other tasks add (6.8 deep-filter download, 6.10 onnxruntime/model download, Edge TTS, YouTube,
 # plugins). They are not in this branch yet: if one appears without a line in EXPECTED, the test names it.
-FORWARD = {"OVBridge.m", "OVBridge.h"}
+FORWARD = set()
 
 
 def marker_counts():

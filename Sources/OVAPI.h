@@ -30,6 +30,9 @@ extern NSNotificationName const OVAPIDidChangeNotification;
 /// Launch-time hook: starts the service if apiEnabled. Failures stay in lastError (the page shows them).
 - (void)startIfEnabled;
 
+/// Sends one protocol message to the server child (Bridge: bridge, pair_decision, revoke). Dropped when the server is not running.
+- (void)sendMessage:(NSDictionary *)message;
+
 /// Newest first, at most `limit` jobs whose origin is "api".
 - (NSArray *)recentJobs:(NSUInteger)limit;
 @end

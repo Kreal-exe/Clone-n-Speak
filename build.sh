@@ -59,6 +59,7 @@ for lproj in "$ROOT"/Resources/*.lproj; do
   cp "$lproj"/*.strings "$RES/$(basename "$lproj")/"
 done
 cp "$ROOT/Resources/themes.json" "$RES/themes.json"
+cp "$ROOT/Resources/bridge-pin.json" "$RES/bridge-pin.json"   # Bridge: pinned address and checksums of the tunnel program
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 
 # The icon is drawn in code.

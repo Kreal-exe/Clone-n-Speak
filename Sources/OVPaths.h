@@ -29,6 +29,7 @@ NS_ASSUME_NONNULL_BEGIN
 + (NSString *)api;           // …/api (local API: uploads/ and out/)
 + (NSString *)apiUploads;    // …/api/uploads (the server's upload folder)
 + (NSString *)apiOut;        // …/api/out (audio the API's jobs produced)
++ (NSString *)bridge;        // …/bridge (Bridge: the tunnel program, devices.json; 0700)
 + (void)ensure;
 
 /// Folders of the previous version (OmniVoice UA).

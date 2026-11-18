@@ -18,6 +18,8 @@ typedef NS_ENUM(NSInteger, OVNetDecision) { OVNetAllowed, OVNetNeedsConsent, OVN
 /// The only entry for network features: asks for consent (what goes where) and remembers it, or explains Offline mode with an "Open Settings" button.
 + (void)requestFeature:(OVNetFeature)f window:(nullable NSWindow *)w completion:(void (^)(BOOL allowed))completion;
 + (void)revokeConsentFor:(OVNetFeature)f;
+/// Records an agreement the feature asked for itself (its own warning sheet); the same record requestFeature:window:completion: keeps.
++ (void)grantConsentFor:(OVNetFeature)f;
 + (BOOL)hasConsentFor:(OVNetFeature)f;
 @end
 

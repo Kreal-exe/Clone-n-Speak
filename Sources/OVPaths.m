@@ -36,6 +36,7 @@ static NSString *J(NSString *a, NSString *b) { return [a stringByAppendingPathCo
 + (NSString *)api          { return J([self support], @"api"); }
 + (NSString *)apiUploads   { return J([self api], @"uploads"); }
 + (NSString *)apiOut       { return J([self api], @"out"); }
++ (NSString *)bridge       { return J([self support], @"bridge"); }
 + (NSString *)workerScript { return J([self runtime], @"worker.py"); }
 + (NSString *)outputs {
     NSString *music = NSSearchPathForDirectoriesInDomains(NSMusicDirectory, NSUserDomainMask, YES).firstObject
@@ -50,7 +51,7 @@ static NSString *J(NSString *a, NSString *b) { return [a stringByAppendingPathCo
                           [self voices], [self logs], [self jobs], [self outputs],
                           [self rvcModels], [self rvcTraining], [self rvcDatasets]])
         [fm createDirectoryAtPath:d withIntermediateDirectories:YES attributes:nil error:nil];
-    for (NSString *d in @[[self apiUploads], [self apiOut]])   // private: only the user reads the API's files
+    for (NSString *d in @[[self apiUploads], [self apiOut], [self bridge]])   // private: only the user reads the API's files
         [fm createDirectoryAtPath:d withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions: @0700} error:nil];
 }
 

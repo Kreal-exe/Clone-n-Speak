@@ -18,8 +18,10 @@ import json
 import os
 import re
 import secrets
+import signal
 import socket
 import stat
+import subprocess
 import sys
 import threading
 import time
@@ -1017,6 +1019,111 @@ class ApiServer:
         self.core.clear_uploads()
 
 
+# ---------------------------------------------------------------- the Bridge tunnel process
+
+class TunnelRunner:
+    """Owns the tunnel program (cloudflared) so that it can never outlive this server, and so never the app:
+    it runs in its own process group, and is killed when it is asked to stop, when stdin closes (the app is gone),
+    when the parent changes (backstop, see watch_parent) and on SIGTERM.  The app names only the verified file;
+    the arguments are built here, and the file is hashed again right before it is run."""
+
+    PREFIX = "cloudflared-"
+
+    def __init__(self, emit, bridge_port: Callable[[], Optional[int]]):
+        self.emit = emit
+        self.bridge_port = bridge_port
+        self.lock = threading.Lock()
+        self.proc = None
+
+    def start(self, msg) -> None:
+        path, sha = str(msg.get("path", "")), str(msg.get("sha256", "")).lower()
+        config, home, cwd = str(msg.get("config", "")), str(msg.get("home", "")), str(msg.get("cwd", ""))
+        port = self.bridge_port()
+        err = None
+        try:
+            st = os.lstat(path)
+            if not (os.path.isabs(path) and os.path.basename(path).startswith(self.PREFIX) and stat.S_ISREG(st.st_mode)
+                    and st.st_uid == os.getuid() and not st.st_mode & 0o022 and st.st_mode & 0o100):
+                err = "unsafe_file"
+            elif not re.fullmatch(r"[0-9a-f]{64}", sha) or _file_sha256(path) != sha:
+                err = "hash"
+            elif not port:
+                err = "no_listener"
+            elif not (os.path.isabs(config) and os.path.isabs(home) and os.path.isabs(cwd)):
+                err = "bad_args"
+        except OSError:
+            err = "missing"
+        if err:
+            self.emit({"op": "tunnel_error", "code": err})
+            return
+        self.stop()
+        args = [path, "tunnel", "--no-autoupdate", "--config", config, "--url", "http://127.0.0.1:%d" % port]
+        env = {"HOME": home, "PATH": "/usr/bin:/bin"}
+        try:
+            proc = subprocess.Popen(args, env=env, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT, start_new_session=True, close_fds=True)
+        except OSError:
+            self.emit({"op": "tunnel_error", "code": "spawn"})
+            return
+        with self.lock:
+            self.proc = proc
+        self.emit({"op": "tunnel_started", "pid": proc.pid})
+        threading.Thread(target=self._pump, args=(proc,), daemon=True).start()
+
+    def _pump(self, proc) -> None:
+        """Forwards the lines that can hold the public address (and nothing else: the log is never kept)."""
+        try:
+            for raw in iter(proc.stdout.readline, b""):
+                if b"trycloudflare.com" in raw:
+                    self.emit({"op": "tunnel_line", "line": raw[:400].decode("utf-8", "replace").rstrip()})
+        except (OSError, ValueError):
+            pass
+        code = proc.wait()
+        with self.lock:
+            mine = self.proc is proc
+            if mine:
+                self.proc = None
+        if mine:
+            self.emit({"op": "tunnel_exit", "code": code})
+
+    def stop(self, grace: float = 1.0) -> None:
+        with self.lock:
+            proc, self.proc = self.proc, None
+        if proc is None or proc.poll() is not None:
+            return
+        for sig, wait in ((signal.SIGTERM, grace), (signal.SIGKILL, 2.0)):
+            try:
+                os.killpg(proc.pid, sig)
+            except OSError:
+                return
+            end = time.time() + wait
+            while time.time() < end and proc.poll() is None:
+                time.sleep(0.02)
+            if proc.poll() is not None:
+                return
+
+
+def _file_sha256(path: str) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def watch_parent(tunnel: "TunnelRunner", interval: float = 1.0) -> None:
+    """Backstop for a parent that vanished without closing stdin: the tunnel goes and so does this process."""
+    first = os.getppid()
+
+    def loop():
+        while True:
+            time.sleep(interval)
+            if os.getppid() != first:
+                tunnel.stop(grace=0.2)
+                os._exit(0)
+    threading.Thread(target=loop, daemon=True).start()
+
+
 # ---------------------------------------------------------------- process entry (stdin / stdout protocol)
 
 class StdioBackend:
@@ -1112,6 +1219,10 @@ def main() -> None:
 
     backend = StdioBackend(emit)
     state = {"server": None}
+    tunnel = TunnelRunner(emit, lambda: (state["server"].bridge_address or (None, None))[1] if state["server"] else None)
+    signal.signal(signal.SIGTERM, lambda *a: sys.exit(0))      # the finally below runs: the tunnel goes with us
+    signal.signal(signal.SIGHUP, lambda *a: sys.exit(0))
+    watch_parent(tunnel)
 
     def handle(msg):
         """One protocol message.  True means quit."""
@@ -1146,10 +1257,15 @@ def main() -> None:
                     port = server.start_bridge(msg["host"])
                     emit({"op": "listening", "port": server.local_address[1], "bridgePort": port})
                 else:
+                    tunnel.stop()
                     server.stop_bridge()
                     emit({"op": "listening", "port": server.local_address[1], "bridgePort": None})
             except (OSError, ValueError):
                 emit({"op": "error", "code": "BRIDGE", "msg": "cannot start bridge"})
+        elif server is not None and op == "tunnel_start":
+            tunnel.start(msg)
+        elif op == "tunnel_stop":
+            tunnel.stop()
         elif server is not None and op == "devices":
             server.set_devices(msg.get("devices") or [])
         elif server is not None and op == "revoke":
@@ -1173,6 +1289,7 @@ def main() -> None:
                 sys.stderr.write("[cns_api] message error: %s\n" % type(e).__name__)
                 sys.stderr.flush()
     finally:
+        tunnel.stop(grace=0.3)
         if state["server"] is not None:
             state["server"].shutdown()
 
