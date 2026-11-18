@@ -525,7 +525,7 @@ static void SetEnabledDeep(NSView *v, BOOL on, NSArray<NSView *> *skip) {
     self.fcpeGate.hidden = fcpeOK;
 
     BOOL on = [self bodyEnabled];
-    SetEnabledDeep(self.body, on, @[self.fcpeGate, self.inputBar, self.resultBar]);
+    SetEnabledDeep(self.body, on, @[self.fcpeGate, self.inputBar, self.resultBox, self.stopButton]);   // Stop and the result stay usable while the gate is closed
     self.targetPicker.enabled = YES;   // the way to the other engine's gate stays open
     self.modePicker.enabled = YES;
     // controls that depend on more than the gate
