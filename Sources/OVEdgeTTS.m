@@ -150,7 +150,7 @@ static void RecordTake(NSString *path, NSString *text, NSString *label, NSString
     else {
         // the user's saved Convert settings, when there are any
         NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
-        id pitch = [d objectForKey:@"convert.pitch"], f0 = [d objectForKey:@"convert.f0Method"], idx = [d objectForKey:@"convert.indexRate"];
+        id pitch = [d objectForKey:@"convert.pitch"], f0 = [d objectForKey:@"convert.f0"], idx = [d objectForKey:@"convert.index"];
         req[@"model"] = then[@"model"] ?: @""; req[@"mode"] = @"single";
         req[@"pitch"] = [pitch isKindOfClass:NSNumber.class] ? pitch : @0;
         req[@"f0_method"] = [f0 isKindOfClass:NSString.class] ? f0 : @"rmvpe";
