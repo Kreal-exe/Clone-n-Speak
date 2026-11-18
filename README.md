@@ -76,6 +76,10 @@ a folder of recordings, with a dataset check, an overtraining warning and resume
   <img src="docs/screenshots/convert-dark.png" width="49%" alt="Convert">
   <img src="docs/screenshots/realtime-dark.png" width="49%" alt="Realtime">
 </p>
+<p align="center">
+  <img src="docs/screenshots/training-dark.png" width="49%" alt="Training, dark theme">
+  <img src="docs/screenshots/training-light.png" width="49%" alt="Training, light theme">
+</p>
 
 ### Models, Jobs, API and plugins
 
