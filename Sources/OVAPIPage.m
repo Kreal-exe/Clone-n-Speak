@@ -126,10 +126,6 @@ static NSStackView *Column(NSArray<NSView *> *rows, CGFloat gap) {
 
 #pragma mark - Showing state
 
-- (NSString *)maskedKey:(NSString *)k {
-    return k.length > 12 ? [NSString stringWithFormat:@"cns_••••••••••••%@", [k substringFromIndex:k.length - 4]] : @"••••";
-}
-
 - (NSString *)snippetWithKey:(NSString *)key {
     NSString *base = OVAPI.shared.baseURL;
     NSString *auth = @"-H \"Authorization: Bearer $CNS_KEY\"";
@@ -161,9 +157,9 @@ static NSStackView *Column(NSArray<NSView *> *rows, CGFloat gap) {
     [self.badgeHolder addArrangedSubview:badge];
     self.portError.stringValue = api.lastError ?: @"";
     self.portError.hidden = !api.lastError.length;
-    NSString *key = api.currentKey;
-    self.keyLabel.stringValue = self.keyShown ? key : [self maskedKey:key];
-    self.keyLabel.accessibilityValue = self.keyShown ? key : L(@"hidden");
+    // the Keychain is read only when the key is shown (Show), copied or rotated: never on page load
+    self.keyLabel.stringValue = self.keyShown ? api.currentKey : @"cns_••••••••••••••••••••";
+    self.keyLabel.accessibilityValue = self.keyShown ? api.currentKey : L(@"hidden");
     self.snippetLabel.stringValue = [self snippetWithKey:@"<your key>"];
     [self refreshJobs];
 }
