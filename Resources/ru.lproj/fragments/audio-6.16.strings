@@ -66,3 +66,6 @@
 "Audio tools" = "Аудио-инструменты";
 "This file is longer than 20 minutes. Cut it first: the tools take up to 20 minutes." = "Этот файл длиннее 20 минут. Сначала обрежьте его: инструменты принимают до 20 минут.";
 "This format is not available on this Mac." = "Этот формат недоступен на этом Mac.";
+"This file is longer than 20 minutes. Cut it first: the tools take up to 20 minutes." = "Файл длиннее 20 минут. Сначала обрежьте его: инструменты принимают до 20 минут.";
+"Finish or stop the current job first." = "Сначала завершите или остановите текущую задачу.";
+"Choose a different file name: this is the result itself." = "Выберите другое имя файла: это сам результат.";

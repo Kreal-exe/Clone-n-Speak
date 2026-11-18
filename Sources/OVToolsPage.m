@@ -261,8 +261,7 @@ static NSString *const kKeyRatio = @"OVToolsFormantRatio", *const kKeySemis = @"
     [self refreshDFN];
     NSString *pending = [OVSeparatorPage pendingToolsInputPath];
     if (pending.length && ![pending isEqualToString:self.handedOffPath] && [NSFileManager.defaultManager fileExistsAtPath:pending]) {
-        self.handedOffPath = pending;
-        [self loadInput:pending];
+        if ([self loadInput:pending]) self.handedOffPath = pending;
     }
     // Developer aid for snapshots: OV_TOOLS_INPUT=/path/to/file.wav loads that file as the input.
     NSString *dev = NSProcessInfo.processInfo.environment[@"OV_TOOLS_INPUT"];
@@ -280,8 +279,7 @@ static NSString *const kKeyRatio = @"OVToolsFormantRatio", *const kKeySemis = @"
 - (void)handOff:(NSNotification *)n {
     NSString *p = n.userInfo[@"path"];
     if (![p isKindOfClass:NSString.class] || !p.length || [p isEqualToString:self.handedOffPath]) return;
-    self.handedOffPath = p;
-    [self loadInput:p];
+    if ([self loadInput:p]) self.handedOffPath = p;
 }
 
 - (void)tickPlayhead:(NSTimer *)t {
@@ -319,7 +317,7 @@ static NSString *const kKeyRatio = @"OVToolsFormantRatio", *const kKeySemis = @"
 - (void)updateButtons {
     BOOL running = self.job.active || self.pendingSteps.count > 0;
     self.applyButton.enabled = self.inputPath.length > 0 && ![self busy];
-    self.stopButton.hidden = !(running || self.converting);
+    self.stopButton.hidden = !running;
     self.stopButton.enabled = running;
     self.processBar.hidden = !(running || self.converting);
     self.analyzeButton.enabled = self.inputPath.length > 0 && !self.analyzing && !self.decoding;
@@ -380,14 +378,22 @@ static NSString *const kKeyRatio = @"OVToolsFormantRatio", *const kKeySemis = @"
     self.resultBar.path = nil;
 }
 
-- (void)loadInput:(NSString *)path {
-    if (self.job.active || self.pendingSteps.count || self.converting) return;
+- (BOOL)loadInput:(NSString *)path {
+    if (self.job.active || self.pendingSteps.count || self.converting) {
+        self.processStatus.stringValue = L(@"Finish or stop the current job first.");
+        self.processStatus.hidden = NO;
+        return NO;
+    }
     NSUInteger token = ++self.loadToken;
     [self.inputBar stopIfPlayingThis];
     [self clearResult];
     self.sourcePath = path;
     self.inputPath = nil;
     self.analysis = nil;
+    [self.analyzer clear];
+    self.waveform.peaks = @[];
+    self.waveform.position = 0;
+    self.analyzer.position = 0;
     self.decoding = YES;
     self.warningLabel.stringValue = @"";
     self.summaryLabel.stringValue = [NSString stringWithFormat:L(@"Reading %@…"), path.lastPathComponent];
@@ -438,6 +444,7 @@ static NSString *const kKeyRatio = @"OVToolsFormantRatio", *const kKeySemis = @"
             if (wav) [s analyze:nil];
         });
     });
+    return YES;
 }
 
 #pragma mark - Analyzer
@@ -468,7 +475,11 @@ static NSString *const kKeyRatio = @"OVToolsFormantRatio", *const kKeySemis = @"
         typeof(self) s = w;
         if (!s) return;
         s.analyzing = NO;
-        if (![s.inputPath isEqualToString:audio]) { [s updateButtons]; return; }   // another file was picked meanwhile
+        if (![s.inputPath isEqualToString:audio]) {   // another file was picked meanwhile: analyze that one
+            [s updateButtons];
+            if (s.inputPath) [s analyze:nil];
+            return;
+        }
         if (!data) {
             s.analyzeStatus.stringValue = error ?: L(@"The analysis failed.");
             [s updateButtons];
@@ -662,6 +673,7 @@ static NSString *const kKeyRatio = @"OVToolsFormantRatio", *const kKeySemis = @"
 
 - (void)refreshDFN {
     if (self.dfnInstalling) return;
+    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(refreshDFN) object:nil];
     if (OVWorker.shared.busy) { [self performSelector:@selector(refreshDFN) withObject:nil afterDelay:2]; return; }
     __weak typeof(self) w = self;
     [OVWorker.shared request:@{@"cmd": @"dfn_status"} status:nil progress:nil done:^(NSDictionary *data, NSString *error) {
@@ -796,13 +808,14 @@ static NSString *const kKeyRatio = @"OVToolsFormantRatio", *const kKeySemis = @"
 }
 
 - (void)stepFinished:(OVJob *)job {
-    if (job.state == OVJobSucceeded) { [self startNextStep]; return; }
+    if (job.state == OVJobSucceeded && !self.stopping) { [self startNextStep]; return; }
     [self.pendingSteps removeAllObjects];
     if (job.state == OVJobStopped || self.stopping) [self say:L(@"Stopped.")];
     else {
         [self say:job.error ?: L(@"The task failed.")];   // an input error already says what to do
         if ([job.errorCode isEqualToString:@"engine_missing"]) {   // DeepFilterNet vanished since the last check: offer the download again
             self.dfnInstalled = NO; self.dfnKnown = YES;
+            self.dfnStatus.stringValue = L(@"DeepFilterNet is not installed. It removes noise from speech and music alike; the download is 27 MB.");
             [self updateButtons];
         }
     }
@@ -924,6 +937,10 @@ static NSString *const kKeyRatio = @"OVToolsFormantRatio", *const kKeySemis = @"
         NSString *ext = dst.pathExtension.lowercaseString;
         if (![allowedExts containsObject:ext]) { dst = [dst stringByAppendingPathExtension:@"wav"]; ext = @"wav"; }
         NSString *master = s.masterPath;
+        if ([dst.stringByStandardizingPath isEqualToString:master.stringByStandardizingPath]) {
+            s.resultNote.stringValue = L(@"Choose a different file name: this is the result itself.");
+            return;
+        }
         NSString *ident = ext;
         NSInteger quality = -1;
         if ([ext isEqualToString:[s.resultPath.pathExtension lowercaseString]] && s.resultFormatId.length) {   // the converted format keeps its own settings (ALAC vs AAC)
