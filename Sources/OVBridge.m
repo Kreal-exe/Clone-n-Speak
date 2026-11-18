@@ -155,8 +155,9 @@ typedef NS_ENUM(NSInteger, OVBridgeState) { BSIdle, BSStarting, BSRunning };
     NSMutableArray<NSMutableDictionary *> *_devices;     // @{id, name, created, lastSeen?, token_sha256}
     OVBridgeState _state;
     NSInteger _gen;                                      // every start / teardown bumps it: late callbacks see a stale number
-    NSTask *_task;
-    NSMutableData *_lineBuf;
+    pid_t _tunnelPid;                                    // the tunnel program, owned by the API server process
+    NSAlert *_wlAlert;                                   // an alert shown without a window (no sheet host)
+    void (^_wlDone)(NSModalResponse);
     BOOL _awaitingListener, _launchingAPI, _startedAPI, _jobRunning;
     uint16_t _bridgePort;
     OVDownloader *_downloader;
@@ -246,6 +247,24 @@ typedef NS_ENUM(NSInteger, OVBridgeState) { BSIdle, BSStarting, BSRunning };
 
 - (BOOL)helperInstalled { return [self helperVerified]; }
 
+/// <support>/bridge must be a real directory of ours (never a link), mode 0700.
+- (BOOL)rootIsSafe {
+    struct stat st;
+    if (lstat(_root.fileSystemRepresentation, &st) != 0 || !S_ISDIR(st.st_mode) || st.st_uid != getuid()) return NO;
+    if ((st.st_mode & 0777) != 0700 && chmod(_root.fileSystemRepresentation, 0700) != 0) return NO;
+    return YES;
+}
+
+/// Right before a run: no cache. A plain file of ours that nobody else can write, not quarantined, with the pinned SHA-256.
+- (BOOL)helperVerifiedFresh {
+    NSString *p = [self helperPath];
+    struct stat st;
+    if (!p || !IsRegularFileNoLink(p, &st) || st.st_uid != getuid() || (st.st_mode & 022) || !(st.st_mode & S_IXUSR)) return NO;
+    if (getxattr(p.fileSystemRepresentation, "com.apple.quarantine", NULL, 0, 0, XATTR_NOFOLLOW) >= 0) return NO;
+    _verifiedPath = nil;
+    return [self helperVerified];
+}
+
 - (void)discardDownload:(NSString *)archive {
     NSFileManager *fm = NSFileManager.defaultManager;
     [fm removeItemAtPath:archive error:nil];
@@ -253,6 +272,10 @@ typedef NS_ENUM(NSInteger, OVBridgeState) { BSIdle, BSStarting, BSRunning };
 }
 
 /// Any failure of the install: the archive, its .part and the unpacked folder are deleted.
+- (int)run:(NSString *)exe args:(NSArray<NSString *> *)args out:(NSString **)out err:(NSString **)err {
+    return self.toolRunner ? self.toolRunner(exe, args, out, err) : RunTool(exe, args, out, err);
+}
+
 - (BOOL)failInstall:(NSString *)tmp archive:(NSString *)archive error:(NSString **)error {
     [NSFileManager.defaultManager removeItemAtPath:tmp error:nil];
     [self discardDownload:archive];
@@ -270,19 +293,19 @@ typedef NS_ENUM(NSInteger, OVBridgeState) { BSIdle, BSStarting, BSRunning };
     if (!IsRegularFileNoLink(archive, NULL) || ![OVSHA256OfFile(archive) isEqualToString:_pin[@"sha256_archive"]]) FAIL;
     // 2. it holds exactly one file, the program
     NSString *list = nil;
-    if (RunTool(@"/usr/bin/tar", @[@"-tzf", archive], &list, nil) != 0) FAIL;
+    if ([self run:@"/usr/bin/tar" args:@[@"-tzf", archive] out:&list err:nil] != 0) FAIL;
     NSArray *names = [[list stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet] componentsSeparatedByString:@"\n"];
     if (names.count != 1 || !([names[0] isEqualToString:@"cloudflared"] || [names[0] isEqualToString:@"./cloudflared"])) FAIL;
     // 3. unpacked into an empty private folder
     if (![fm createDirectoryAtPath:tmp withIntermediateDirectories:NO attributes:@{NSFilePosixPermissions: @0700} error:nil]) FAIL;
-    if (RunTool(@"/usr/bin/tar", @[@"-xzf", archive, @"-C", tmp], nil, nil) != 0) FAIL;
+    if ([self run:@"/usr/bin/tar" args:@[@"-xzf", archive, @"-C", tmp] out:nil err:nil] != 0) FAIL;
     NSString *bin = [tmp stringByAppendingPathComponent:@"cloudflared"];
     if (!IsRegularFileNoLink(bin, NULL)) FAIL;
     // 4. the program itself, its signature and its signer
     if (![OVSHA256OfFile(bin) isEqualToString:_pin[@"sha256_binary"]]) FAIL;
-    if (RunTool(@"/usr/bin/codesign", @[@"--verify", @"--strict", bin], nil, nil) != 0) FAIL;
+    if ([self run:@"/usr/bin/codesign" args:@[@"--verify", @"--strict", bin] out:nil err:nil] != 0) FAIL;
     NSString *info = nil;
-    RunTool(@"/usr/bin/codesign", @[@"-dvv", bin], nil, &info);
+    [self run:@"/usr/bin/codesign" args:@[@"-dvv", bin] out:nil err:&info];
     BOOL teamOK = NO;
     for (NSString *l in [info componentsSeparatedByString:@"\n"])
         if ([l isEqualToString:[@"TeamIdentifier=" stringByAppendingString:_pin[@"team_id"]]]) teamOK = YES;
@@ -352,7 +375,10 @@ typedef NS_ENUM(NSInteger, OVBridgeState) { BSIdle, BSStarting, BSRunning };
     for (NSMutableDictionary *m in [_devices copy]) if ([m[@"id"] isEqualToString:deviceId]) [_devices removeObject:m];
     if (_devices.count == before) return;
     [self saveDevices];
+    // the server forgets the token at once (it checks every request against its list); work already started goes too
     [OVAPI.shared sendMessage:@{@"op": @"revoke", @"deviceId": deviceId}];
+    NSString *origin = [@"bridge:" stringByAppendingString:deviceId];
+    for (OVJob *j in OVJobs.shared.all) if (j.active && [j.origin isEqualToString:origin]) [OVJobs.shared stop:j];
     [self changed];
 }
 
@@ -369,6 +395,8 @@ typedef NS_ENUM(NSInteger, OVBridgeState) { BSIdle, BSStarting, BSRunning };
         }
     } else if ([op isEqualToString:@"error"]) {
         if ([m[@"code"] isEqual:@"BRIDGE"] && _state != BSIdle) [self teardownWithError:L(@"Bridge could not open its listener.")];
+    } else if ([op hasPrefix:@"tunnel_"]) {
+        [self tunnelMessage:m];
     } else if ([op isEqualToString:@"pair_request"]) {
         [self pairRequested:m];
     } else if ([op isEqualToString:@"device_added"]) {
@@ -438,21 +466,50 @@ static NSString *SpacedCode(NSString *code) {
         dispatch_async(dispatch_get_main_queue(), ^{ [self showNextPair]; });
     };
     NSWindow *host = [self hostWindow];
-    if (host) {
-        _pairParent = host;
-        [a beginSheetModalForWindow:host completionHandler:done];
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kPairShown * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            if (self->_pairAlert == a && self->_pairParent) [self->_pairParent endSheet:a.window returnCode:NSModalResponseStop];   // expired: a denial
-        });
-    } else {
-        [NSApp activateIgnoringOtherApps:YES];
-        done([a runModal]);
-    }
+    if (host) { _pairParent = host; [a beginSheetModalForWindow:host completionHandler:done]; }
+    else [self showWindowless:a done:done];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kPairShown * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (self->_pairAlert != a) return;                                         // expired: a denial
+        if (self->_pairParent) [self->_pairParent endSheet:a.window returnCode:NSModalResponseStop];
+        else [self closeWindowlessWithResponse:NSModalResponseStop];
+    });
+}
+
+/// An alert with no window to hang on (the app has none open): a floating panel, answered by its buttons.
+- (void)showWindowless:(NSAlert *)a done:(void (^)(NSModalResponse))done {
+    [a layout];
+    _wlAlert = a;
+    _wlDone = [done copy];
+    for (NSUInteger i = 0; i < a.buttons.count; i++) { a.buttons[i].target = self; a.buttons[i].action = @selector(windowlessButton:); a.buttons[i].tag = (NSInteger)i; }
+    NSWindow *win = a.window;
+    win.level = NSFloatingWindowLevel;
+    [win center];
+    [NSApp activateIgnoringOtherApps:YES];
+    [win makeKeyAndOrderFront:nil];
+}
+
+- (void)windowlessButton:(NSButton *)b { [self closeWindowlessWithResponse:NSAlertFirstButtonReturn + b.tag]; }
+
+- (void)closeWindowlessWithResponse:(NSModalResponse)r {
+    NSAlert *a = _wlAlert;
+    void (^d)(NSModalResponse) = _wlDone;
+    if (!a) return;
+    _wlAlert = nil; _wlDone = nil;
+    [a.window orderOut:nil];
+    if (d) d(r);
+}
+
+/// Teardown: the panel goes without an answer.
+- (void)dismissWindowless {
+    NSAlert *a = _wlAlert;
+    _wlAlert = nil; _wlDone = nil;
+    [a.window orderOut:nil];
 }
 
 /// Closes a request that is on screen without approving it.
 - (void)dismissPairing {
     [_pairQueue removeAllObjects];
+    [self dismissWindowless];
     if (_pairAlert) {
         NSAlert *a = _pairAlert;
         if (_pairParent) [_pairParent endSheet:a.window returnCode:NSModalResponseStop];
@@ -464,23 +521,21 @@ static NSString *SpacedCode(NSString *code) {
 
 - (void)start { [self startInWindow:nil]; }
 
-- (NSString *)consentKey { return [@"netConsent." stringByAppendingString:[OVNetwork identifierFor:OVNetBridge]]; }
-
 - (void)askConsent:(NSWindow *)w completion:(void (^)(BOOL))completion {
     if ([OVNetwork decisionFor:OVNetBridge] != OVNetNeedsConsent) { [OVNetwork requestFeature:OVNetBridge window:w completion:completion]; return; }
     NSAlert *a = [NSAlert new];
     a.alertStyle = NSAlertStyleWarning;
     a.messageText = L(@"Use Bridge?");
     a.informativeText = L(@"Traffic, including audio and results, passes through Cloudflare. Anyone who learns the address can ask to connect, but only devices you approve on this Mac get access. Stop Bridge when you are done.");
+    [a addButtonWithTitle:L(@"Not now")];                 // the default button is the safe one
     [a addButtonWithTitle:L(@"Allow")];
-    [a addButtonWithTitle:L(@"Not now")];
     void (^done)(NSModalResponse) = ^(NSModalResponse r) {
-        BOOL ok = r == NSAlertFirstButtonReturn;
-        if (ok) [NSUserDefaults.standardUserDefaults setBool:YES forKey:[self consentKey]];   // the same key OVNetwork reads
+        BOOL ok = r == NSAlertSecondButtonReturn;
+        if (ok) [OVNetwork grantConsentFor:OVNetBridge];
         completion(ok);
     };
     NSWindow *host = w ?: [self hostWindow];
-    if (host) [a beginSheetModalForWindow:host completionHandler:done]; else done([a runModal]);
+    if (host) [a beginSheetModalForWindow:host completionHandler:done]; else [self showWindowless:a done:done];
 }
 
 - (void)startInWindow:(NSWindow *)window {
@@ -575,7 +630,7 @@ static NSString *SpacedCode(NSString *code) {
 - (void)launchTunnel {
     if (_state != BSStarting) return;
     NSString *bin = [self helperPath];
-    if (![self helperVerified]) {                                       // changed since the check: unverified code is never run
+    if (![self rootIsSafe] || ![self helperVerifiedFresh]) {            // changed since the check: unverified code is never run
         if (bin) [NSFileManager.defaultManager removeItemAtPath:bin error:nil];
         [self teardownWithError:L(@"Bridge helper integrity verification failed")];
         return;
@@ -584,46 +639,36 @@ static NSString *SpacedCode(NSString *code) {
     NSString *config = [_root stringByAppendingPathComponent:@"tunnel.yml"], *home = [_root stringByAppendingPathComponent:@"home"];
     [fm createFileAtPath:config contents:[NSData data] attributes:@{NSFilePosixPermissions: @0600}];
     [fm createDirectoryAtPath:home withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions: @0700} error:nil];
-    NSTask *t = [NSTask new];
-    t.executableURL = [NSURL fileURLWithPath:bin];
-    t.arguments = @[@"tunnel", @"--no-autoupdate", @"--config", config, @"--url", [NSString stringWithFormat:@"http://127.0.0.1:%u", _bridgePort]];
-    t.environment = @{@"HOME": home, @"PATH": @"/usr/bin:/bin"};         // nothing else is inherited; no certificate or config of the user
-    t.currentDirectoryURL = [NSURL fileURLWithPath:_root];
-    NSPipe *err = [NSPipe pipe], *out = [NSPipe pipe];
-    t.standardError = err; t.standardOutput = out; t.standardInput = NSFileHandle.fileHandleWithNullDevice;
-    _lineBuf = [NSMutableData data];
+    // The API server process starts and owns the tunnel program (its own process group, a clean environment, no config or
+    // certificate of the user): it ends with the server, which ends with the app, whatever way the app ends. It hashes the file again.
     NSInteger gen = _gen;
-    __weak OVBridge *w = self;
-    __weak NSTask *wt = t;
-    void (^reader)(NSFileHandle *) = ^(NSFileHandle *h) {
-        NSData *d = h.availableData;
-        if (!d.length) { h.readabilityHandler = nil; return; }
-        dispatch_async(dispatch_get_main_queue(), ^{ [w consumeTunnelOutput:d from:wt generation:gen]; });
-    };
-    err.fileHandleForReading.readabilityHandler = reader;
-    out.fileHandleForReading.readabilityHandler = reader;
-    t.terminationHandler = ^(NSTask *done) { dispatch_async(dispatch_get_main_queue(), ^{ [w tunnelEnded:done generation:gen]; }); };
-    NSError *e = nil;
-    if (![t launchAndReturnError:&e]) { [self teardownWithError:L(@"The tunnel program did not start.")]; return; }
-    _task = t;
-    [[NSString stringWithFormat:@"%d\n", t.processIdentifier] writeToFile:[self pidPath] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    [OVAPI.shared sendMessage:@{@"op": @"tunnel_start", @"path": bin, @"sha256": _pin[@"sha256_binary"], @"config": config, @"home": home, @"cwd": _root}];
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kTunnelTimeout * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         if (gen == self->_gen && self->_state == BSStarting)
             [self teardownWithError:L(@"Bridge could not open the tunnel. Check your internet connection and try again.")];
     });
 }
 
-- (void)consumeTunnelOutput:(NSData *)d from:(NSTask *)t generation:(NSInteger)gen {
-    if (gen != _gen || t != _task || _state != BSStarting) { return; }     // after the address the log is only drained (so the tunnel never blocks), not read
-    [_lineBuf appendData:d];
-    if (_lineBuf.length > 64 * 1024) _lineBuf = [NSMutableData data];
-    for (;;) {
-        NSRange nl = [_lineBuf rangeOfData:[NSData dataWithBytes:"\n" length:1] options:0 range:NSMakeRange(0, _lineBuf.length)];
-        if (nl.location == NSNotFound) break;
-        NSString *line = [[NSString alloc] initWithData:[_lineBuf subdataWithRange:NSMakeRange(0, nl.location)] encoding:NSUTF8StringEncoding];
-        [_lineBuf replaceBytesInRange:NSMakeRange(0, nl.location + 1) withBytes:NULL length:0];
-        NSString *url = line ? OVBridgeParseTunnelURL(line) : nil;
-        if (url) { [self tunnelIsUp:url]; return; }
+- (void)tunnelMessage:(NSDictionary *)m {
+    NSString *op = m[@"op"];
+    if ([op isEqualToString:@"tunnel_started"]) {
+        if (_state != BSStarting || ![m[@"pid"] isKindOfClass:NSNumber.class]) return;
+        _tunnelPid = (pid_t)[m[@"pid"] intValue];
+        [[NSString stringWithFormat:@"%d\n", _tunnelPid] writeToFile:[self pidPath] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    } else if ([op isEqualToString:@"tunnel_line"]) {
+        NSString *line = [m[@"line"] isKindOfClass:NSString.class] ? m[@"line"] : nil;
+        NSString *url = (_state == BSStarting && line) ? OVBridgeParseTunnelURL(line) : nil;
+        if (url) [self tunnelIsUp:url];
+    } else if ([op isEqualToString:@"tunnel_exit"]) {
+        if (_state == BSIdle) return;
+        _tunnelPid = 0;
+        [self teardownWithError:_state == BSRunning ? L(@"The tunnel stopped. Start Bridge again.")
+                                                    : L(@"Bridge could not open the tunnel. Check your internet connection and try again.")];
+    } else if ([op isEqualToString:@"tunnel_error"]) {
+        if (_state == BSIdle) return;
+        BOOL integrity = [m[@"code"] isEqual:@"hash"] || [m[@"code"] isEqual:@"unsafe_file"];
+        if (integrity && [self helperPath]) [NSFileManager.defaultManager removeItemAtPath:[self helperPath] error:nil];
+        [self teardownWithError:integrity ? L(@"Bridge helper integrity verification failed") : L(@"The tunnel program did not start.")];
     }
 }
 
@@ -636,39 +681,24 @@ static NSString *SpacedCode(NSString *code) {
     [self setStatusText:L(@"Running")];
 }
 
-- (void)tunnelEnded:(NSTask *)t generation:(NSInteger)gen {
-    if (gen != _gen || t != _task || _state == BSIdle) return;
-    [self teardownWithError:_state == BSRunning ? L(@"The tunnel stopped. Start Bridge again.")
-                                                : L(@"Bridge could not open the tunnel. Check your internet connection and try again.")];
-}
-
 #pragma mark - Stop
 
 - (void)stop { [self teardownWithError:nil]; }
 
 - (void)shutdown {
-    NSTask *t = _task;
+    pid_t pid = _tunnelPid;
     [self teardownWithError:nil];
-    [self waitForEnd:t];
+    [self waitForExit:pid];
 }
 
-/// Ends the tunnel process (SIGTERM, SIGKILL when it lingers) without waiting for it on the main thread.
-- (void)terminateTask:(NSTask *)t {
-    if (!t) return;
-    t.terminationHandler = nil;
-    ((NSPipe *)t.standardError).fileHandleForReading.readabilityHandler = nil;
-    ((NSPipe *)t.standardOutput).fileHandleForReading.readabilityHandler = nil;
-    if (!t.running) return;
-    pid_t pid = t.processIdentifier;
-    [t terminate];
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ if (t.running) kill(pid, SIGKILL); });
-}
-
-- (void)waitForEnd:(NSTask *)t {
-    if (!t) return;
+/// The tunnel program belongs to the server process, so the app only watches that it is gone (SIGKILL when it lingers).
+- (void)waitForExit:(pid_t)pid {
+    if (pid <= 1) return;
     NSDate *until = [NSDate dateWithTimeIntervalSinceNow:1.5];
-    while (t.running && until.timeIntervalSinceNow > 0) [NSRunLoop.mainRunLoop runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.02]];
-    if (t.running) kill(t.processIdentifier, SIGKILL);
+    while (kill(pid, 0) == 0 && until.timeIntervalSinceNow > 0) [NSThread sleepForTimeInterval:0.02];
+    char buf[PROC_PIDPATHINFO_MAXSIZE];
+    if (kill(pid, 0) == 0 && proc_pidpath(pid, buf, sizeof buf) > 0 && [[NSString stringWithUTF8String:buf] hasPrefix:[_root stringByAppendingPathComponent:kHelperPrefix]])
+        kill(pid, SIGKILL);
 }
 
 /// Everything Bridge started goes away: sheets, download, tunnel, listener, and the API server too when Bridge launched it.
@@ -681,9 +711,8 @@ static NSString *SpacedCode(NSString *code) {
     [self cancelHelperDownload];
     for (OVJob *j in OVJobs.shared.all)
         if (j.active && [j.kind isEqualToString:OVJobKindDownload] && [j.request[@"what"] isEqual:@"bridge-helper"]) [OVJobs.shared stop:j];
-    NSTask *t = _task;
-    _task = nil;
-    [self terminateTask:t];
+    if (was) [OVAPI.shared sendMessage:@{@"op": @"tunnel_stop"}];
+    _tunnelPid = 0;
     [NSFileManager.defaultManager removeItemAtPath:[self pidPath] error:nil];
     if (was && OVAPI.shared.running) [OVAPI.shared sendMessage:@{@"op": @"bridge"}];       // no host: the listener closes
     if (_startedAPI) {
@@ -706,9 +735,9 @@ static NSString *SpacedCode(NSString *code) {
 }
 
 - (void)willDeleteAppData:(NSNotification *)n {
-    NSTask *t = _task;
+    pid_t pid = _tunnelPid;
     [self teardownWithError:nil];
-    [self waitForEnd:t];
+    [self waitForExit:pid];
     [_devices removeAllObjects];
     self.lastError = nil;
     [self changed];

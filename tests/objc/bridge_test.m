@@ -4,6 +4,7 @@
 #import <Foundation/Foundation.h>
 #import <sys/stat.h>
 #import "OVBridge.h"
+#import "OVNetwork.h"
 
 static int gFailures = 0;
 #define ASSERT(cond) do { if (!(cond)) { gFailures++; \
@@ -71,6 +72,72 @@ static void TestHashMismatchDeletesDownload(void) {
     ASSERT(!b.helperInstalled);
 }
 
+/// Runs the install with tar / codesign replaced: `listing` is what tar -t says, `content` what tar -x unpacks,
+/// `verify` the exit status of codesign --verify, `team` the TeamIdentifier it prints.
+static BOOL FakeInstall(NSString *listing, NSString *content, int verify, NSString *team, NSString **errOut, OVBridge **bridgeOut, NSString **rootOut) {
+    NSString *root = TempDir();
+    NSString *good = @"the pinned program";
+    NSString *archive = [root stringByAppendingPathComponent:@"cloudflared-2026.11.1.tgz"];
+    [@"archive bytes" writeToFile:archive atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    NSString *tmpGood = [root stringByAppendingPathComponent:@"good.bin"];
+    [good writeToFile:tmpGood atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    NSDictionary *pin = @{@"version": @"2026.11.1",
+                          @"url": @"https://github.com/cloudflare/cloudflared/releases/download/2026.11.1/cloudflared-darwin-arm64.tgz",
+                          @"sha256_archive": OVSHA256OfFile(archive), @"sha256_binary": OVSHA256OfFile(tmpGood), @"team_id": @"68WVV388M8"};
+    [NSFileManager.defaultManager removeItemAtPath:tmpGood error:nil];
+    OVBridge *b = [OVBridge bridgeWithRoot:root pin:pin];
+    b.toolRunner = ^int(NSString *exe, NSArray<NSString *> *args, NSString **out, NSString **err) {
+        if ([exe hasSuffix:@"tar"] && [args[0] isEqualToString:@"-tzf"]) { if (out) *out = listing; return 0; }
+        if ([exe hasSuffix:@"tar"]) {
+            [content writeToFile:[args[3] stringByAppendingPathComponent:@"cloudflared"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            return 0;
+        }
+        if ([args[0] isEqualToString:@"--verify"]) return verify;
+        if (err) *err = [NSString stringWithFormat:@"Identifier=cloudflared\nTeamIdentifier=%@\n", team];
+        return 0;
+    };
+    *rootOut = root;
+    *bridgeOut = b;
+    NSString *err = nil;
+    BOOL ok = [b installArchiveAtPath:archive error:&err];
+    if (errOut) *errOut = err;
+    ASSERT([NSFileManager.defaultManager fileExistsAtPath:archive] == NO);      // consumed or deleted, never left
+    return ok;
+}
+
+static void TestInstallBranches(void) {
+    NSString *good = @"the pinned program", *err = nil, *root = nil;
+    OVBridge *b = nil;
+    ASSERT(FakeInstall(@"cloudflared\n", good, 0, @"68WVV388M8", &err, &b, &root));
+    ASSERT(b.helperInstalled);
+    for (NSString *n in [NSFileManager.defaultManager contentsOfDirectoryAtPath:root error:nil]) ASSERT(![n hasPrefix:@"tmp-"]);
+    ASSERT(FakeInstall(@"./cloudflared\n", good, 0, @"68WVV388M8", &err, &b, &root));
+    // each failing branch: refused, the right message, nothing executable left
+    struct { NSString *listing, *content; int verify; NSString *team; } bad[] = {
+        {@"cloudflared\nextra\n", @"the pinned program", 0, @"68WVV388M8"},      // two entries in the archive
+        {@"../cloudflared\n",     @"the pinned program", 0, @"68WVV388M8"},      // a path out of the folder
+        {@"cloudflared\n",        @"another program",    0, @"68WVV388M8"},      // the binary's hash differs
+        {@"cloudflared\n",        @"the pinned program", 1, @"68WVV388M8"},      // codesign --verify fails
+        {@"cloudflared\n",        @"the pinned program", 0, @"AAAAAAAAAA"},      // signed by someone else
+        {@"cloudflared\n",        @"the pinned program", 0, @""},                // no TeamIdentifier at all
+    };
+    for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+        BOOL ok = FakeInstall(bad[i].listing, bad[i].content, bad[i].verify, bad[i].team, &err, &b, &root);
+        ASSERT(!ok);
+        ASSERT([err isEqualToString:@"Bridge helper integrity verification failed"]);
+        ASSERT(!b.helperInstalled);
+        for (NSString *n in [NSFileManager.defaultManager contentsOfDirectoryAtPath:root error:nil]) ASSERT(![n hasPrefix:@"cloudflared-2"] && ![n hasPrefix:@"tmp-"]);
+    }
+}
+
+static void TestConsentIsGrantedThroughOVNetwork(void) {
+    [OVNetwork revokeConsentFor:OVNetBridge];
+    ASSERT(![OVNetwork hasConsentFor:OVNetBridge]);
+    [OVNetwork grantConsentFor:OVNetBridge];
+    ASSERT([OVNetwork hasConsentFor:OVNetBridge] && [OVNetwork decisionFor:OVNetBridge] != OVNetNeedsConsent);
+    [OVNetwork revokeConsentFor:OVNetBridge];
+}
+
 static void TestDevicesFileHoldsOnlyHashes(void) {
     NSString *root = TempDir();
     OVBridge *b = [OVBridge bridgeWithRoot:root pin:nil];
@@ -119,6 +186,8 @@ int main(void) {
         TestParseTunnelURL();
         TestSHA256();
         TestHashMismatchDeletesDownload();
+        TestInstallBranches();
+        TestConsentIsGrantedThroughOVNetwork();
         TestDevicesFileHoldsOnlyHashes();
         TestBridgeNeverAutostarts();
     }

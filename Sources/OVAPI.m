@@ -363,7 +363,7 @@ static const NSTimeInterval kUploadTTL = 3600;
         OVJob *j = [m[@"reqId"] isKindOfClass:NSString.class] ? _byRequest[m[@"reqId"]] : nil;
         if (j && j.active) [OVJobs.shared stop:j];
     }
-    else if ([op isEqualToString:@"pair_request"] || [op isEqualToString:@"device_added"] || [op isEqualToString:@"device_seen"]
+    else if ([op hasPrefix:@"tunnel_"] || [op isEqualToString:@"pair_request"] || [op isEqualToString:@"device_added"] || [op isEqualToString:@"device_seen"]
              || ([op isEqualToString:@"listening"] && m[@"bridgePort"]) || ([op isEqualToString:@"error"] && [m[@"code"] isEqual:@"BRIDGE"]))
         [OVBridge.shared handleServerMessage:m];
 }

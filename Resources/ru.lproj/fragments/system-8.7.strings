@@ -40,3 +40,4 @@
 "Cloudflare, through a tunnel that makes this Mac reachable from your other devices" = "Cloudflare, через туннель, по которому этот Mac доступен с ваших других устройств";
 "the requests your devices send and the audio and results they get back (the traffic passes through Cloudflare)" = "запросы ваших устройств, а также звук и результаты, которые они получают (трафик проходит через Cloudflare)";
 "Only while Bridge is switched on. Its tunnel program is downloaded once from GitHub, checked before it runs." = "Только пока мост включён. Его программа-туннель один раз загружается с GitHub и проверяется перед запуском.";
+"Not now" = "Не сейчас";

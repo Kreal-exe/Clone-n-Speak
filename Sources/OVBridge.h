@@ -47,6 +47,9 @@ NSString *OVSHA256OfFile(NSString *path);
 /// temporary folder, SHA-256 of the binary, codesign --verify --strict, the pinned TeamIdentifier, then chmod 755 and a move.
 /// Any mismatch deletes the archive (and its .part) and everything extracted: NO with "Bridge helper integrity verification failed".
 - (BOOL)installArchiveAtPath:(NSString *)archive error:(NSString *_Nullable *_Nullable)error;
+
+/// Test seam: runs tar / codesign. Default nil: the real tools with an empty environment.
+@property (nonatomic, copy, nullable) int (^toolRunner)(NSString *exe, NSArray<NSString *> *args, NSString *_Nullable *_Nullable out, NSString *_Nullable *_Nullable err);
 @end
 
 NS_ASSUME_NONNULL_END

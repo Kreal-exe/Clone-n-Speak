@@ -45,7 +45,9 @@ EXPECTED = {
                       "checked before chmod +x), runs it with a clean environment, and stops it on Stop / quit / Offline / key change; "
                       "the markers are the program's name and path"),
     "OVBridge.h": (1, "Bridge's interface: one comment naming the tunnel program; no network code"),
-    "cns_api.py": (4, "local API / Bridge listeners on 127.0.0.1, server side only (no outgoing calls)"),
+    "cns_api.py": (6, "local API / Bridge listeners on 127.0.0.1, server side only (no outgoing calls); it also owns the Bridge "
+                      "tunnel program (the file name and path markers) so the tunnel ends with the server, only after OVBridge "
+                      "verified it and only when the app sends tunnel_start"),
 }
 
 # Files other tasks add (6.8 deep-filter download, 6.10 onnxruntime/model download, Edge TTS, YouTube,

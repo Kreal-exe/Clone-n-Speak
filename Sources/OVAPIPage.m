@@ -25,6 +25,7 @@ static NSStackView *Column(NSArray<NSView *> *rows, CGFloat gap) {
 @property NSButton *bridgeButton, *offlineButton;
 @property NSTextField *bridgeStatus, *bridgeError, *bridgeAddress, *emptyDevices;
 @property NSImageView *bridgeQR;
+@property NSString *lastAnnounced;
 @end
 
 @implementation OVAPIPage
@@ -206,6 +207,7 @@ static NSString *DateText(NSDate *d) {
     self.offlineButton.hidden = !(offline && !b.busy);
     self.bridgeError.stringValue = b.lastError ?: @"";
     self.bridgeError.hidden = !b.lastError.length;
+    [self announceBridge:b.lastError.length ? b.lastError : b.status];
 
     // the address goes to the screen only while Bridge runs, and only here
     self.bridgeAddressBlock.hidden = !b.running;
@@ -238,6 +240,16 @@ static NSString *DateText(NSDate *d) {
         [self.deviceRows addArrangedSubview:row];
         [row.widthAnchor constraintEqualToAnchor:self.deviceRows.widthAnchor].active = YES;
     }
+}
+
+/// VoiceOver hears Bridge's status and errors without looking at the card. A percentage tick is not repeated.
+- (void)announceBridge:(NSString *)text {
+    if (!text.length) { self.lastAnnounced = nil; return; }
+    NSString *key = [text stringByReplacingOccurrencesOfString:@"[0-9]+" withString:@"" options:NSRegularExpressionSearch range:NSMakeRange(0, text.length)];
+    if ([key isEqualToString:self.lastAnnounced]) return;
+    self.lastAnnounced = key;
+    NSAccessibilityPostNotificationWithUserInfo(NSApp, NSAccessibilityAnnouncementRequestedNotification,
+        @{NSAccessibilityAnnouncementKey: text, NSAccessibilityPriorityKey: @(NSAccessibilityPriorityMedium)});
 }
 
 - (void)bridgeToggle:(id)s {
