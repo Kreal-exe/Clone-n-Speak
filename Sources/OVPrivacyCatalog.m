@@ -69,6 +69,7 @@ NSNotificationName const OVPrivacyWillDeleteAppDataNotification = @"OVPrivacyWil
         Src(@"cns_separate.py", dl, @"music-removal model, pinned address and checksum"),
         Src(@"cns_dfn.py", dl, @"DeepFilterNet program, pinned address and checksum"),
         Src(@"cns_api.py", @"internal", @"local API listener on 127.0.0.1; no outgoing calls"),
+        Src(@"OVAPIPage.m", @"internal", @"example commands for the local API on 127.0.0.1; sends nothing"),
         Src(@"cns_realtime.py", @"internal", @"realtime voice process; a local connection to the app only, no internet"),
         Src(@"cns_rt_proto.py", @"internal", @"realtime block protocol over a local connection; no internet"),
         Src(@"cns_engines.py", dl, @"pro-engine installs, pinned versions"),

@@ -48,9 +48,12 @@ extern NSNotificationName const OVSeparatorUseInToolsNotification;   // userInfo
 @interface OVRealtimePage : NSViewController @end
 @interface OVTrainingPage : NSViewController @end
 @interface OVJobsPage : NSViewController @end
+/// API & Bridge: the local API card here (8.6); the Bridge card is added by 8.7.
+@interface OVAPIPage : NSViewController @end
 @interface OVBlenderPage : NSViewController @end
 /// Data & Privacy: what goes online, where files live, voice rights.
 @interface OVPrivacyPage : NSViewController @end
+@interface OVPluginsPage : NSViewController @end
 /// Developer-only page with every OVDesign component (not in the sidebar; OVNavigate(@"gallery") or -OVStartPage gallery).
 @interface OVGalleryPage : NSViewController @end
 
