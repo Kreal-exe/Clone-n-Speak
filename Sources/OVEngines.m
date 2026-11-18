@@ -57,6 +57,8 @@ static NSArray<NSDictionary *> *KindTable(void) {
             if ([r[@"mode"] isEqual:@"batch"] || [r[@"inputs"] isKindOfClass:NSArray.class]) return @[@"cns_rvc.py", @"batch"];
             return @[@"cns_rvc.py", @"infer"];
         };
+        // The Edge kind also lists the voices (list_voices in the request): one script, two commands.
+        OVProCommandBlock edge = ^NSArray *(NSDictionary *r) { return @[@"cns_edge.py", [r[@"list_voices"] boolValue] ? @"voices" : @"synth"]; };
         // net: an OVNetFeature the run needs, or -1. cwd: "applio" = the Applio folder. roots: where the sandbox lets it
         // write (the job's work folder is always one).
         t = @[
@@ -70,7 +72,7 @@ static NSArray<NSDictionary *> *KindTable(void) {
             With(Row(OVProKindRealtime, OVJobLaneCompute, NO, YES, -1, YES, NO, @"applio", @[], FixedCmd(@"cns_realtime.py", @"run")), @{@"keepStdin": @YES}),
             Row(OVProKindStems,         OVJobLaneCompute, YES, YES, -1, YES, NO, @"",       @[@"outputs"], FixedCmd(@"cns_stems.py", @"separate")),
             Row(OVProKindYouTube,       OVJobLaneNetwork, YES, NO,  OVNetYouTube, NO, NO, @"", @[@"outputs"], FixedCmd(@"cns_ytdl.py", @"fetch")),
-            Row(OVProKindEdge,          OVJobLaneNetwork, YES, NO,  OVNetEdgeTTS, NO, NO, @"", @[@"outputs"], FixedCmd(@"cns_edge.py", @"synth")),
+            Row(OVProKindEdge,          OVJobLaneNetwork, YES, NO,  OVNetEdgeTTS, NO, NO, @"", @[@"outputs"], edge),
             Row(OVProKindEngineInstall, OVJobLaneNetwork, YES, NO,  -1, NO, YES, @"", @[@"engines", @"uvcache", @"pythons"], FixedCmd(@"cns_engines.py", @"install")),
             Row(OVProKindEngineWeights, OVJobLaneNetwork, YES, NO,  -1, NO, YES, @"", @[@"engines", @"uvcache", @"pythons"], FixedCmd(@"cns_engines.py", @"weights")),
             Row(OVProKindEngineUpdate,  OVJobLaneNetwork, YES, NO,  OVNetYouTube, NO, YES, @"", @[@"engines", @"uvcache", @"pythons"], FixedCmd(@"cns_engines.py", @"update-ytdlp")),
