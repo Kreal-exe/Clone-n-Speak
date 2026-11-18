@@ -1,4 +1,4 @@
-// deps: OVNetwork.m OVWorker.m OVRuntime.m OVPaths.m OVModels.m OVDownloader.m OVLocale.m OVStore.m OVMemory.m
+// deps: OVNetwork.m OVWorker.m OVRuntime.m OVPaths.m OVModels.m OVDownloader.m OVLocale.m OVStore.m OVMemory.m OVPrivacyCatalog.m
 #import <Foundation/Foundation.h>
 #import "OVModels.h"
 
