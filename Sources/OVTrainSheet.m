@@ -6,6 +6,7 @@
 #import "OVModels.h"
 #import "OVWorker.h"
 #import "OVNativeAccent.h"
+#import "OVJobs.h"
 
 static NSInteger const kRounds = 3;
 static NSString *const kOwnTakes = @"self", *const kModelNarrator = @"model";
@@ -22,6 +23,7 @@ static NSString *const kOwnTakes = @"self", *const kModelNarrator = @"model";
 @property NSView *bottomBar;
 @property NSProgressIndicator *bar;
 @property BOOL running;
+@property (strong) OVJob *job;
 @property NSMutableArray<NSDictionary *> *live;  // rounds of the training under way, as they come
 @end
 
@@ -114,6 +116,7 @@ static OVTrainSheet *shown;  // the sheet keeps its controller alive
     NSNotificationCenter *nc = NSNotificationCenter.defaultCenter;
     [nc addObserver:self selector:@selector(workerEvent:) name:OVWorkerEventNotification object:nil];
     [nc addObserver:self selector:@selector(refresh) name:OVNativeAccentDidChangeNotification object:nil];
+    [nc addObserver:self selector:@selector(jobChanged:) name:OVJobsDidChangeNotification object:nil];
     [nc addObserver:self selector:@selector(refresh) name:OVWorkerDidChangeNotification object:nil];
     [self refresh];
 }
@@ -282,7 +285,7 @@ static NSView *EmptyRounds(NSString *title) {
 }
 
 - (void)start:(id)s {
-    if (self.running) { [[OVWorker shared] stop]; return; }
+    if (self.running) { if (self.job) [OVJobs.shared stop:self.job]; return; }
     NSDictionary *spec = [OVSettings modelSpec];
     if (!spec) { self.status.stringValue = L(@"Finish setup first: the OmniVoice engine and model."); return; }
     self.status.stringValue = L(@"Whisper judges the pronunciation — getting it ready…");
@@ -312,16 +315,32 @@ static NSView *EmptyRounds(NSString *title) {
     self.bar.doubleValue = 0;
     [self refresh];
     __weak typeof(self) w = self;
-    [[OVWorker shared] request:req status:^(NSString *msg) {
-        w.status.stringValue = msg;
-    } progress:^(double v) {
-        w.bar.doubleValue = v;
-    } done:^(NSDictionary *data, NSString *error) {
-        w.running = NO;
-        [[OVVoices shared] reload];
-        w.status.stringValue = error ?: [w summary:data];
-        [w refresh];
-    }];
+    NSString *submitError = nil;
+    OVJob *job = [OVJobs.shared submitKind:OVJobKindTrain request:req origin:@"app" onFinish:^(OVJob *j) { [w jobFinished:j]; } error:&submitError];
+    if (!job) {
+        self.running = NO;
+        self.status.stringValue = submitError ?: L(@"The task could not be started.");
+        [self refresh];
+        return;
+    }
+    self.job = job;
+}
+
+/// Status and progress come from the job manager (the job goes on when the sheet is closed).
+- (void)jobChanged:(NSNotification *)n {
+    OVJob *j = n.object;
+    if (!j || j != self.job || !j.active) return;
+    if (j.status.length) self.status.stringValue = j.status;
+    if (j.progress >= 0) self.bar.doubleValue = j.progress;
+}
+
+- (void)jobFinished:(OVJob *)j {
+    if (j != self.job) return;
+    self.job = nil;
+    self.running = NO;
+    [[OVVoices shared] reload];
+    self.status.stringValue = j.state == OVJobSucceeded ? [self summary:j.result] : j.state == OVJobStopped ? L(@"Stopped") : (j.error ?: L(@"Training failed."));
+    [self refresh];
 }
 
 - (NSString *)summary:(NSDictionary *)info {
