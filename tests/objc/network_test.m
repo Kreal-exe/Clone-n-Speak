@@ -36,7 +36,7 @@ int main(void) {
         ASSERT(OVNetwork.offline && notes == 1);
         ASSERT([OVNetwork decisionFor:OVNetYouTube] == OVNetBlockedOffline);
         ASSERT([OVNetwork decisionFor:OVNetEdgeTTS] == OVNetBlockedOffline);
-        ASSERT([OVNetwork decisionFor:OVNetModelDownload] == OVNetAllowed);
+        ASSERT([OVNetwork decisionFor:OVNetModelDownload] == OVNetBlockedOffline);
         ASSERT([[OVNetwork blockedMessageFor:OVNetEdgeTTS] containsString:@"Settings"]);
         [OVNetwork setOffline:YES];
         ASSERT(notes == 1);                            // no change, no notification

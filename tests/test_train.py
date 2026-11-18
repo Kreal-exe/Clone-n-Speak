@@ -255,11 +255,19 @@ class RunTests(unittest.TestCase):
         base, req = make_world()
         trainer = tr.Trainer(req)
         os.environ.pop("CNS_TRAIN_NO_SANDBOX", None)
+        import cns_engines as eng
+        good = eng.sandbox_file()
         os.environ["CNS_SANDBOXED"] = "1"
         try:
+            # the bare variable is not trusted: the file must be the bundled engine.sb
+            self.assertEqual(trainer._argv(["x"])[0], "/usr/bin/sandbox-exec")
+            os.environ["CNS_SANDBOX_FILE"] = "/etc/hosts"
+            self.assertEqual(trainer._argv(["x"])[0], "/usr/bin/sandbox-exec")
+            os.environ["CNS_SANDBOX_FILE"] = good
             self.assertEqual(trainer._argv(["x"])[1:], ["x"])
         finally:
             os.environ.pop("CNS_SANDBOXED", None)
+            os.environ.pop("CNS_SANDBOX_FILE", None)
 
     def test_resume_requires_checkpoints(self):
         base, req = make_world()

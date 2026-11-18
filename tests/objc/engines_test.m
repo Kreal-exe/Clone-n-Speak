@@ -9,6 +9,7 @@
 #import "OVJobs.h"
 #import "OVPaths.h"
 #import "OVWorker.h"
+#import "OVNetwork.h"
 
 static NSString *gCase;
 static int gFailures = 0, gCaseFailures = 0;
@@ -322,9 +323,18 @@ static void testSpecForProKindRunsUnderSandbox(void) {
     OVJob *fetch = submitted(jobs, OVProKindRvcFetch, @{@"url": @"https://x/y.zip", @"name": @"v"});
     NSDictionary *fsb = sandboxParts([e specForKind:OVProKindRvcFetch job:fetch], &rest);
     ASSERT([fsb[@"NET"] isEqual:@"allow"] && [fsb[@"ROOT1"] isEqual:[OVPaths rvcModels].stringByResolvingSymlinksInPath]);
-    // installs are not sandboxed (they write the engines folder) and run in the main runtime
+    // installs: the same profile with NET=allow, writes in the engines folder, the uv cache and the uv Python folder
     OVProcessSpec *ins = [e specForKind:OVProKindEngineInstall job:submitted(jobs, OVProKindEngineInstall, @{@"components": @[@"pro-env"]})];
-    ASSERT([ins.executable isEqual:@"/usr/bin/python3"] && sandboxParts(ins, &rest) == nil && ins.environment[@"CNS_SANDBOXED"] == nil);
+    NSArray *insRest = nil;
+    NSDictionary *insb = sandboxParts(ins, &insRest);
+    ASSERT(insb && [insb[@"NET"] isEqual:@"allow"] && [insb[@"ROOT1"] isEqual:root.stringByResolvingSymlinksInPath], "writes the engines folder: %s", [ins.arguments componentsJoinedByString:@" "].UTF8String);
+    ASSERT([insb[@"ROOT2"] hasSuffix:@"Library/Caches/uv"] && [insb[@"ROOT3"] hasSuffix:@"runtime/python"]);
+    ASSERT([insRest[0] isEqual:@"/usr/bin/python3"] && [insRest[3] isEqual:@"install"] && ins.environment[@"CNS_SANDBOXED"]);
+    // every engine process gets the folders its script may write results to
+    NSArray *allowed = [s.environment[@"CNS_ALLOWED_ROOTS"] componentsSeparatedByString:@":"];
+    ASSERT([allowed containsObject:conv.workDirectory.stringByResolvingSymlinksInPath] && [allowed containsObject:[OVPaths outputs].stringByResolvingSymlinksInPath], "%s", [s.environment[@"CNS_ALLOWED_ROOTS"] UTF8String]);
+    ASSERT([ts.environment[@"CNS_ALLOWED_ROOTS"] containsString:[OVPaths rvcTraining].stringByResolvingSymlinksInPath]);
+    ASSERT(![[e specForKind:OVProKindRvcInfo job:submitted(jobs, OVProKindRvcInfo, @{})].environment[@"CNS_ALLOWED_ROOTS"] containsString:[OVPaths outputs].stringByResolvingSymlinksInPath], "no outputs for a kind without outputs");
     // not installed: no program (the job fails with a message, the gate card stops it before)
     [e applyStatus:status(@"shared", @{@"pro-env": @"notinstalled"})];
     OVProcessSpec *none = [e specForKind:OVProKindConvert job:conv];
@@ -355,14 +365,23 @@ static void testSpecEnvironmentIsADictionary(void) {
     // installs: the main runtime, no offline flags, uv facts in the request
     OVJob *inst = submitted(jobs, OVProKindEngineInstall, @{@"components": @[@"pro-env"]});
     OVProcessSpec *is = [e specForKind:OVProKindEngineInstall job:inst];
-    ASSERT([is.executable isEqual:@"/usr/bin/python3"] && [is.arguments[2] isEqual:@"install"] && [is.arguments[1] hasSuffix:@"/cns_engines.py"]);
+    NSArray *isRest = nil;
+    NSDictionary *isb = sandboxParts(is, &isRest);
+    ASSERT(isb && [isRest[0] isEqual:@"/usr/bin/python3"] && [isRest[3] isEqual:@"install"] && [isRest[2] hasSuffix:@"/cns_engines.py"]);
     ASSERT(is.environment[@"HF_HUB_OFFLINE"] == nil, "downloads need the network");
     NSDictionary *r = stdinOf(is);
     ASSERT([r[@"components"] isEqual:@[@"pro-env"]] && [r[@"root"] isEqual:root] && [r[@"env"] isKindOfClass:NSDictionary.class]);
     OVJob *w = submitted(jobs, OVProKindEngineWeights, @{@"components": @[@"rvc-core"]});
-    ASSERT([[e specForKind:OVProKindEngineWeights job:w].arguments[2] isEqual:@"weights"]);
+    ASSERT([[e specForKind:OVProKindEngineWeights job:w].arguments.lastObject isEqual:@"weights"]);
     OVJob *u = submitted(jobs, OVProKindEngineUpdate, @{@"components": @[@"ytdlp"]});
-    ASSERT([[e specForKind:OVProKindEngineUpdate job:u].arguments[2] isEqual:@"update-ytdlp"]);
+    ASSERT([[e specForKind:OVProKindEngineUpdate job:u].arguments.lastObject isEqual:@"update-ytdlp"]);
+    // Offline mode blocks downloads: no install job is created and the env of a started one says so
+    [OVNetwork setOffline:YES];
+    NSString *offErr = nil;
+    OVEngines *idle = [OVEngines enginesWithRoot:root jobs:[OVJobs jobsWithRoot:[root stringByAppendingPathComponent:@"jobs2"]] mainPython:@"/usr/bin/python3"];
+    ASSERT([idle install:@[@"rvc-fcpe"] error:&offErr] == nil && [offErr containsString:@"Offline mode"], "%s", offErr.UTF8String);
+    ASSERT([[e specForKind:OVProKindEngineInstall job:inst].environment[@"OV_OFFLINE"] isEqual:@"1"]);
+    [OVNetwork setOffline:NO];
     [NSFileManager.defaultManager removeItemAtPath:root error:nil];
 }
 

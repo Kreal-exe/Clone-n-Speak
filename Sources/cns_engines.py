@@ -409,6 +409,7 @@ def download(url, dest, sha256, size, emit_fn=None, opener=None, max_bytes=2 << 
     """Downloads url to dest through dest + '.part', resuming a leftover .part with a Range request. The sha256 is
     checked before the file is moved into place; a mismatch deletes the .part. sha256/size may be None (a tarball
     whose files are hashed on extraction); max_bytes then bounds the download. emit_fn("progress", value=0..1)."""
+    _require_download_allowed()
     _check_url(url)
     opener = opener or _default_opener
     os.makedirs(os.path.dirname(os.path.abspath(dest)), exist_ok=True)
@@ -899,10 +900,20 @@ def _install_edge(root, comp, uv, uvenv, emit_fn, prog, python):
     return {"python": py, "version": EDGE_TTS}
 
 
-def install(root, components_, uv, env, emit_fn, opener=None, python=PYTHON_VERSION):
+_EXPLICIT = False   # install(..., explicit_download=True) for the duration of the call
+
+
+def _require_download_allowed(explicit=False):
+    """Offline mode (OV_OFFLINE=1 in the environment) blocks every engine download, unless the app says the user started
+    this one with a button (explicit_download, the same flag worker.py honors)."""
+    if cns_net.is_offline() and not (explicit or _EXPLICIT):
+        raise cns_net.OfflineError("Offline mode is on. Turn it off in Settings to use model downloads.")
+
+
+def install(root, components_, uv, env, emit_fn, opener=None, python=PYTHON_VERSION, explicit_download=False):
     """Installs the components (and what they need) in catalog order. Returns the ids installed by this call;
     components that are already ready are skipped. emit_fn(event, **data): "status" {msg}, "progress" {value}."""
-    cns_net.require_online("model_download")
+    _require_download_allowed(explicit_download)
     layout = read_layout(root)
     wanted = _closure(components_, layout)
     todo = [c for c in wanted if component_state(root, c, layout) != "ready"]
@@ -911,6 +922,15 @@ def install(root, components_, uv, env, emit_fn, opener=None, python=PYTHON_VERS
     uvenv = _safe_env(root, env)
     prog = _Progress(emit_fn, todo)
     done = []
+    global _EXPLICIT
+    _EXPLICIT = bool(explicit_download)
+    try:
+        return _install_todo(root, todo, uv, uvenv, emit_fn, opener, python, prog, done)
+    finally:
+        _EXPLICIT = False
+
+
+def _install_todo(root, todo, uv, uvenv, emit_fn, opener, python, prog, done):
     emit_fn("progress", value=0.0)
     for comp in todo:
         _clear_ready(root, comp)
@@ -1105,6 +1125,21 @@ def sandbox_file():
     return None
 
 
+def already_sandboxed(env=None):
+    """True only when the app runs this process under the bundled engine.sb: CNS_SANDBOXED=1 and CNS_SANDBOX_FILE names a
+    readable engine.sb that carries the profile's marker line. Anything else (a stray variable, another file) is not
+    trusted and the caller wraps its child itself."""
+    env = os.environ if env is None else env
+    f = env.get("CNS_SANDBOX_FILE")
+    if env.get("CNS_SANDBOXED") != "1" or not f or os.path.basename(os.path.realpath(f)) != "engine.sb":
+        return False
+    try:
+        with open(f, encoding="utf-8") as h:
+            return h.readline().startswith(";; The one sandbox profile of every pro-engine process")
+    except OSError:
+        return False
+
+
 def darwin_cache_dirs():
     out = []
     for key in ("DARWIN_USER_CACHE_DIR", "DARWIN_USER_TEMP_DIR"):
@@ -1208,7 +1243,7 @@ def main(argv=None):
             if args.command == "weights":
                 table = _by_id(read_layout(root))
                 comps = [c for c in comps if c in table and table[c]["kind"] in ("weights", "stems")] or ["rvc-core"]
-            done = install(root, comps, uv, req.get("env"), emit)
+            done = install(root, comps, uv, req.get("env"), emit, explicit_download=req.get("explicit_download") is True)
             cns_proto.result(installed=done, **status(root))
         elif args.command == "uninstall":
             cns_proto.result(freed_bytes=uninstall(root, list(req.get("components") or [])), **status(root))

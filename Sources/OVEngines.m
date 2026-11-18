@@ -71,9 +71,9 @@ static NSArray<NSDictionary *> *KindTable(void) {
             Row(OVProKindStems,         OVJobLaneCompute, YES, YES, -1, YES, NO, @"",       @[@"outputs"], FixedCmd(@"cns_stems.py", @"separate")),
             Row(OVProKindYouTube,       OVJobLaneNetwork, YES, NO,  OVNetYouTube, NO, NO, @"", @[@"outputs"], FixedCmd(@"cns_ytdl.py", @"fetch")),
             Row(OVProKindEdge,          OVJobLaneNetwork, YES, NO,  OVNetEdgeTTS, NO, NO, @"", @[@"outputs"], FixedCmd(@"cns_edge.py", @"synth")),
-            Row(OVProKindEngineInstall, OVJobLaneNetwork, YES, NO,  -1, NO, YES, @"", @[], FixedCmd(@"cns_engines.py", @"install")),
-            Row(OVProKindEngineWeights, OVJobLaneNetwork, YES, NO,  -1, NO, YES, @"", @[], FixedCmd(@"cns_engines.py", @"weights")),
-            Row(OVProKindEngineUpdate,  OVJobLaneNetwork, YES, NO,  OVNetYouTube, NO, YES, @"", @[], FixedCmd(@"cns_engines.py", @"update-ytdlp")),
+            Row(OVProKindEngineInstall, OVJobLaneNetwork, YES, NO,  -1, NO, YES, @"", @[@"engines", @"uvcache", @"pythons"], FixedCmd(@"cns_engines.py", @"install")),
+            Row(OVProKindEngineWeights, OVJobLaneNetwork, YES, NO,  -1, NO, YES, @"", @[@"engines", @"uvcache", @"pythons"], FixedCmd(@"cns_engines.py", @"weights")),
+            Row(OVProKindEngineUpdate,  OVJobLaneNetwork, YES, NO,  OVNetYouTube, NO, YES, @"", @[@"engines", @"uvcache", @"pythons"], FixedCmd(@"cns_engines.py", @"update-ytdlp")),
         ];
     });
     return t;
@@ -562,38 +562,42 @@ static OVProcessSpec *Refused(NSString *why) {
     }
 
     NSArray<NSString *> *args = @[@"-s", script, cmd[1]];
-    if (install) {
-        spec.executable = py;
-        spec.arguments = args;
-    } else {
-        // Every engine process runs under the one profile engine.sb: writes only in the work folder, the outputs and the
-        // kind's own roots; no IP traffic for the kinds that need none (AF_UNIX, DataLoader and torch_shm_manager still
-        // work). Without sandbox-exec or the profile nothing starts.
-        NSString *file = [OVEngines sandboxFile];
-        if (![NSFileManager.defaultManager isExecutableFileAtPath:@"/usr/bin/sandbox-exec"]) return Refused(L(@"Can’t start this safely: the macOS sandbox tool is missing."));
-        if (!file) return Refused(L(@"Can’t start this safely: the sandbox profile is missing."));
-        NSDictionary *tokens = @{@"models": [OVPaths rvcModels], @"training": [OVPaths rvcTraining], @"datasets": [OVPaths rvcDatasets]};
-        NSMutableArray *roots = [NSMutableArray array];
-        BOOL toOutputs = NO;
-        for (NSString *t in info[@"roots"]) {
-            if ([t isEqual:@"outputs"]) toOutputs = YES;
-            else if (tokens[t]) [roots addObject:tokens[t]];
-        }
-        for (NSString *k in @[@"dest_dir", @"output_dir"]) {
-            NSString *d = req[k];
-            if ([d isKindOfClass:NSString.class] && d.isAbsolutePath) [roots addObject:d];
-        }
-        if (roots.count > 4) return Refused(L(@"Too many output folders for this task."));
-        NSString *out = toOutputs ? [OVPaths outputs] : work;
-        for (NSString *r in [roots arrayByAddingObjectsFromArray:@[work, out]])
-            [NSFileManager.defaultManager createDirectoryAtPath:r withIntermediateDirectories:YES attributes:nil error:nil];
-        NSArray *sb = [OVEngines sandboxArgumentsWithFile:file net:denyNet ? @"deny-ip" : @"allow" work:work out:out roots:roots];
-        env[@"CNS_SANDBOXED"] = @"1";   // cns_train must not wrap its child a second time
-        env[@"CNS_SANDBOX_FILE"] = file;
-        spec.environment = env;
-        spec.executable = @"/usr/bin/sandbox-exec";
-        spec.arguments = [[sb arrayByAddingObject:py] arrayByAddingObjectsFromArray:args];
+    // Every engine process, installs included, runs under the one profile engine.sb: writes only in the work folder, the
+    // outputs and the kind's own roots; no IP traffic for the kinds that need none (AF_UNIX, DataLoader and
+    // torch_shm_manager still work). Installs get NET=allow and write the engines folder, the uv cache and the uv-managed
+    // Python folder (a real `cns_engines.py update-ytdlp` through uv/pip runs fine under it). Without sandbox-exec or the
+    // profile nothing starts.
+    NSString *file = [OVEngines sandboxFile];
+    if (![NSFileManager.defaultManager isExecutableFileAtPath:@"/usr/bin/sandbox-exec"]) return Refused(L(@"Can’t start this safely: the macOS sandbox tool is missing."));
+    if (!file) return Refused(L(@"Can’t start this safely: the sandbox profile is missing."));
+    NSString *uvCache = NSProcessInfo.processInfo.environment[@"UV_CACHE_DIR"] ?: J(NSHomeDirectory(), @"Library/Caches/uv");
+    NSDictionary *tokens = @{@"models": [OVPaths rvcModels], @"training": [OVPaths rvcTraining], @"datasets": [OVPaths rvcDatasets],
+                             @"engines": _root, @"uvcache": uvCache, @"pythons": J([OVPaths runtime], @"python")};
+    NSMutableArray *roots = [NSMutableArray array];
+    BOOL toOutputs = NO;
+    for (NSString *t in info[@"roots"]) {
+        if ([t isEqual:@"outputs"]) toOutputs = YES;
+        else if (tokens[t]) [roots addObject:tokens[t]];
     }
+    for (NSString *k in @[@"dest_dir", @"output_dir"]) {
+        NSString *d = req[k];
+        if ([d isKindOfClass:NSString.class] && d.isAbsolutePath) [roots addObject:d];
+    }
+    if (roots.count > 4) return Refused(L(@"Too many output folders for this task."));
+    NSString *out = toOutputs ? [OVPaths outputs] : work;
+    for (NSString *r in [roots arrayByAddingObjectsFromArray:@[work, out]])
+        [NSFileManager.defaultManager createDirectoryAtPath:r withIntermediateDirectories:YES attributes:nil error:nil];
+    // The folders the script may write results to, for its own output containment (cns_stems, cns_ytdl, ...).
+    NSMutableArray *allowed = [NSMutableArray arrayWithObject:work.stringByResolvingSymlinksInPath];
+    if (toOutputs) [allowed addObject:out.stringByResolvingSymlinksInPath];
+    for (NSString *r in roots) [allowed addObject:r.stringByResolvingSymlinksInPath];
+    env[@"CNS_ALLOWED_ROOTS"] = [allowed componentsJoinedByString:@":"];
+    NSArray *sb = [OVEngines sandboxArgumentsWithFile:file net:denyNet ? @"deny-ip" : @"allow" work:work out:out roots:roots];
+    env[@"CNS_SANDBOXED"] = @"1";   // the scripts must not wrap their children a second time
+    env[@"CNS_SANDBOX_FILE"] = file;
+    spec.environment = env;
+    spec.executable = @"/usr/bin/sandbox-exec";
+    spec.arguments = [[sb arrayByAddingObject:py] arrayByAddingObjectsFromArray:args];
 
     // Starting later (from the queue or the API): unload and check the memory again, then maybe with the lighter variant.
     BOOL heavy = [info[@"heavy"] boolValue], light = [info[@"light"] boolValue];

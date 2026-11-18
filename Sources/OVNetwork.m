@@ -45,7 +45,7 @@ static NSString *const kOffline = @"offlineMode";
 + (void)revokeConsentFor:(OVNetFeature)f { [NSUserDefaults.standardUserDefaults removeObjectForKey:[self consentKey:f]]; }
 
 + (OVNetDecision)decisionFor:(OVNetFeature)f {
-    if (f == OVNetModelDownload) return OVNetAllowed;
+    if (f == OVNetModelDownload) return self.offline ? OVNetBlockedOffline : OVNetAllowed;   // an explicit button online; blocked in Offline mode
     if (self.offline) return OVNetBlockedOffline;
     return [self hasConsentFor:f] ? OVNetAllowed : OVNetNeedsConsent;
 }

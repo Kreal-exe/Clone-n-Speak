@@ -3,7 +3,8 @@
 ;;   WORK OUT ROOT1 ROOT2 ROOT3 ROOT4   the folders the process may write to
 ;;   DCACHE DTEMP                       the Darwin user cache and temp folders (getconf DARWIN_USER_CACHE_DIR / _TEMP_DIR)
 ;;   NET                                deny-ip: no IP traffic (AF_UNIX, DataLoader and torch_shm_manager still work), allow: all
-;; Reads and exec stay open (Python, torch and the models are read from all over the disk): this limits writes and
+;; Not a confidentiality boundary: DNS resolution (mDNSResponder) and other Mach services stay reachable, since only IP
+;; sockets are cut, and reads and exec stay open (Python, torch and the models are read from all over the disk): this limits writes and
 ;; the internet, it is not a confidentiality boundary.
 (version 1)
 (allow default)

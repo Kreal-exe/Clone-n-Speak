@@ -263,6 +263,20 @@ class InstallTests(Base):
             eng.download(small["url"], dest, small["sha256"], 100, None)
         self.assertFalse(os.path.exists(dest + ".part"))
 
+    def test_offline_mode_blocks_installs_unless_explicit(self):
+        import cns_net
+        with mock.patch.dict(os.environ, {"OV_OFFLINE": "1"}):
+            with self.assertRaises(cns_net.OfflineError) as cm:
+                self.install(["rvc-fcpe"])
+            self.assertIn("Offline mode", str(cm.exception))
+            with self.assertRaises(cns_net.OfflineError):
+                eng.download("https://example.invalid/x", os.path.join(tempfile.gettempdir(), "never"), None, None)
+            # explicit_download (a button the user pressed) lets it through to the real work: it fails later, not here
+            e = dict(pins.WEIGHTS["rvc-fcpe"][0], url="http://127.0.0.1:9/x")
+            with mock.patch.dict(pins.WEIGHTS, {"rvc-fcpe": [e]}):
+                with self.assertRaises(eng.EngineError):
+                    eng.install(self.root, ["rvc-fcpe"], "uv", None, lambda *a, **k: None, explicit_download=True)
+
     def test_no_network_fails_with_action_text(self):
         s = socket.socket()
         s.bind(("127.0.0.1", 0))
@@ -461,9 +475,12 @@ class InstallTests(Base):
         self.assertIn("edge-tts==7.3.1", open(log).read())
         self.assertTrue(os.path.exists(os.path.join(self.root, "edge", ".venv", "bin", "python")))
 
-    def test_offline_mode_does_not_block_explicit_install(self):
+    def test_offline_mode_blocks_install_unless_explicit_download(self):
+        import cns_net
         with mock.patch.dict(os.environ, {"OV_OFFLINE": "1"}):
-            self.install(["rvc-fcpe"])
+            with self.assertRaises(cns_net.OfflineError):
+                self.install(["rvc-fcpe"])
+            self.install(["rvc-fcpe"], explicit_download=True)
         self.assertTrue(eng.is_ready(self.root, "rvc-fcpe"))
 
 

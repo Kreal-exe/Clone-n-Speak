@@ -565,9 +565,9 @@ class Trainer:
         argv = [self.paths["python"]] + script_args
         if os.environ.get(NO_SANDBOX_ENV) == "1":
             return argv
-        if os.environ.get("CNS_SANDBOXED") == "1":
-            return argv   # the app already runs this whole process under engine.sb: no second sandbox
         import cns_engines as eng
+        if eng.already_sandboxed():
+            return argv   # the app already runs this whole process under the bundled engine.sb: no second sandbox
         try:
             return eng.sandbox_command("deny-ip", self.tmp, None, [self.paths["training"]]) + argv
         except eng.EngineError as e:

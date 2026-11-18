@@ -12,7 +12,7 @@ typedef NS_ENUM(NSInteger, OVNetDecision) { OVNetAllowed, OVNetNeedsConsent, OVN
 @property (class, readonly) BOOL offline;                       // UserDefaults offlineMode, NO by default
 + (void)setOffline:(BOOL)offline;                               // posts OVNetworkModeDidChangeNotification; restarts an idle engine so its environment follows
 + (NSString *)identifierFor:(OVNetFeature)f;                    // @"edge_tts" @"youtube" @"bridge" @"model_download" @"plugin_network"
-/// ModelDownload is always allowed (an explicit button). Others: BlockedOffline while offline, else NeedsConsent until agreed.
+/// ModelDownload is allowed while online (an explicit button) and blocked in Offline mode. Others: BlockedOffline while offline, else NeedsConsent until agreed.
 + (OVNetDecision)decisionFor:(OVNetFeature)f;
 + (NSString *)blockedMessageFor:(OVNetFeature)f;
 /// The only entry for network features: asks for consent (what goes where) and remembers it, or explains Offline mode with an "Open Settings" button.
