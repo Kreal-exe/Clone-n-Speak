@@ -1,0 +1,10 @@
+/* Integration task: gallery audio components, size cap of the JSON answers. */
+"Waveform" = "Волна";
+"Clipping, noise and a pause marked; playhead at 4.5 s" = "Отмечены клиппинг, шум и пауза; метка воспроизведения на 4,5 с";
+"Player bar" = "Плеер";
+"With the Original / Result switch" = "С переключателем «Оригинал / Результат»";
+"Analyzer" = "Анализатор";
+"Spectrogram with the pitch and brightness curves" = "Спектрограмма с кривыми высоты тона и яркости";
+"Effects chain" = "Цепочка эффектов";
+"The list of effects comes from the engine" = "Список эффектов приходит от движка";
+"The answer was larger than expected, so it was stopped." = "Ответ оказался больше ожидаемого, поэтому загрузка остановлена.";

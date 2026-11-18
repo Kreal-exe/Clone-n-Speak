@@ -57,6 +57,7 @@ class YtTests(unittest.TestCase):
         p.start()
         self.addCleanup(p.stop)
         os.environ.pop("OV_OFFLINE", None)
+        os.environ["CNS_ALLOWED_ROOTS"] = os.pathsep.join([self.out, self.work])
 
     def req(self, **kw):
         r = {"url": GOOD, "consent": True, "dest_dir": self.out, "max_minutes": 20, "work_dir": self.work,
@@ -210,6 +211,18 @@ class YtTests(unittest.TestCase):
             with self.assertRaises(cns_proto.ProtoError):
                 yt.fetch(self.req(dest_dir=bad), run)
         self.assertEqual(run.calls, [])
+
+    def test_roots_come_from_the_app_not_from_the_request(self):
+        # a request that names its own "outputs_dir" must not widen the allowed folders
+        other = os.path.join(self.tmp.name, "other")
+        os.makedirs(other)
+        run = FakeRun()
+        with self.assertRaises(cns_proto.ProtoError):
+            yt.fetch(self.req(dest_dir=other, outputs_dir=other), run)
+        self.assertEqual(run.calls, [])
+        os.environ["CNS_ALLOWED_ROOTS"] = other
+        with self.assertRaises(cns_proto.ProtoError):   # now the app only allows `other`: the old output folder is refused
+            yt.fetch(self.req(), run)
 
     def test_failed_download_gives_error(self):
         with self.assertRaises(yt.YtError) as cm:

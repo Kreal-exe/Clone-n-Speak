@@ -230,7 +230,7 @@ static NSStackView *Rows(NSArray<NSView *> *rows, CGFloat gap) {
     offline.accessibilityLabel = L(@"Offline mode");
     NSTextField *offlineTitle = OVWrapLabel(L(@"Offline mode"), 14, nil);
     offlineTitle.font = [NSFont systemFontOfSize:14 weight:NSFontWeightSemibold];
-    NSTextField *offlineHint = OVWrapLabel(L(@"Turns off Edge TTS, YouTube import, Bridge and plugin network access. Model downloads you start yourself still work."), 13, OVColor(OVRoleMuted));
+    NSTextField *offlineHint = OVWrapLabel(L(@"Turns off Edge TTS, YouTube import, Bridge and plugin network access. Model downloads are off too."), 13, OVColor(OVRoleMuted));
     NSStackView *offlineTexts = OVVStack(@[offlineTitle, offlineHint], 2);
     OVFillWidth(@[offlineTitle, offlineHint], offlineTexts);
     NSButton *resetNet = OVGhostButton(L(@"Reset network permissions"), @"arrow.counterclockwise", self, @selector(resetNetworkPermissions:));

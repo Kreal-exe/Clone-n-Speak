@@ -19,7 +19,7 @@ MARKERS = re.compile(
 
 # file -> (number of marker lines, why it may touch the network)
 EXPECTED = {
-    "OVDownloader.m": (13, "explicit model downloads (Hugging Face), started by the user"),
+    "OVDownloader.m": (20, "explicit model downloads (Hugging Face), started by the user; JSON answers are capped at 8 MB"),
     "OVModels.h": (2, "mentions of NSURLSession in the download API"),
     "OVModels.m": (0, "catalog and downloads go through OVDownloader; no direct calls"),
     "OVRuntime.m": (0, "Setup (uv) goes through OVDownloader / uv; no direct calls"),

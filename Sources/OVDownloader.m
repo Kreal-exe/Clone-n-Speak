@@ -122,19 +122,54 @@
 }
 @end
 
+/// The answers OVFetchJSON reads (Hugging Face search, repository info, a LoRA link check) are small; one that grows past
+/// the cap is stopped while it arrives, so a hostile or broken server cannot fill memory.
+static const NSUInteger kFetchJSONMaxBytes = 8 * 1024 * 1024;
+
+@interface OVJSONFetch : NSObject <NSURLSessionDataDelegate>
+@property NSMutableData *data;
+@property NSInteger code;
+@property BOOL tooBig;
+@property (copy) void (^completion)(id, NSError *);
+@end
+
+@implementation OVJSONFetch
+- (void)URLSession:(NSURLSession *)s dataTask:(NSURLSessionDataTask *)t didReceiveResponse:(NSURLResponse *)r
+ completionHandler:(void (^)(NSURLSessionResponseDisposition))handler {
+    self.code = [r isKindOfClass:NSHTTPURLResponse.class] ? [(NSHTTPURLResponse *)r statusCode] : 0;
+    if (r.expectedContentLength > (long long)kFetchJSONMaxBytes) { self.tooBig = YES; handler(NSURLSessionResponseCancel); return; }
+    handler(NSURLSessionResponseAllow);
+}
+- (void)URLSession:(NSURLSession *)s dataTask:(NSURLSessionDataTask *)t didReceiveData:(NSData *)d {
+    [self.data appendData:d];
+    if (self.data.length > kFetchJSONMaxBytes) { self.tooBig = YES; [t cancel]; }
+}
+- (void)URLSession:(NSURLSession *)s task:(NSURLSessionTask *)t didCompleteWithError:(NSError *)err {
+    id json = nil;
+    if (self.tooBig) {
+        err = [NSError errorWithDomain:@"OV" code:3 userInfo:@{NSLocalizedDescriptionKey: L(@"The answer was larger than expected, so it was stopped.")}];
+    } else if (!err && self.code >= 400) {
+        NSInteger code = self.code;
+        err = [NSError errorWithDomain:@"OV" code:code userInfo:@{NSLocalizedDescriptionKey:
+               code == 404 ? L(@"Model not found on Hugging Face") :
+               (code == 401 || code == 403) ? L(@"No access to the model (private or gated — an HF token is required)") :
+               [NSString stringWithFormat:@"HTTP %ld", (long)code]}];
+    }
+    if (!err && self.data) json = [NSJSONSerialization JSONObjectWithData:self.data options:0 error:&err];
+    void (^done)(id, NSError *) = self.completion;
+    [s finishTasksAndInvalidate];
+    dispatch_async(dispatch_get_main_queue(), ^{ done(json, err); });
+}
+@end
+
 void OVFetchJSON(NSURL *url, NSDictionary *headers, void (^completion)(id, NSError *)) {
     NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
     req.timeoutInterval = 30;
     [headers enumerateKeysAndObjectsUsingBlock:^(NSString *k, NSString *v, BOOL *stop) { [req setValue:v forHTTPHeaderField:k]; }];
-    [[NSURLSession.sharedSession dataTaskWithRequest:req completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err) {
-        id json = nil;
-        NSInteger code = [(NSHTTPURLResponse *)resp statusCode];
-        if (!err && code >= 400)
-            err = [NSError errorWithDomain:@"OV" code:code userInfo:@{NSLocalizedDescriptionKey:
-                   code == 404 ? L(@"Model not found on Hugging Face") :
-                   (code == 401 || code == 403) ? L(@"No access to the model (private or gated — an HF token is required)") :
-                   [NSString stringWithFormat:@"HTTP %ld", (long)code]}];
-        if (!err && data) json = [NSJSONSerialization JSONObjectWithData:data options:0 error:&err];
-        dispatch_async(dispatch_get_main_queue(), ^{ completion(json, err); });
-    }] resume];
+    OVJSONFetch *fetch = [OVJSONFetch new];
+    fetch.data = [NSMutableData data];
+    fetch.completion = completion;
+    NSURLSession *session = [NSURLSession sessionWithConfiguration:NSURLSessionConfiguration.ephemeralSessionConfiguration
+                                                          delegate:fetch delegateQueue:nil];
+    [[session dataTaskWithRequest:req] resume];
 }

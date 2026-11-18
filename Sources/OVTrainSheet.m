@@ -160,7 +160,24 @@ static NSView *EmptyRounds(NSString *title) {
 
 #pragma mark State
 
+/// A training of this voice in this language that is already running (the sheet was closed and opened again, or the job
+/// was started again from the Jobs page) is shown and stopped from here; no second one is started.
+- (void)adoptActiveJob {
+    if (self.job || self.running || !self.lang.length) return;
+    NSString *out = [[self.voice trainingBase:self.lang] stringByAppendingPathExtension:@"npz"];
+    for (OVJob *j in OVJobs.shared.all) {
+        if (!j.active || ![j.kind isEqualToString:OVJobKindTrain] || ![j.request[@"out"] isEqual:out]) continue;
+        self.job = j;
+        self.running = YES;
+        self.live = [NSMutableArray array];
+        self.status.stringValue = j.status ?: @"";
+        if (j.progress >= 0) self.bar.doubleValue = j.progress;
+        return;
+    }
+}
+
 - (void)refresh {
+    [self adoptActiveJob];
     [self refreshSources];
     OVNativeAccent *seedvc = [OVNativeAccent shared];
     NSString *from = self.sourcePopup.selectedItem.representedObject;
@@ -329,7 +346,8 @@ static NSView *EmptyRounds(NSString *title) {
 /// Status and progress come from the job manager (the job goes on when the sheet is closed).
 - (void)jobChanged:(NSNotification *)n {
     OVJob *j = n.object;
-    if (!j || j != self.job || !j.active) return;
+    if (!j || j != self.job) return;
+    if (!j.active) { [self jobFinished:j]; return; }   // a job this sheet did not start has no onFinish of ours
     if (j.status.length) self.status.stringValue = j.status;
     if (j.progress >= 0) self.bar.doubleValue = j.progress;
 }

@@ -2,7 +2,7 @@
 "Offline mode" = "Офлайн-режим";
 "Offline mode is on" = "Включён офлайн-режим";
 "Offline mode is on. Turn it off in Settings to use %@." = "Включён офлайн-режим. Чтобы пользоваться функцией «%@», выключите его в Настройках.";
-"Turns off Edge TTS, YouTube import, Bridge and plugin network access. Model downloads you start yourself still work." = "Отключает Edge TTS, импорт с YouTube, Bridge и доступ плагинов к сети. Модели, которые вы скачиваете сами, по-прежнему загружаются.";
+"Turns off Edge TTS, YouTube import, Bridge and plugin network access. Model downloads are off too." = "Отключает Edge TTS, импорт с YouTube, Bridge и доступ плагинов к сети. Загрузка моделей тоже отключена.";
 "Use %@?" = "Использовать «%@»?";
 "This sends %@ to %@. Nothing is sent until you agree, and you can turn it off with Offline mode in Settings." = "Будет отправлено: %@ — на адрес: %@. Без вашего согласия ничего не уходит; отключить можно офлайн-режимом в Настройках.";
 "Not now" = "Не сейчас";
