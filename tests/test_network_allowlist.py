@@ -45,6 +45,10 @@ EXPECTED = {
     "OVEngines.m": (3, "pro-engine manager: runs cns_engines.py and the pro job processes (the network kinds ask OVNetwork first); "
                        "the AF_UNIX connect to the realtime process; kind names edge_tts / yt_import"),
     "OVProKit.m": (2, "pro-run preflight asks OVNetwork before Edge / YouTube jobs; the yt-dlp update title"),
+    "OVProModelsCards.h": (1, "Models page cards' interface: one comment naming the yt-dlp version row; no network code"),
+    "OVProModelsCards.m": (5, "Models page cards: the yt-dlp version row (dist-info name read from disk) and its Update button, which "
+                              "start OVEngines jobs (gate and Offline check inside); voice-model downloads and imports run as OVJobs through "
+                              "OVProRun, whose first step is OVNetwork; sends nothing itself"),
     "OVPrivacyCatalog.m": (3, "descriptions only: feature ids and the word \"requests\" in the Bridge text"),
     "OVBridge.m": (5, "Bridge: after OVNetwork consent / Offline check and an explicit Start, downloads the tunnel program through "
                       "OVDownloader from the one pinned GitHub release address (sha256 of archive and binary, codesign and TeamIdentifier "
