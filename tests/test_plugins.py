@@ -4,8 +4,10 @@ import shutil
 import socket
 import subprocess
 import sys
+import signal
 import tempfile
 import threading
+import time
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -22,7 +24,7 @@ def _sandbox_works():
     with tempfile.TemporaryDirectory() as d:
         prof = os.path.join(d, "p.sb")
         with open(prof, "w") as f:
-            f.write(P.sandbox_profile(d, d, False))
+            f.write(P.sandbox_profile(d, d, False, None, P.python_read_roots(sys.executable) + [os.path.dirname(HOST)], P.python_read_files(sys.executable)))
         try:
             return subprocess.run(P.command(sys.executable, HOST, d, "x", prof)[:4] + ["-c", "pass"],
                                   capture_output=True, timeout=30).returncode == 0
@@ -122,7 +124,7 @@ class Install(unittest.TestCase):
         os.remove(os.path.join(d, "sub", "up"))
         with open(os.path.join(d, "sub", "big.bin"), "wb") as f:   # sparse: costs no disk
             f.truncate(P.MAX_BYTES + 1)
-        with self.assertRaisesRegex(P.PluginError, "larger"):
+        with self.assertRaisesRegex(P.PluginError, "larger|too big"):
             P.install(d, self.plugins)
         os.remove(os.path.join(d, "sub", "big.bin"))
         for i in range(P.MAX_FILES + 1):
@@ -130,6 +132,23 @@ class Install(unittest.TestCase):
         with self.assertRaisesRegex(P.PluginError, "more than"):
             P.install(d, self.plugins)
         self.assertEqual(os.listdir(self.plugins), ["good"], "failed installs leave nothing behind")
+
+    def test_install_and_digest_refuse_hardlinks_and_oversized_folders(self):
+        d = copy_fixture("huge", self.tmp)
+        os.link(os.path.join(d, "main.py"), os.path.join(self.tmp, "elsewhere.py"))
+        with self.assertRaisesRegex(P.PluginError, "hard-linked"):
+            P.install(d, self.plugins)
+        with self.assertRaisesRegex(P.PluginError, "hard-linked"):
+            P.folder_digest(d)
+        os.remove(os.path.join(self.tmp, "elsewhere.py"))
+        for i in range(P.MAX_FILES + P.MAX_FILES // 4 + 1):   # a hand-copied folder: list/digest must stop early
+            open(os.path.join(d, "f%d" % i), "w").close()
+        with self.assertRaisesRegex(P.PluginError, "too big"):
+            P.folder_digest(d)
+        os.makedirs(self.plugins, exist_ok=True)
+        shutil.move(d, os.path.join(self.plugins, "huge"))
+        item = P.list_plugins(self.plugins)[0]
+        self.assertIn("error", item)
 
     def test_install_refuses_invalid_manifest_and_missing_folder(self):
         with self.assertRaises(P.PluginError):
@@ -191,6 +210,8 @@ class Env(unittest.TestCase):
         self.assertIn("(deny file-write*)", p)
         self.assertNotIn("(deny network*)", P.sandbox_profile("/tmp/w", "/tmp/d", True))
         self.assertIn('"/private/tmp/w"', p)   # resolved
+        for needle in ("/usr/bin/open", "/usr/bin/osascript", "com.apple.coreservices.launchservicesd", "(deny file-read*"):
+            self.assertIn(needle, p)
 
 
 @unittest.skipUnless(SANDBOX, "sandbox-exec is not available here")
@@ -203,14 +224,16 @@ class Sandbox(unittest.TestCase):
         os.makedirs(self.work)
         os.makedirs(self.data)
 
-    def run_py(self, code, allow_network=False):
+    def run_py(self, code, allow_network=False, read_files=()):
         prof = os.path.join(self.tmp, "p.sb")
         with open(prof, "w") as f:
-            f.write(P.sandbox_profile(self.work, self.data, allow_network))
+            f.write(P.sandbox_profile(self.work, self.data, allow_network, None,
+                                      P.python_read_roots(sys.executable) + [os.path.dirname(HOST)],
+                                      list(read_files) + P.python_read_files(sys.executable)))
         argv = P.command(sys.executable, HOST, self.tmp, "x", prof)[:4] + ["-c", code]
         env = P.build_env({}, self.work, self.data)
         env["PATH"] = os.environ.get("PATH", "/usr/bin:/bin")  # the test interpreter may be a venv shim
-        return subprocess.run(argv, env=env, capture_output=True, text=True, timeout=60)
+        return subprocess.run(argv, env=env, capture_output=True, text=True, timeout=60, cwd=self.work)
 
     def test_sandbox_blocks_write_outside_work_dir(self):
         out = os.path.join(self.tmp, "outside_cns")
@@ -250,6 +273,173 @@ class Sandbox(unittest.TestCase):
             self.skipTest("no ~/.ssh")
         r = self.run_py("import os; os.listdir(%r)" % ssh)
         self.assertNotEqual(r.returncode, 0)
+
+
+    def home_file(self, name, text="secret"):
+        home = os.path.realpath(os.path.expanduser("~"))
+        d = os.path.join(home, ".cns_plugin_test_%d" % os.getpid())
+        os.makedirs(d, exist_ok=True)
+        self.addCleanup(shutil.rmtree, d, True)
+        path = os.path.join(d, name)
+        with open(path, "w") as f:
+            f.write(text)
+        return path
+
+    def test_sandbox_blocks_reading_home_except_input_files(self):
+        secret = self.home_file("secret.txt")
+        inp = self.home_file("input.wav", "audio")
+        r = self.run_py("print(open(%r).read())" % secret)
+        self.assertNotEqual(r.returncode, 0, "a file in ~ must not be readable")
+        r = self.run_py("print(open(%r).read())" % inp)
+        self.assertNotEqual(r.returncode, 0, "an input file is readable only when it is listed")
+        r = self.run_py("print(open(%r).read())" % inp, read_files=[inp])
+        self.assertEqual((r.returncode, r.stdout.strip()), (0, "audio"), r.stderr)
+        r = self.run_py("import os; os.listdir(os.path.dirname(%r))" % secret)
+        self.assertNotEqual(r.returncode, 0, "listing a folder in ~ must fail")
+        app = os.path.join(os.path.realpath(os.path.expanduser("~")), "Library/Application Support/Clone'n'Speak")
+        if os.path.isdir(app):
+            self.assertNotEqual(self.run_py("import os; os.listdir(%r)" % app).returncode, 0)
+        # its own folders stay readable
+        r = self.run_py("open(%r,'w').write('x'); print(open(%r).read())" % (os.path.join(self.work, "a"), os.path.join(self.work, "a")))
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_sandbox_blocks_open_and_osascript(self):
+        for prog in ("/usr/bin/open", "/usr/bin/osascript", "/bin/launchctl", "/usr/bin/shortcuts"):
+            if not os.path.exists(prog):
+                continue
+            r = self.run_py("import subprocess,sys\n"
+                            "try:\n subprocess.run([%r, '-g', '/dev/null'], timeout=10); sys.exit(0)\n"
+                            "except PermissionError: sys.exit(7)\nexcept Exception: sys.exit(8)" % prog)
+            self.assertEqual(r.returncode, 7, "%s must not start: %s" % (prog, r.stderr))
+        # a binary dropped into the work folder cannot be started either
+        r = self.run_py("import shutil,subprocess,sys,os\np=os.path.join(%r,'t')\nshutil.copy('/usr/bin/true',p)\n"
+                        "try:\n subprocess.run([p]); sys.exit(0)\nexcept PermissionError: sys.exit(7)" % self.work)
+        self.assertEqual(r.returncode, 7, r.stderr)
+
+
+class Validate(unittest.TestCase):
+    def action(self):
+        return P.load_manifest(os.path.join(FIX, "good"))["actions"][0]
+
+    def test_validate_inputs(self):
+        a = self.action()
+        self.assertEqual(P.validate_inputs(a, {}), {"text": "", "n": 3, "kind": "a"})
+        self.assertEqual(P.validate_inputs(a, {"text": "x", "n": 10, "kind": "b"})["kind"], "b")
+        for bad in ({"n": 11}, {"n": -1}, {"n": "3"}, {"n": True}, {"n": float("nan")}, {"kind": "c"}, {"text": 5},
+                    {"zzz": 1}):
+            with self.assertRaises(P.PluginError, msg=str(bad)):
+                P.validate_inputs(a, bad)
+        with self.assertRaises(P.PluginError):
+            P.validate_inputs(a, [])
+        gain = P.load_manifest(os.path.join(ROOT, "docs", "examples", "plugin-gain"))["actions"][0]
+        with self.assertRaises(P.PluginError):
+            P.validate_inputs(gain, {})                       # audio is required
+        self.assertEqual(P.validate_inputs(gain, {"audio": "/x.wav"})["gain_db"], 6)
+
+
+PARENT = """
+import os, subprocess, sys, time
+pidfile, sleeper = sys.argv[1], sys.argv[2]
+subprocess.Popen([sys.executable, sleeper, pidfile], start_new_session=True)
+with open(pidfile, "a") as f:
+    f.write(str(os.getpid()) + "\\n")
+time.sleep(60)
+"""
+SLEEPER = """
+import os, sys, time
+with open(sys.argv[1], "a") as f:
+    f.write(str(os.getpid()) + "\\n")
+time.sleep(60)
+"""
+
+
+class Relay(unittest.TestCase):
+    RELAY = os.path.join(ROOT, "Sources", "cns_plugin_relay.py")
+
+    def setUp(self):
+        self.tmp = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def run_relay(self, child_code, timeout=20, work=None):
+        work = work or self.tmp
+        return subprocess.run([sys.executable, self.RELAY, "--work", work, "--timeout", str(timeout), "--",
+                               sys.executable, "-c", child_code], input=b"{}\n", capture_output=True, timeout=60)
+
+    def events(self, r):
+        return [json.loads(l) for l in r.stdout.decode().splitlines()]
+
+    def test_relay_drops_forged_outputs_and_keeps_inside_ones(self):
+        inside = os.path.join(self.tmp, "ok.txt")
+        code = ("import json,sys\nopen(%r,'w').write('x')\n"
+                "print(json.dumps({'event':'result','data':{'outputs':[%r,'/etc/hosts','../x'],'text':'t','evil':1}}))"
+                % (inside, inside))
+        r = self.run_relay(code)
+        ev = self.events(r)
+        res = [e for e in ev if e["event"] == "result"][0]
+        self.assertEqual(res["data"], {"outputs": [inside], "text": "t"})
+        self.assertEqual(len([e for e in ev if e["event"] == "log"]), 2)
+
+    def test_relay_drops_partial_outside_and_junk_lines(self):
+        code = ("import json\nprint('junk line')\nprint(json.dumps({'event':'partial','path':'/etc/hosts'}))\n"
+                "print(json.dumps({'event':'bogus'}))\nprint(json.dumps({'event':'status','msg':'hi'}))")
+        ev = self.events(self.run_relay(code))
+        self.assertEqual([e["event"] for e in ev if e["event"] != "log"], ["status"])
+
+    def test_relay_reports_exit_code_without_event(self):
+        r = self.run_relay("import sys; sys.exit(3)")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("exit code 3", self.events(r)[-1]["msg"])
+
+    def pid_alive(self, pid):
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
+
+    def tree_scripts(self):
+        pidfile = os.path.join(self.tmp, "pids")
+        parent, sleeper = os.path.join(self.tmp, "parent.py"), os.path.join(self.tmp, "sleeper.py")
+        for path, text in ((parent, PARENT), (sleeper, SLEEPER)):
+            with open(path, "w") as f:
+                f.write(text)
+        return pidfile, [sys.executable, parent, pidfile, sleeper]
+
+    def read_pids(self, pidfile):
+        with open(pidfile) as f:
+            return [int(x) for x in f.read().split()]
+
+    def test_relay_timeout_kills_the_tree_including_setsid_children(self):
+        pidfile, cmd = self.tree_scripts()
+        t0 = time.time()
+        r = subprocess.run([sys.executable, self.RELAY, "--work", self.tmp, "--timeout", "3", "--"] + cmd,
+                           input=b"{}\n", capture_output=True, timeout=60)
+        self.assertLess(time.time() - t0, 15)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("ran longer", self.events(r)[-1]["msg"])
+        time.sleep(0.5)
+        pids = self.read_pids(pidfile)
+        self.assertEqual(len(pids), 2)
+        for pid in pids:
+            self.assertFalse(self.pid_alive(pid), "process %d survived the timeout" % pid)
+
+    def test_relay_sigterm_kills_the_tree(self):
+        pidfile, cmd = self.tree_scripts()
+        p = subprocess.Popen([sys.executable, self.RELAY, "--work", self.tmp, "--timeout", "60", "--"] + cmd,
+                             stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+        p.stdin.write(b"{}\n")
+        p.stdin.close()
+        for _ in range(100):
+            if os.path.exists(pidfile) and len(self.read_pids(pidfile)) == 2:
+                break
+            time.sleep(0.1)
+        time.sleep(1.2)   # let the tree sampler see the detached child
+        p.send_signal(signal.SIGTERM)
+        p.wait(timeout=15)
+        p.stdout.close()
+        time.sleep(0.5)
+        for pid in self.read_pids(pidfile):
+            self.assertFalse(self.pid_alive(pid), "process %d survived Stop" % pid)
 
 
 class Host(unittest.TestCase):
@@ -335,11 +525,10 @@ class Host(unittest.TestCase):
         d = os.path.join(ROOT, "docs", "examples", "plugin-gain")
         data = os.path.join(self.tmp, "data")
         os.makedirs(data)
-        prof = os.path.join(self.tmp, "p.sb")
-        with open(prof, "w") as f:
-            f.write(P.sandbox_profile(self.work, data, False))
-        argv = P.command(sys.executable, HOST, d, "gain", prof)
-        env = P.build_env({}, self.work, data)
+        spec = P.launch(sys.executable, HOST, d, "gain", self.work, data, False, os.path.join(self.tmp, "p.sb"), [src])
+        argv = spec["argv"]
+        self.assertTrue(argv[1].endswith("cns_plugin_relay.py"))
+        env = spec["env"]
         env["PATH"] = os.environ.get("PATH", "/usr/bin:/bin")
         req = json.dumps({"inputs": {"audio": src, "gain_db": 6}, "work_dir": self.work}) + "\n"
         r = subprocess.run(argv, input=req, env=env, capture_output=True, text=True, timeout=60)
@@ -366,10 +555,13 @@ class Cli(unittest.TestCase):
             self.assertEqual([i["manifest"]["id"] for i in items], ["good"])
             self.assertEqual(items[0]["digest"], self.cli("digest", os.path.join(plugins, "good"))["digest"])
             work, data = os.path.join(t, "w"), os.path.join(t, "d")
-            r = self.cli("launch", "/py", "/h.py", os.path.join(plugins, "good"), "make", work, data, "0", os.path.join(work, "p.sb"))
-            self.assertEqual(r["argv"][:3], ["/usr/bin/sandbox-exec", "-f", os.path.join(work, "p.sb")])
+            r = self.cli("launch", "/py", "/h.py", os.path.join(plugins, "good"), "make", work, data, "0", os.path.join(work, "p.sb"), "/in/a.wav")
+            i = r["argv"].index("--")
+            self.assertEqual(r["argv"][i + 1:i + 4], ["/usr/bin/sandbox-exec", "-f", os.path.join(work, "p.sb")])
+            self.assertTrue(r["argv"][1].endswith("cns_plugin_relay.py"))
+            self.assertEqual(r["argv"][r["argv"].index("--timeout") + 1], "60")
             self.assertEqual(r["env"]["HOME"], data)
-            self.assertTrue(os.path.isfile(os.path.join(work, "p.sb")))
+            self.assertIn('(literal "/in/a.wav")', open(os.path.join(work, "p.sb")).read())
             self.assertIn("error", self.cli("nope"))
 
     def test_cli_list_flags_invalid_and_mismatched_folders(self):

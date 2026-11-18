@@ -7,6 +7,7 @@ Nothing heavy is imported here: the worker loads this module at start-up.
 import hashlib
 import json
 import os
+import pwd
 import re
 import shutil
 import tempfile
@@ -21,9 +22,16 @@ MAX_TIMEOUT = 3600
 INPUT_TYPES = ("audio", "text", "number", "choice")
 PERMISSIONS = ("network",)
 SANDBOX_EXEC = "/usr/bin/sandbox-exec"
-# Places inside the user's home a plugin must not even read (the sandbox denies reads there).
-SECRET_DIRS = (".ssh", ".aws", ".gnupg", ".config", ".kube", ".docker", "Library/Keychains", "Library/Cookies",
-               "Library/Mail", "Library/Messages", "Library/Safari")
+# Programs a plugin must not start: they reach outside the sandbox through LaunchServices, Apple Events, launchd, the
+# keychain or the clipboard. (Exec of anything inside the plugin's own writable folders is denied too.)
+DENY_EXEC = ("/usr/bin/open", "/usr/bin/osascript", "/bin/launchctl", "/usr/bin/automator", "/usr/bin/shortcuts",
+             "/usr/sbin/screencapture", "/usr/bin/security", "/usr/bin/sudo", "/usr/bin/su", "/usr/bin/defaults",
+             "/usr/bin/pbcopy", "/usr/bin/pbpaste", "/usr/bin/sandbox-exec", "/usr/bin/ssh", "/usr/bin/scp",
+             "/usr/bin/nc", "/usr/bin/osacompile", "/usr/bin/say", "/usr/bin/afplay")
+# Mach services behind `open`-style escapes (LaunchServices, Apple Events, pasteboard).
+DENY_MACH = ("com.apple.coreservices.launchservicesd", "com.apple.coreservices.appleevents", "com.apple.lsd.mapdb",
+             "com.apple.lsd.modifydb", "com.apple.lsd.open", "com.apple.pasteboard.1",
+             "com.apple.coreservices.quarantine-resolver", "com.apple.ScreenCaptureAgent")
 
 
 class PluginError(ValueError):
@@ -144,16 +152,62 @@ def load_manifest(folder):
     return out
 
 
+def validate_inputs(action, inputs):
+    """Checks the inputs of a run against the action of the manifest (types, ranges, choices) and fills defaults.
+    Anything the API or the Bridge sends goes through here before the plugin sees it."""
+    if not isinstance(inputs, dict):
+        raise PluginError("The inputs must be an object")
+    declared = {i["name"]: i for i in action.get("inputs", [])}
+    extra = sorted(set(inputs) - set(declared))
+    if extra:
+        raise PluginError("Unknown input: %s" % ", ".join(str(k)[:40] for k in extra))
+    out = {}
+    for name, spec in declared.items():
+        typ = spec["type"]
+        if name not in inputs or inputs[name] is None:
+            if "default" in spec:
+                out[name] = spec["default"]
+            elif typ == "text":
+                out[name] = ""
+            else:
+                raise PluginError("Input \"%s\" is required" % spec["label"])
+            continue
+        v = inputs[name]
+        if typ == "number":
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or v != v or v in (float("inf"), float("-inf")):
+                raise PluginError("Input \"%s\" must be a number" % spec["label"])
+            if ("min" in spec and v < spec["min"]) or ("max" in spec and v > spec["max"]):
+                raise PluginError("Input \"%s\" is out of range" % spec["label"])
+        elif typ == "choice":
+            if v not in spec["choices"]:
+                raise PluginError("Input \"%s\" is not one of the choices" % spec["label"])
+        elif typ == "audio":
+            if not isinstance(v, str) or not v.strip() or len(v) > 4096 or "\0" in v:
+                raise PluginError("Input \"%s\" must be a file path" % spec["label"])
+        else:
+            if not isinstance(v, str) or len(v) > 100000:
+                raise PluginError("Input \"%s\" must be text" % spec["label"])
+        out[name] = v
+    return out
+
+
 def _walk(folder):
-    """Relative paths of all entries (files and folders), sorted; raises on symlinks."""
-    found = []
+    """Relative paths of all entries (files and folders), sorted. Refuses symlinks, hard-linked files and folders
+    with more than MAX_FILES entries or MAX_BYTES of files (a hand-copied folder must not stall the app)."""
+    found, total = [], 0
     for root, dirs, files in os.walk(folder, followlinks=False):
         dirs.sort()
         for n in dirs + files:
             p = os.path.join(root, n)
             rel = os.path.relpath(p, folder)
+            st = os.lstat(p)
             if os.path.islink(p):
                 raise PluginError("The plugin contains a symbolic link (%s); links are not allowed" % rel)
+            if os.path.isfile(p) and st.st_nlink > 1:
+                raise PluginError("The plugin contains a hard-linked file (%s); links are not allowed" % rel)
+            total += st.st_size if os.path.isfile(p) else 0
+            if len(found) >= MAX_FILES + MAX_FILES // 4 or total > MAX_BYTES:
+                raise PluginError("The plugin folder is too big (more than %d files or %d MB)" % (MAX_FILES, MAX_BYTES >> 20))
             found.append((rel, p))
     return sorted(found)
 
@@ -246,18 +300,79 @@ def _q(path):
     return '"%s"' % os.path.realpath(path).replace("\\", "\\\\").replace('"', '\\"')
 
 
-def sandbox_profile(work_dir, data_dir, allow_network):
-    """sandbox-exec profile: everything allowed except network (unless allowed), writing outside the
-    plugin's own folders, and reading the user's secret folders. Paths are resolved (/tmp -> /private/tmp).
-    NOTE: Task 7.1's cns_engines.sandbox_profile does the same job for pro engines; dedupe later."""
-    home = os.path.realpath(os.path.expanduser("~"))
+def _qraw(path):
+    return '"%s"' % path.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _home():
+    return os.path.realpath(pwd.getpwuid(os.getuid()).pw_dir)
+
+
+def python_read_roots(python):
+    """Folders a Python needs to start: its venv (if any) and the installation the venv points to."""
+    roots = [os.path.dirname(os.path.dirname(os.path.abspath(python))),
+             os.path.dirname(os.path.dirname(os.path.realpath(python)))]
+    return [r for i, r in enumerate(roots) if r not in roots[:i]]
+
+
+def symlinks_on(path):
+    """Every symlink met while resolving `path` (the links themselves): reading one is needed to follow it."""
+    found, todo, guard = [], [os.path.abspath(path)], 0
+    while todo and guard < 50:
+        guard += 1
+        parts = todo.pop().split(os.sep)
+        cur = os.sep
+        for i, part in enumerate(parts[1:], 1):
+            cur = os.path.join(cur, part)
+            if os.path.islink(cur):
+                if cur not in found:
+                    found.append(cur)
+                tgt = os.readlink(cur)
+                tgt = tgt if os.path.isabs(tgt) else os.path.join(os.path.dirname(cur), tgt)
+                todo.append(os.path.normpath(os.path.join(tgt, *parts[i + 1:])))
+                break
+    return found
+
+
+def python_read_files(python):
+    """The interpreter itself and the symlinks on the way to it."""
+    return [os.path.abspath(python)] + symlinks_on(python)
+
+
+def sandbox_profile(work_dir, data_dir, allow_network, plugin_dir=None, read_roots=(), read_files=()):
+    """sandbox-exec profile for a plugin process. Last matching rule wins.
+    - network: closed unless allowed;
+    - writes: only work_dir and data_dir (+ /dev/null);
+    - reads: everything outside the user's home and /Volumes (system libraries, Python), but inside them only
+      work_dir, data_dir, plugin_dir, read_roots (Python and the host scripts) and the exact files in read_files
+      (the job's input files);
+    - exec: nothing from DENY_EXEC and nothing written into the plugin's own folders; Mach services of LaunchServices
+      and Apple Events are closed, so `open`-style escapes fail.
+    Paths are resolved (/tmp -> /private/tmp). Task 7.1's cns_engines.sandbox_profile does not fit: it keeps every
+    read open on purpose, and a plugin is untrusted code."""
+    home = _home()
+    folders = [work_dir, data_dir] + ([plugin_dir] if plugin_dir else []) + list(read_roots)
     lines = ["(version 1)", "(allow default)"]
     if not allow_network:
         lines.append("(deny network*)")
     lines.append("(deny file-write*)")
     lines.append("(allow file-write* (subpath %s) (subpath %s) (literal \"/dev/null\") (literal \"/dev/dtracehelper\"))"
                  % (_q(work_dir), _q(data_dir)))
-    lines.append("(deny file-read* %s)" % " ".join("(subpath %s)" % _q(os.path.join(home, d)) for d in SECRET_DIRS))
+    lines.append("(deny file-read* (subpath %s) (subpath \"/Volumes\"))" % _q(home))
+    allow = ["(subpath %s)" % _q(f) for f in folders] + ["(literal %s)" % (_qraw(f) if os.path.islink(f) else _q(f)) for f in read_files]
+    lines.append("(allow file-read* %s)" % " ".join(allow))
+    # the folders above sit under the home folder: let the path be resolved (names only, no contents)
+    anc = set()
+    for d in [os.path.dirname(os.path.realpath(f)) for f in folders] + [os.path.realpath(os.path.dirname(f)) for f in read_files]:
+        while d.startswith(home) and d not in anc:
+            anc.add(d)
+            d = os.path.dirname(d)
+    anc.add(home)
+    lines.append("(allow file-read-metadata %s)" % " ".join("(literal %s)" % _q(d) for d in sorted(anc)))
+    lines.append("(deny process-exec %s)" % " ".join("(literal \"%s\")" % e for e in DENY_EXEC))
+    lines.append("(deny process-exec (subpath %s) (subpath %s))" % (_q(work_dir), _q(data_dir)))
+    lines.append("(deny mach-lookup %s)" % " ".join("(global-name \"%s\")" % m for m in DENY_MACH))
+    lines.append("(deny appleevent-send)")
     return "\n".join(lines) + "\n"
 
 
@@ -273,7 +388,7 @@ def sandbox_available():
 # python cns_plugins.py list <plugins_dir>
 # python cns_plugins.py install <src_folder> <plugins_dir>
 # python cns_plugins.py digest <folder>
-# python cns_plugins.py launch <python> <host> <plugin_dir> <action> <work_dir> <data_dir> <allow_network 0|1> <profile>
+# python cns_plugins.py launch <python> <host> <plugin_dir> <action> <work_dir> <data_dir> <allow_network 0|1> <profile> [input files...]
 # Prints one JSON value on stdout; {"error": "..."} on a refused request.
 
 def list_plugins(plugins_dir):
@@ -298,13 +413,21 @@ def list_plugins(plugins_dir):
     return out
 
 
-def launch(python, host, plugin_dir, action, work_dir, data_dir, allow_network, profile_path):
-    """Writes the sandbox profile; returns the argv and the environment to start the plugin host with."""
+def launch(python, host, plugin_dir, action, work_dir, data_dir, allow_network, profile_path, read_files=()):
+    """Writes the sandbox profile; returns the argv and the environment to start the plugin with. The argv runs the
+    relay (outside the sandbox: filters the events, enforces the timeout, kills the whole process tree) which in turn
+    runs sandbox-exec + the host."""
     os.makedirs(work_dir, exist_ok=True)
     os.makedirs(data_dir, exist_ok=True)
+    timeout = load_manifest(plugin_dir)["timeout_s"]
+    host_dir = os.path.dirname(os.path.abspath(host))
+    files = [f for f in read_files if isinstance(f, str) and os.path.isabs(f)]
     with open(profile_path, "w") as f:
-        f.write(sandbox_profile(work_dir, data_dir, allow_network))
-    return {"argv": command(python, host, plugin_dir, action, profile_path),
+        f.write(sandbox_profile(work_dir, data_dir, allow_network, plugin_dir,
+                                python_read_roots(python) + [host_dir], files + python_read_files(python)))
+    relay = os.path.join(host_dir, "cns_plugin_relay.py")
+    return {"argv": [python, relay, "--work", work_dir, "--timeout", str(timeout), "--"]
+            + command(python, host, plugin_dir, action, profile_path),
             "env": build_env(os.environ, work_dir, data_dir)}
 
 
@@ -319,7 +442,7 @@ def _cli(argv):
         elif cmd == "digest":
             res = {"digest": folder_digest(argv[1])}
         elif cmd == "launch":
-            res = launch(argv[1], argv[2], argv[3], argv[4], argv[5], argv[6], argv[7] == "1", argv[8])
+            res = launch(argv[1], argv[2], argv[3], argv[4], argv[5], argv[6], argv[7] == "1", argv[8], argv[9:])
         else:
             res = {"error": "unknown command"}
     except (PluginError, OSError, IndexError) as e:

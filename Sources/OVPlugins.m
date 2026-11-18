@@ -204,7 +204,8 @@ static id RunCLI(NSArray<NSString *> *args, NSString **error) {
 }
 
 + (void)registerKind {
-    [OVJobs.shared registerKind:OVJobKindPlugin lane:OVJobLaneCompute retryable:YES
+    [OVJobs.shared registerKind:OVJobKindPlugin lane:OVJobLaneCompute retryable:NO   // inputs may hold redacted values; run it again from the page
+        
         title:^NSString *(NSDictionary *r) { return r[@"title"] ?: L(@"Plugin"); }
         factory:OVProcessRunnerFactory(^OVProcessSpec *(OVJob *job) { return [OVPlugins.shared specForJob:job]; })
         onSuccess:nil];
@@ -232,9 +233,20 @@ static OVProcessSpec *Failing(NSString *message) {
     NSString *data = [[OVPaths pluginData] stringByAppendingPathComponent:p.identifier];
     [fm createDirectoryAtPath:work withIntermediateDirectories:YES attributes:nil error:nil];
     NSString *err = nil;
-    NSDictionary *launch = RunCLI(@[@"launch", py, host, p.folder, action, work, data,
+    // The sandbox hides the home folder from the plugin: only the job's own input files (audio inputs) are opened up.
+    NSMutableArray<NSString *> *args = [NSMutableArray arrayWithArray:@[@"launch", py, host, p.folder, action, work, data,
                                     [self networkAllowed:p] ? @"1" : @"0",
-                                    [job.folder stringByAppendingPathComponent:@"sandbox.sb"]], &err);
+                                    [job.folder stringByAppendingPathComponent:@"sandbox.sb"]]];
+    NSDictionary *given = [req[@"inputs"] isKindOfClass:NSDictionary.class] ? req[@"inputs"] : @{};
+    for (NSDictionary *a in p.actions) {
+        if (![a[@"id"] isEqualToString:action]) continue;
+        for (NSDictionary *in in a[@"inputs"]) {
+            NSString *path = given[in[@"name"]];
+            if ([in[@"type"] isEqualToString:@"audio"] && [path isKindOfClass:NSString.class] && path.isAbsolutePath)
+                [args addObject:path];
+        }
+    }
+    NSDictionary *launch = RunCLI(args, &err);
     NSArray *argv = [launch isKindOfClass:NSDictionary.class] ? launch[@"argv"] : nil;
     if (argv.count < 2) return Failing(err ?: L(@"The plugin could not be started."));
 

@@ -3,13 +3,13 @@ environment and sandbox). stdin: one JSON line {"inputs": {...}, "work_dir": "..
 (status/progress/log/result/error); everything a plugin prints goes to stderr."""
 import argparse
 import importlib.util
-import json
 import os
 import signal
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import cns_proto as proto  # noqa: E402
+import cns_plugins  # noqa: E402
 
 
 class Ctx:
@@ -60,8 +60,7 @@ def main(argv=None):
     try:
         req = proto.read_request()
         folder = os.path.realpath(args.plugin)
-        with open(os.path.join(folder, "plugin.json"), "r", encoding="utf-8") as f:
-            manifest = json.load(f)
+        manifest = cns_plugins.load_manifest(folder)
         action = next((a for a in manifest.get("actions", []) if a.get("id") == args.action), None)
         if action is None:
             raise ValueError("The plugin has no action \"%s\"" % args.action)
@@ -71,9 +70,7 @@ def main(argv=None):
         work_dir = str(req.get("work_dir") or os.environ.get("TMPDIR") or "")
         if not work_dir or not os.path.isdir(work_dir):
             raise ValueError("No work folder")
-        inputs = req.get("inputs") or {}
-        if not isinstance(inputs, dict):
-            raise ValueError("\"inputs\" must be an object")
+        inputs = cns_plugins.validate_inputs(action, req.get("inputs") or {})
         timeout = manifest.get("timeout_s", 600)
         if isinstance(timeout, int) and not isinstance(timeout, bool) and timeout > 0:
             def on_alarm(signum, frame):
