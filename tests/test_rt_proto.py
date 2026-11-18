@@ -229,5 +229,156 @@ class RealtimeProcess(unittest.TestCase):
             rtp.find_model_files("/nonexistent")
 
 
+class RaisingVC(FakeVC):
+    def on_request(self, block, **kw):
+        raise RuntimeError("boom")
+
+
+class Pulse:
+    """fake VAD: speech where the first sample is >= 0.5"""
+    def has_speech(self, block):
+        return float(block[0]) >= 0.5
+
+
+@unittest.skipIf(np is None, "numpy missing")
+class RealtimeFixes(unittest.TestCase):
+    def _run(self, t, sockp, vc, vad_on=False):
+        import cns_realtime as rtp
+        d = os.path.join(t, "m")
+        os.makedirs(d, exist_ok=True)
+        open(os.path.join(d, "v.pth"), "wb").close()
+        r, w = os.pipe()
+        req = {"model": d, "socket": sockp, "work_dir": t, "vad": {"on": vad_on}}
+        out = []
+
+        def go():
+            try:
+                rtp.run(req, os.fdopen(r), loader=lambda s, a, b: vc)
+            except Exception as e:  # noqa: BLE001
+                out.append(e)
+        th = threading.Thread(target=go)
+        th.start()
+        _wait_for(sockp)
+        return th, w, out
+
+    def _exchange(self, c, dec, seq, val=1.0):
+        c.sendall(p.pack_audio(seq, np.full(p.block_frame(0.15), val, dtype="<f4")))
+        got = []
+        while not got:
+            got = p.read_frames(c, dec)
+        return got[0]
+
+    def test_idle_gap_keeps_the_session(self):
+        import cns_proto
+        events = []
+        with tempfile.TemporaryDirectory() as t:
+            sockp = os.path.join(t, "rt.sock")
+            with mock.patch.object(cns_proto, "emit", lambda ev, **kw: events.append((ev, kw))):
+                th, w, out = self._run(t, sockp, FakeVC())
+                c = p.connect_unix(sockp)
+                dec = p.FrameDecoder()
+                self._exchange(c, dec, 0)
+                time.sleep(2.5)
+                self.assertTrue(th.is_alive())
+                self.assertEqual(self._exchange(c, dec, 1)[1], 1)
+                os.write(w, b'{"cmd":"quit"}\n')
+                th.join(5)
+                c.close()
+            os.close(w)
+            self.assertEqual([kw for ev, kw in events if ev == "result"][0]["data"]["stats"]["blocks"], 2)
+
+    def test_model_exception_is_an_error(self):
+        import cns_proto
+        events = []
+        with tempfile.TemporaryDirectory() as t:
+            sockp = os.path.join(t, "rt.sock")
+            with mock.patch.object(cns_proto, "emit", lambda ev, **kw: events.append((ev, kw))):
+                th, w, out = self._run(t, sockp, RaisingVC())
+                c = p.connect_unix(sockp)
+                c.sendall(p.pack_audio(0, np.ones(p.block_frame(0.15), dtype="<f4")))
+                th.join(5)
+                c.close()
+            os.close(w)
+            self.assertFalse(th.is_alive())
+            self.assertEqual(len(out), 1)
+            self.assertIn("boom", str(out[0]))
+            self.assertFalse([1 for ev, _ in events if ev == "result"])
+
+    def test_applio_root_goes_on_path_and_cwd(self):
+        import cns_realtime as rtp
+        cwd = os.getcwd()
+        with tempfile.TemporaryDirectory() as root:
+            app = os.path.join(root, "applio")
+            os.makedirs(os.path.join(app, "rvc", "realtime"))
+            for d in ("rvc", os.path.join("rvc", "realtime")):
+                open(os.path.join(app, d, "__init__.py"), "w").close()
+            with open(os.path.join(app, "rvc", "realtime", "core.py"), "w") as f:
+                f.write("class VoiceChanger:\n    def __init__(self, **kw):\n        self.kw = kw\n")
+            fake = mock.MagicMock()
+            fake.backends.mps.is_available.return_value = True
+            s = rtp.settings_from_request({})
+            s["applio_dir"] = app
+            try:
+                with mock.patch.dict(sys.modules, {"torch": fake}), mock.patch.object(sys, "path", list(sys.path)):
+                    vc = rtp._load_voice_changer(s, "a.pth", None)
+                    self.assertEqual(vc.kw["device"], "mps")
+                    self.assertEqual(os.path.realpath(os.getcwd()), os.path.realpath(app))
+            finally:
+                os.chdir(cwd)
+                for m in [m for m in sys.modules if m == "rvc" or m.startswith("rvc.")]:
+                    del sys.modules[m]
+
+    def test_vad_hangover_and_fades(self):
+        import cns_realtime as rtp
+        g = rtp.Hangover(Pulse(), hang=2)
+        loud, quiet = np.ones(10), np.zeros(10)
+        self.assertEqual([g.process(b) for b in (loud, quiet, quiet, quiet, quiet, loud, quiet)],
+                         [True, True, True, False, False, True, True])
+        f = rtp.fade(np.zeros(480), tail=1.0)
+        self.assertAlmostEqual(float(f[0]), 1.0)
+        self.assertLess(float(f[-1]), 0.01)
+        self.assertEqual(float(rtp.fade(np.ones(480), fade_in=True)[0]), 0.0)
+
+    def test_gated_blocks_not_in_latency_stats(self):
+        import cns_proto
+        import cns_realtime as rtp
+        events = []
+        with tempfile.TemporaryDirectory() as t:
+            sockp = os.path.join(t, "rt.sock")
+            with mock.patch.object(cns_proto, "emit", lambda ev, **kw: events.append((ev, kw))), \
+                    mock.patch.object(rtp, "VadGate", lambda sens: Pulse()):
+                th, w, out = self._run(t, sockp, FakeVC(), vad_on=True)
+                c = p.connect_unix(sockp)
+                dec = p.FrameDecoder()
+                for seq, v in enumerate([1.0] + [0.0] * 5):
+                    self._exchange(c, dec, seq, v)
+                os.write(w, b'{"cmd":"quit"}\n')
+                th.join(5)
+                c.close()
+            os.close(w)
+            st = [kw for ev, kw in events if ev == "result"][0]["data"]["stats"]
+            self.assertEqual(st["blocks"], 3)   # loud + 2 hangover; the other 3 were gated
+
+    def test_long_socket_dir(self):
+        with tempfile.TemporaryDirectory() as t:
+            path = os.path.join(t, "a" * 60, "b" * 60, "s.sock")
+            self.assertGreater(len(path.encode()), 104)
+            cwd = os.getcwd()
+            s = p.listen_unix(path)
+            try:
+                c = p.connect_unix(path)
+                c.close()
+            finally:
+                s.close()
+            self.assertEqual(os.getcwd(), cwd)
+
+    def test_bad_params(self):
+        import cns_proto
+        import cns_realtime as rtp
+        for k, v in (("extra_s", -1), ("crossfade_s", 9), ("block_s", 0)):
+            with self.assertRaises(cns_proto.ProtoError):
+                rtp.settings_from_request({k: v})
+
+
 if __name__ == "__main__":
     unittest.main()

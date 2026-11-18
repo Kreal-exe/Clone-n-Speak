@@ -5,6 +5,7 @@ Sends blocks at real-time pace (one per block duration), measures send -> reply 
 Start the engine first (see Sources/cns_realtime.py); the target is p95 round trip <= 120 ms on a quiet Mac.
 """
 import os
+import select
 import socket
 import sys
 import time
@@ -26,11 +27,9 @@ def main(argv):
     a = resample_poly(a, 48000, sr).astype(np.float32)
     a = np.tile(a, int(seconds * 48000 // max(1, len(a))) + 1)
     n = rt.block_frame(block_s)
-    c = socket.socket(socket.AF_UNIX)
-    c.connect(sock_path)
+    c = rt.connect_unix(sock_path)
     dec = rt.FrameDecoder()
     sent, rtt, dropped = {}, [], 0
-    c.settimeout(0.001)
     start = time.perf_counter()
     for seq, i in enumerate(range(0, len(a) - n, n)):
         due = start + seq * n / 48000.0
@@ -38,23 +37,23 @@ def main(argv):
             time.sleep(0.001)
         sent[seq] = time.perf_counter()
         c.sendall(rt.pack_audio(seq, a[i:i + n]))
-        try:
+        while select.select([c], [], [], 0)[0]:     # blocking sends; poll replies without a socket timeout
             for ftype, rseq, rn, _ in rt.read_frames(c, dec):
                 if rn == 0:
                     dropped += 1
+                    sent.pop(rseq, None)
                 elif rseq in sent:
                     rtt.append((time.perf_counter() - sent.pop(rseq)) * 1000)
-        except socket.timeout:
-            pass
-    c.settimeout(2.0)
+    end = time.perf_counter() + 2.0
     try:
-        while sent:
-            for ftype, rseq, rn, _ in rt.read_frames(c, dec):
-                if rn and rseq in sent:
-                    rtt.append((time.perf_counter() - sent.pop(rseq)) * 1000)
-                else:
-                    sent.pop(rseq, None)
-    except (socket.timeout, rt.PeerClosed):
+        while sent and time.perf_counter() < end:
+            if select.select([c], [], [], 0.1)[0]:
+                for ftype, rseq, rn, _ in rt.read_frames(c, dec):
+                    if rn and rseq in sent:
+                        rtt.append((time.perf_counter() - sent.pop(rseq)) * 1000)
+                    else:
+                        sent.pop(rseq, None)
+    except rt.PeerClosed:
         pass
     r = np.array(rtt) if rtt else np.zeros(1)
     print("blocks=%d dropped=%d round trip ms: p50=%.0f p95=%.0f max=%.0f (target p95 <= 120)"

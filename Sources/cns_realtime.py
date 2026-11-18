@@ -9,6 +9,7 @@ Audio goes over the socket (cns_rt_proto): one client, 48 kHz mono float32 block
 microphone. Needs the GPU (MPS): on this Mac the CPU needs 533 ms per 0.25 s block, so it never starts there.
 """
 import os
+import select
 import socket
 import sys
 import threading
@@ -45,6 +46,10 @@ def settings_from_request(req):
         s["vad_enabled"] = bool(vad["on"])
     if vad.get("sensitivity") is not None:
         s["vad_sensitivity"] = max(0, min(3, int(vad["sensitivity"])))
+    for k, (lo, hi) in {"block_s": (0.02, 1.9), "extra_s": (0.0, 2.0), "crossfade_s": (0.0, 0.5)}.items():
+        v = s[k]
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not lo <= v <= hi:
+            raise cns_proto.ProtoError("Bad parameter: %s must be a number between %s and %s" % (k, lo, hi))
     s["block_frame"] = rt.block_frame(s["block_s"])
     s["live"] = {"pitch": req.get("pitch", 0), "index_rate": req.get("index_rate", 0.3),
                  "protect": req.get("protect", 0.33), "silent_threshold": s["silent_threshold"]}
@@ -72,6 +77,40 @@ class VadGate:
         return False
 
 
+class Hangover:
+    """Decides which blocks go through the model. A block is skipped only after `hang` consecutive blocks without
+    speech, so short pauses (and the tail of a word) still run through the model."""
+
+    def __init__(self, vad, hang=2):
+        self.vad, self.hang, self._left = vad, hang, 0
+
+    def process(self, block):
+        if self.vad is None or self.vad.has_speech(block):
+            self._left = self.hang
+            return True
+        if self._left > 0:
+            self._left -= 1
+            return True
+        return False
+
+
+FADE_S = 0.005
+_warned_resample = False
+
+
+def fade(block, tail=None, fade_in=False, rate=rt.SAMPLE_RATE):
+    """Short linear ramps instead of hard cuts: fade_in ramps a block up from 0; `tail` (the last output sample) decays
+    to 0 over the start of a silent block."""
+    import numpy as np
+    m = min(len(block), max(1, int(FADE_S * rate)))
+    block = np.array(block, dtype=np.float32)
+    if fade_in:
+        block[:m] *= np.linspace(0.0, 1.0, m, dtype=np.float32)
+    if tail is not None:
+        block[:m] += np.float32(tail) * np.linspace(1.0, 0.0, m, dtype=np.float32)
+    return block
+
+
 def fit(out, n):
     """Model output -> exactly n float32 samples (trim, zero-pad, or linear-resample if the rate differs)."""
     import numpy as np
@@ -79,6 +118,10 @@ def fit(out, n):
     if len(out) == n:
         return out
     if abs(len(out) - n) > max(1, n // 50):
+        global _warned_resample
+        if not _warned_resample:
+            _warned_resample = True
+            cns_proto.log("model output has %d samples, resampling to %d" % (len(out), n))
         return np.interp(np.linspace(0, len(out) - 1, n), np.arange(len(out)), out).astype(np.float32)
     if len(out) > n:
         return out[:n]
@@ -96,9 +139,12 @@ class Session:
         self.stats = rt.LatencyStats()
         self.stop = threading.Event()
         self.gate = None
+        self.error = None
+        self._last_out = 0.0
+        self._was_gated = False
         if settings["vad_enabled"]:
             try:
-                self.gate = VadGate(settings["vad_sensitivity"])
+                self.gate = Hangover(VadGate(settings["vad_sensitivity"]))
             except Exception as e:  # noqa: BLE001 — VAD is optional; the silence threshold still gates
                 cns_proto.log("VAD unavailable (%s); using the silence threshold only" % e)
 
@@ -119,6 +165,8 @@ class Session:
         dec = rt.FrameDecoder()
         try:
             while not self.stop.is_set():
+                if not select.select([self.conn], [], [], 0.5)[0]:
+                    continue   # idle gap: the connection stays open until the client leaves
                 for ftype, seq, n, payload in rt.read_frames(self.conn, dec):
                     if ftype != rt.T_AUDIO:
                         continue
@@ -150,19 +198,30 @@ class Session:
                 seq, payload = item
                 block = np.frombuffer(payload, dtype="<f4")
                 t0 = time.perf_counter()
-                if self.gate is not None and not self.gate.has_speech(block):
+                if self.gate is not None and not self.gate.process(block):
                     out = np.zeros(len(block), dtype=np.float32)
+                    if not self._was_gated:
+                        out = fade(out, tail=self._last_out)
+                    self._was_gated = True
+                    self.send(rt.pack_reply(seq, 0.0, out.astype("<f4")))   # gated: not counted in the latency stats
+                    continue
                 else:
                     with self.lock:
                         live = dict(self.live)
                     res = self.vc.on_request(block.astype(np.float32), f0_up_key=live["pitch"],
                                              index_rate=live["index_rate"], protect=live["protect"])
                     out = fit(res[0] if isinstance(res, (tuple, list)) else res, len(block))
+                    if self._was_gated:
+                        out = fade(out, fade_in=True)
+                    self._was_gated = False
+                    self._last_out = float(out[-1]) if len(out) else 0.0
                 ms = (time.perf_counter() - t0) * 1000.0
                 self.stats.add(ms)
                 self.send(rt.pack_reply(seq, ms, out.astype("<f4")))
         except (rt.PeerClosed, OSError):
             pass
+        except Exception as e:  # noqa: BLE001 — a model failure must not look like a normal end
+            self.error = "Realtime stopped: %s" % e
         finally:
             self.stop.set()
 
@@ -188,6 +247,11 @@ def _load_voice_changer(settings, pth, index):
     import torch
     if not torch.backends.mps.is_available():
         raise cns_proto.ProtoError(NO_GPU_MSG)
+    applio = settings.get("applio_dir")
+    if applio:
+        os.chdir(applio)      # Applio resolves its assets relative to its own root
+        if applio not in sys.path:
+            sys.path.insert(0, applio)
     from rvc.realtime.core import VoiceChanger
     return VoiceChanger(block_frame=settings["block_frame"], cross_fade_overlap_size=settings["crossfade_s"],
                         extra_convert_size=settings["extra_s"], model_path=pth, index_path=index,
@@ -200,10 +264,14 @@ def run(req, stdin=None, loader=None):
     `loader` is a seam for tests (returns an object with warmup/on_request)."""
     stdin = stdin if stdin is not None else sys.stdin
     settings = settings_from_request(req)
+    if req.get("root"):
+        import cns_engines
+        settings["applio_dir"] = cns_engines.applio_dir(os.path.abspath(req["root"]))
     pth, index = find_model_files(req.get("model"))
     work = os.path.realpath(req.get("work_dir") or "")
     sock_path = req.get("socket") or ""
-    if not work or not os.path.realpath(os.path.dirname(os.path.abspath(sock_path))).startswith(work):
+    sock_dir = os.path.realpath(os.path.dirname(os.path.abspath(sock_path)))
+    if not work or os.path.commonpath([work, sock_dir]) != work:
         raise cns_proto.ProtoError("Realtime socket must be inside the job folder")
     cns_proto.status("Loading the voice model")
     vc = (loader or _load_voice_changer)(settings, pth, index)
@@ -225,7 +293,6 @@ def run(req, stdin=None, loader=None):
                 continue
         if sess.conn is not None:
             srv.close()
-            sess.conn.settimeout(1.0)
             t_rd = threading.Thread(target=sess.reader, daemon=True)
             t_wk = threading.Thread(target=sess.worker, daemon=True)
             t_rd.start()
@@ -237,6 +304,8 @@ def run(req, stdin=None, loader=None):
                 sess.conn.close()
             except OSError:
                 pass
+        if sess.error:
+            raise cns_proto.ProtoError(sess.error)
         cns_proto.result(**rt.quit_result(sess.stats))
     finally:
         try:

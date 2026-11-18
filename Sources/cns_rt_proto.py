@@ -2,13 +2,16 @@
 
 Frame = magic "CNS1"(4) | type u8 | seq u32 | n u32 | payload (little endian).
   audio (1): n float32 mono samples at 48 kHz (n = block_frame).
-  reply (2): proc_ms float32, then n float32 samples (n = 0 means "block dropped").
+  reply (2): proc_ms float32, then n float32 samples (n = 0 means "block dropped"). Replies for dropped blocks are
+             sent by the reader as soon as they are dropped, so they can overtake the reply of an earlier block that
+             is still being processed: clients must match replies by seq, not by order.
   ctl   (3): n bytes of UTF-8 JSON.
 Anything else (bad magic, unknown type, n too large) raises FrameError: the caller closes the connection.
 """
 import json
 import os
 import socket
+import stat
 import struct
 
 MAGIC = b"CNS1"
@@ -215,21 +218,56 @@ def quit_result(stats):
 
 
 def listen_unix(path, backlog=1):
-    """Binds a Unix socket at `path`: parent directory 0700, socket 0600 (umask during bind, chmod after). A stale file
-    at the path is replaced. Returns the listening socket."""
-    parent = os.path.dirname(os.path.abspath(path))
+    """Binds a Unix socket at `path`: parent directory 0700, socket 0600 (umask during bind, chmod after). A stale
+    socket of ours at the path is replaced. The bind happens from inside the parent directory with the short file name,
+    so paths longer than the 104-byte AF_UNIX limit work (cwd is restored; clients must do the same). Raises OSError
+    with a readable message when it still cannot bind. Returns the listening socket."""
+    path = os.path.abspath(path)
+    parent, name = os.path.split(path)
     os.makedirs(parent, mode=0o700, exist_ok=True)
+    st = os.lstat(parent)
+    if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid():
+        raise OSError("Realtime socket folder is not yours: %s" % parent)
     os.chmod(parent, 0o700)
-    if len(os.fsencode(path)) > 100:
-        raise ValueError("socket path too long")
-    if os.path.lexists(path):
-        os.unlink(path)
-    old = os.umask(0o177)
+    if len(os.fsencode(name)) > 100:
+        raise OSError("Realtime socket name is too long")
     try:
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        s.bind(path)
+        old_st = os.lstat(path)
+    except FileNotFoundError:
+        old_st = None
+    if old_st is not None:
+        if not stat.S_ISSOCK(old_st.st_mode) or old_st.st_uid != os.getuid():
+            raise OSError("Something else is at the realtime socket path: %s" % path)
+        os.unlink(path)
+    cwd = os.getcwd()
+    old = os.umask(0o177)
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        os.chdir(parent)
+        s.bind(name)
+        os.chmod(name, 0o600)
+        s.listen(backlog)
+    except OSError as e:
+        s.close()
+        raise OSError("Could not open the realtime socket (%s)" % e)
     finally:
         os.umask(old)
-    os.chmod(path, 0o600)
-    s.listen(backlog)
+        os.chdir(cwd)
     return s
+
+
+def connect_unix(path):
+    """Client side of listen_unix: connects through the parent directory so long paths work."""
+    path = os.path.abspath(path)
+    parent, name = os.path.split(path)
+    cwd = os.getcwd()
+    c = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        os.chdir(parent)
+        c.connect(name)
+    except OSError:
+        c.close()
+        raise
+    finally:
+        os.chdir(cwd)
+    return c
