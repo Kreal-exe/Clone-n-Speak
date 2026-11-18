@@ -466,8 +466,8 @@ class InstallTests(Base):
         self.assertTrue(eng.is_ready(self.root, "ytdlp"))
 
     def test_peak_gb_matches_the_plan(self):
-        want = {"infer": 3.4, "seedvc": 4.0, "train": 10.0, "train_b2": 8.2, "realtime": 2.7, "mdx": 6.5,
-                "roformer": 6.6, "blend": 1.0, "ytdlp": 0.3, "edge": 0.3}
+        want = {"infer": 3.4, "seedvc": 4.0, "train": 10.0, "train_b2": 8.2, "realtime": 2.7, "mdx": 7.2,
+                "roformer": 6.6, "demucs": 2.3, "dereverb": 6.3, "blend": 1.0, "ytdlp": 0.3, "edge": 0.3}
         for k, v in want.items():
             self.assertEqual(eng.status(self.root)["peak_gb"][k], v)
 

@@ -47,7 +47,7 @@ NO_WHEEL_STAGE3 = ("argbind", "randomname")
 
 # Peak memory (GB) the pro jobs need on a 16 GB Mac, measured in the spike.
 PEAK_GB = {"infer": 3.4, "seedvc": 4.0, "train": 10.0, "train_b2": 8.2, "realtime": 2.7,
-           "mdx": 6.5, "roformer": 6.6, "blend": 1.0, "ytdlp": 0.3, "edge": 0.3}
+           "mdx": 7.2, "roformer": 6.6, "demucs": 2.3, "dereverb": 6.3, "blend": 1.0, "ytdlp": 0.3, "edge": 0.3}
 
 ORDER = ["pro-env", "applio-env", "ytdlp", "applio", "rvc-core", "rvc-fcpe", "rvc-train-32k", "rvc-train-40k",
          "rvc-train-48k", "seedvc"]
