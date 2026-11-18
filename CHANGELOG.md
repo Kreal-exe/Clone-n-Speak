@@ -1,5 +1,95 @@
 # Changelog
 
+## 2.0.0
+
+Clone'n'Speak 2.0 has a new look and gets the tools of a full voice workbench. The main scenario, cloning a voice and
+speaking text with it, is as light as before: the main engine still has no PyTorch and uses no memory when idle. The
+heavy engines are separate downloads for Macs with 16 GB of unified memory, and each one says so with a "16 GB" badge.
+
+**New look**
+- Every page is redrawn on numbered cards with thin borders, in light and dark. There are eight palettes (Applio,
+  Amethyst, Crimson, Cyberpunk, Emerald, Midnight, Sunset, Halloween), each with a light and a dark version; pick one
+  in Settings → Appearance.
+- The sidebar is grouped: Voice, Models & Training, Tools, System. It shows the version, the memory and the state of
+  the engine.
+- Emoji in the interface are SF Symbols now, with labels for VoiceOver. Sliders, switches and the player work from the
+  keyboard, and Reduce Motion and Increase Contrast are respected.
+
+**Audio Tools**
+- Drop any recording, or take the sound from a video (MP4, MOV, M4V), up to 20 minutes.
+- Analyzer with a spectrogram, a pitch curve and the spectral centroid, drawn natively.
+- Effects chain: reverb, delay, chorus, compressor, limiter, distortion, bitcrush, gain, EQ, pitch shift and formant
+  shift (timbre without a change of pitch).
+- DeepFilterNet noise cleanup at 6, 18 or 30 dB (a ~35 MB download, checked by hash); the old light cleanup stays as
+  "Light cleanup".
+- Format conversion: WAV, M4A, FLAC and ALAC natively; MP3 and OGG when ffmpeg is installed.
+
+**Separation**
+- Remove music: keeps the voice, or only the music, with a small ONNX model that runs on any Mac. Also in
+  *Improve sample* on the Voices page.
+- Full stems on 16 GB Macs: a split into stems with htdemucs, higher-quality vocals with Kim_Vocal_2 and
+  BS-Roformer, and dereverb. Models are downloaded on request, never bundled, and are
+  checked against pinned hashes before every run. Three of them are marked "license unverified" (see Model licenses
+  in the README).
+
+**Speech**
+- Export formats and a choice of format on the Speech page and in Settings.
+- Presets save the voice style, the format and the effects chain; rename, delete, import and export as a file.
+- Effects chain on the result, with the dry take kept next to it.
+- Player with a scrubber and an A/B switch between the original and the result.
+- Batch: a whole .txt, .md or .srt file, or one line per file, with one voice and style, progress and an output folder.
+- Edge TTS (online, Microsoft) as a second engine. It sends the text to Microsoft, asks once and is refused in Offline
+  mode. Its result can be passed through an RVC model or your cloned voice.
+
+**Voices**
+- Extended sample check: silence at the edges, the longest pause, problem spots marked on the waveform, and a
+  comparison of several samples of one voice (levels, duplicates).
+- *Improve sample*: DeepFilterNet cleanup and music removal next to the light cleanup.
+
+**Models**
+- LoRA adapters by Hugging Face link: paste the address of an adapter and the app downloads and checks it.
+- RVC voice models: search, download by Hugging Face or direct link, import `.pth` and `.index` files, model details.
+- Model folder (Settings → Storage): keep models on another disk. If the disk is not connected the app says so and
+  refuses downloads instead of filling the startup disk.
+
+**Pro features (Macs with 16 GB)**
+- Convert: re-voice a recording with an RVC model (pitch, rmvpe / crepe / fcpe, index rate, protect, volume envelope,
+  formant, autotune, cleanup) or with your own cloned voice through Seed-VC. Single file or batch, with an A/B switch
+  against the original.
+- Realtime: change your voice live through the microphone. Any input and output device; no drivers are installed (for
+  Zoom or Discord, install a virtual device such as BlackHole yourself). The measured delay is shown while it runs.
+- Training: train an RVC model from a folder of recordings or from a link, with a dataset check, preprocessing,
+  feature extraction, training on the GPU (MPS), index building, an overtraining warning, resume and export.
+- Voice Blender: mix two RVC models in a ratio you choose.
+- YouTube import: take the sound of a video link (asks for your confirmation that you have the rights and the
+  speaker's consent). Only the link is sent to YouTube.
+- Each engine installs on request with its size shown and can be removed. Before a pro job the main engine unloads its
+  models, so the two are never in memory together. On a Mac with less than 16 GB the app warns and lets you go on.
+
+**Jobs**
+- A history of everything long that the app did: speech, conversion, training, separation, downloads. Progress, log,
+  stop and run again. Jobs that were running when the app quit show as interrupted.
+
+**Local API and Bridge**
+- A local REST API on 127.0.0.1 with a key kept in the Keychain: speech, voice cloning, conversion, jobs, lists of
+  voices and models. Off by default.
+- Bridge reaches the API from your phone through a Cloudflare quick tunnel. Off by default; the tunnel program is
+  downloaded once and checked, every device has to be approved on the Mac and can be revoked, and the tunnel is closed
+  when the app quits.
+
+**Plugins**
+- A plugins folder with a manifest per plugin. A plugin runs as a separate process, is off until you switch it on, and
+  the page warns that it is third-party code.
+
+**Data & Privacy, Offline mode**
+- A page that lists what stays on the Mac, what can go online (Edge TTS, YouTube import, Bridge, model downloads,
+  plugin network access) and when, with a "never used / asked" state for each, where every folder lives and a button
+  to reveal or delete it.
+- Offline mode (Settings): every online feature, including model downloads, is refused with a message; local work is
+  not affected.
+
+Voices, settings and downloaded models from 1.0.x are kept.
+
 ## 1.0.3
 
 **Pronunciation training**
