@@ -1,4 +1,5 @@
 """Tests for Sources/cns_engines.py (pro-engine manager). No internet: a 127.0.0.1 server, a fake uv, tars in memory."""
+import shlex
 import hashlib
 import http.server
 import io
@@ -94,9 +95,9 @@ class Server:
         self.httpd.server_close()
 
 
-FAKE_UV = """#!{py}
-import os, sys
+FAKE_UV = """import os, sys, json, shlex
 a = sys.argv[1:]
+json.dump(dict(os.environ), open("{dump}/uv_env.json", "w"))
 log = os.environ.get("FAKE_UV_LOG")
 if log:
     open(log, "a").write(" ".join(a) + "\\n")
@@ -107,8 +108,9 @@ if a[0] == "venv":
     d = a[-1]
     os.makedirs(os.path.join(d, "bin"), exist_ok=True)
     p = os.path.join(d, "bin", "python")
-    open(p, "w").write("#!{py}\\nimport sys, os\\nif sys.argv[1:2] == ['inference.py']:\\n"
-                       "    out = sys.argv[sys.argv.index('--output') + 1]\\n    open(os.path.join(out, 'vc.wav'), 'wb').write(b'RIFF')\\n")
+    open(p + ".py", "w").write("import sys, os\\nif sys.argv[1:2] == ['inference.py']:\\n"
+                       "    out = sys.argv[sys.argv.index('--output') + 1]\\n    import json\\n    json.dump(dict(os.environ), open('{dump}/warm_env.json', 'w'))\\n    open(os.path.join(out, 'vc.wav'), 'wb').write(b'RIFF')\\n")
+    open(p, "w").write("#!/bin/sh\\nexec " + shlex.quote("{py}") + " " + shlex.quote(p + ".py") + " \\"$@\\"\\n")
     os.chmod(p, 0o755)
 else:
     for i in range(5):
@@ -124,8 +126,10 @@ class Base(unittest.TestCase):
         self.srv = Server()
         self.addCleanup(self.srv.close)
         self.uv = os.path.join(self.tmp.name, "uv")
-        with open(self.uv, "w") as f:
-            f.write(FAKE_UV.format(py=sys.executable))
+        with open(self.uv + ".py", "w") as f:
+            f.write(FAKE_UV.format(py=sys.executable, dump=self.tmp.name))
+        with open(self.uv, "w") as f:   # a shell wrapper: a shebang cannot hold an interpreter path with spaces
+            f.write("#!/bin/sh\nexec %s %s \"$@\"\n" % (shlex.quote(sys.executable), shlex.quote(self.uv + ".py")))
         os.chmod(self.uv, 0o755)
         self.events = []
         self.emit = lambda event, **kw: self.events.append((event, kw))
@@ -148,7 +152,18 @@ class Base(unittest.TestCase):
         self.srv.files["/applio.tgz"] = applio_tar
         self.seed_members = {"inference.py": b"print('vc')\n", "LICENSE": b"GPL\n"}
         self.srv.files["/seedvc.tgz"] = make_tar(dict(("seed-x/" + k, v) for k, v in self.seed_members.items()))
+        self.srv.files["/m/dit.pth"] = b"dit-weights" * 500
+        self.srv.files["/m/cfg.json"] = b"{}"
+        models = [
+            {"repo": "org/dit", "rev": "a" * 40, "cache": "checkpoints",
+             "files": [{"path": "dit.pth", "url": self.srv.url("/m/dit.pth"), "sha256": sha(self.srv.files["/m/dit.pth"]),
+                        "size": len(self.srv.files["/m/dit.pth"])}]},
+            {"repo": "org/voc", "rev": "b" * 40, "cache": "hub",
+             "files": [{"path": "sub/config.json", "url": self.srv.url("/m/cfg.json"), "sha256": sha(b"{}"), "size": 2}]}]
         patches = dict(
+            SEEDVC_MODELS=models,
+            APPLIO_SIZES={k: len(v) for k, v in self.applio_members.items()},
+            SEEDVC_SIZES={k: len(v) for k, v in self.seed_members.items()},
             WEIGHTS=weights, STEMS={},
             APPLIO_URL=self.srv.url("/applio.tgz"), APPLIO_FILES={k: sha(v) for k, v in self.applio_members.items()},
             SEEDVC_URL=self.srv.url("/seedvc.tgz"), SEEDVC_FILES={k: sha(v) for k, v in self.seed_members.items()})
@@ -329,6 +344,101 @@ class InstallTests(Base):
         self.assertTrue(eng.is_ready(self.root, "seedvc"))
         self.assertTrue(os.path.isfile(os.path.join(self.root, "seedvc", "seed-vc", "inference.py")))
         self.assertEqual(eng.seedvc_env(self.root)["HF_HOME"], os.path.join(self.root, "seedvc", "hf"))
+        sv = os.path.join(self.root, "seedvc")
+        # pinned models sit in Hugging Face cache layouts, found offline through refs/main + snapshots
+        snap = os.path.join(sv, "hf", "checkpoints", "models--org--dit", "snapshots", "a" * 40, "dit.pth")
+        self.assertEqual(open(snap, "rb").read(), self.srv.files["/m/dit.pth"])
+        self.assertEqual(open(os.path.join(sv, "hf", "checkpoints", "models--org--dit", "refs", "main")).read(), "a" * 40)
+        self.assertTrue(os.path.isfile(os.path.join(sv, "hf", "hub", "models--org--voc", "snapshots", "b" * 40,
+                                                    "sub", "config.json")))
+        self.assertTrue(os.path.isfile(os.path.join(sv, "seed-vc", "checkpoints", "models--org--dit", "snapshots",
+                                                    "a" * 40, "dit.pth")))
+        # the first run happens offline
+        warm = json.load(open(os.path.join(self.tmp.name, "warm_env.json")))
+        self.assertEqual(warm["HF_HUB_OFFLINE"], "1")
+        self.assertEqual(warm["TRANSFORMERS_OFFLINE"], "1")
+        self.assertEqual(warm["HF_HOME"], os.path.join(sv, "hf"))
+
+    def test_seedvc_model_hash_mismatch_fails_install(self):
+        bad = [dict(m, files=[dict(f, sha256="0" * 64) for f in m["files"]]) for m in pins.SEEDVC_MODELS]
+        with mock.patch.object(pins, "SEEDVC_MODELS", bad):
+            with self.assertRaises(eng.EngineError):
+                self.install(["seedvc"])
+        self.assertNotEqual(self.state("seedvc"), "ready")
+
+    def test_seedvc_warmup_timeout_fails_install(self):
+        def slow(*a, **k):
+            raise eng.subprocess.TimeoutExpired("x", 1)
+        with mock.patch.object(eng.subprocess, "run", slow):
+            with self.assertRaises(eng.EngineError) as cm:
+                self.install(["seedvc"])
+        self.assertIn("Install again", str(cm.exception))
+        self.assertNotEqual(self.state("seedvc"), "ready")
+
+    def test_child_environment_is_an_allowlist(self):
+        poison = {"UV_INDEX_URL": "https://evil.example/simple", "PIP_EXTRA_INDEX_URL": "https://evil.example",
+                  "HF_TOKEN": "hf_secret", "OPENAI_API_KEY": "sk-secret", "UV_EXTRA_INDEX_URL": "https://evil.example",
+                  "AWS_SECRET_ACCESS_KEY": "x"}
+        with mock.patch.dict(os.environ, dict(poison, HTTPS_PROXY="http://proxy.local:3128")):
+            # explicit caller keys pass, poisoned ones are dropped even when the caller sends them
+            self.install(["seedvc"], env=dict(poison, FAKE_UV_LOG=os.path.join(self.tmp.name, "u.log"), CNS_OK="1"))
+        for dump in ("uv_env.json", "warm_env.json"):
+            env = json.load(open(os.path.join(self.tmp.name, dump)))
+            for k in poison:
+                self.assertNotIn(k, env)
+            self.assertEqual(env["PYTHONNOUSERSITE"], "1")
+            self.assertEqual(env["PATH"], "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin")
+        env = json.load(open(os.path.join(self.tmp.name, "uv_env.json")))
+        self.assertEqual(env["UV_CACHE_DIR"], os.path.join(self.root, ".uv-cache"))
+        self.assertEqual(env["CNS_OK"], "1")
+        self.assertEqual(env["HTTPS_PROXY"], "http://proxy.local:3128")   # proxy settings are passed through
+        self.assertLess(len(env), 15)
+
+    def test_uv_installs_wheels_only_with_documented_exceptions(self):
+        log = os.path.join(self.tmp.name, "uv.log")
+        self.install(["pro-env", "edge", "ytdlp"], env={"FAKE_UV_LOG": log})
+        installs = [l for l in open(log).read().splitlines() if l.startswith("pip install")]
+        self.assertEqual(len(installs), 3 + 1 + 1)
+        for l in installs:
+            self.assertIn("--only-binary :all:", l)
+        no_bin = [l for l in installs if "--no-binary" in l]
+        self.assertEqual(len(no_bin), 2)   # stage 1 (diffq) and stage 3 (argbind, randomname)
+        self.assertIn("--no-binary diffq", installs[0])
+        self.assertNotIn("--no-binary", installs[1])
+        self.assertIn("--no-binary argbind --no-binary randomname", installs[2])
+        edge = next(l for l in installs if "edge-tts==7.3.1" in l)
+        self.assertIn(" -c ", edge)
+        self.assertNotIn("--no-binary", edge)
+        yt = next(l for l in installs if l.endswith("yt-dlp"))
+        self.assertIn(" -U ", yt)
+        self.assertIn(" -c ", yt)
+        cons = open(os.path.join(self.root, "edge", "constraints.txt")).read()
+        self.assertIn("aiohttp==", cons)
+
+    def test_ytdlp_update_clears_ready_and_restores_only_on_success(self):
+        self.install(["ytdlp"])
+        comp = eng._by_id("shared")["ytdlp"]
+        self.assertTrue(eng.is_ready(self.root, "ytdlp"))
+        with self.assertRaises(eng.EngineError):
+            eng.update_ytdlp(self.root, self.uv, {"FAKE_UV_FAIL": "yt-dlp"}, self.emit)
+        self.assertFalse(eng.is_ready(self.root, "ytdlp"))
+        self.assertTrue(os.path.exists(eng.installing_path(self.root, comp)))
+        eng.update_ytdlp(self.root, self.uv, {}, self.emit)
+        self.assertTrue(eng.is_ready(self.root, "ytdlp"))
+        self.assertIn("version", json.load(open(eng.marker_path(self.root, comp))))
+
+    def test_ytdlp_update_respects_offline_mode(self):
+        self.install(["ytdlp"])
+        with mock.patch.dict(os.environ, {"OV_OFFLINE": "1"}):
+            with self.assertRaises(eng.cns_net.OfflineError):
+                eng.update_ytdlp(self.root, self.uv, {}, self.emit)
+        self.assertTrue(eng.is_ready(self.root, "ytdlp"))
+
+    def test_peak_gb_matches_the_plan(self):
+        want = {"infer": 3.4, "seedvc": 4.0, "train": 10.0, "train_b2": 8.2, "realtime": 2.7, "mdx": 6.5,
+                "roformer": 6.6, "blend": 1.0, "ytdlp": 0.3, "edge": 0.3}
+        for k, v in want.items():
+            self.assertEqual(eng.status(self.root)["peak_gb"][k], v)
 
     def test_edge_has_its_own_environment(self):
         log = os.path.join(self.tmp.name, "uv.log")
@@ -376,6 +486,18 @@ class ExtractTests(unittest.TestCase):
             self.run_extract({"top/core.py": b"c", "top/rvc/link": ("link", "/etc/passwd")}, pin)
         with self.assertRaises(eng.EngineError):
             self.run_extract({"top/core.py": b"c", "/abs/x": b"evil"}, pin)
+
+    def test_member_larger_than_its_pinned_size_is_rejected(self):
+        tar = os.path.join(self.tmp.name, "t.tgz")
+        with open(tar, "wb") as f:
+            f.write(make_tar({"top/core.py": b"c" * 5000}))
+        dest = os.path.join(self.tmp.name, "out")
+        os.makedirs(dest)
+        with self.assertRaises(eng.EngineError) as cm:
+            eng.extract_pinned(tar, dest, {"core.py": sha(b"c" * 5000)}, {"core.py": 10})
+        self.assertIn("size", str(cm.exception))
+        self.assertFalse(os.path.exists(os.path.join(dest, "core.py")))
+        eng.extract_pinned(tar, dest, {"core.py": sha(b"c" * 5000)}, {"core.py": 5000})
 
     def test_applio_file_hashes_checked(self):
         with self.assertRaises(eng.EngineError) as cm:
@@ -496,7 +618,8 @@ Pages purgeable:                           3000.
             self.skipTest("tools/spikes is not in this checkout")
         req = [l for l in (spikes / "pro-env-py311-requirements.txt").read_text().splitlines()
                if l.strip() and not l.startswith("#")]
-        self.assertEqual(pins.PRO_REQUIREMENTS.split(), req)
+        self.assertEqual(pins.PRO_REQUIREMENTS.split(), [l for l in req if not l.startswith("edge-tts")])
+        self.assertNotIn("edge-tts", pins.PRO_REQUIREMENTS)   # Edge TTS lives in its own environment
         frz = [l.strip() for l in (spikes / "pro-env-py311-freeze.txt").read_text().splitlines() if l.strip()]
         self.assertEqual(pins.PRO_CONSTRAINTS.split(), frz)
         self.assertIn("descript-audio-codec==1.0.0", pins.PRO_STAGE2)

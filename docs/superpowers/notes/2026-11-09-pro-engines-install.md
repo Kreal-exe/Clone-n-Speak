@@ -35,3 +35,23 @@ stems. `python_for(root, component)` answers which interpreter a component uses.
 
 Applio's own `prerequisites` fetch 1.9 GB (every sample rate, RefineGAN, swift.onnx). The manager downloads only the
 pinned files: `rmvpe.pt`, `contentvec` (+`config.json`) for `rvc-core`, `fcpe.pt`, and one pair `f0G/f0D` per rate.
+
+## Safety rules of the installer (fix round 1)
+
+- **Environment.** Every child (uv, source builds, the Seed-VC run) gets an allowlist: fixed `PATH`, `HOME`, `TMPDIR`,
+  `LANG`, `PYTHONNOUSERSITE=1`, `PYTHONDONTWRITEBYTECODE=1`, `UV_CACHE_DIR=<root>/.uv-cache`, plus the caller's explicit
+  keys minus `UV_INDEX*`, `PIP_*`, `HF_TOKEN*` and anything named like a token, key, secret or password.
+- **Wheels only.** All `uv pip install` calls use `--only-binary :all:`, with these documented exceptions (no usable
+  wheel on PyPI for Python 3.11 / macOS arm64, 2026-11-09): `diffq` (stage 1; C extension required by audio-separator,
+  built from its sdist, needs the Xcode Command Line Tools), `argbind` and `randomname` (stage 3; pure Python sdists).
+- **Edge** installs into its own environment with a pinned freeze of `edge-tts` and its dependencies
+  (`cns_pins.EDGE_CONSTRAINTS`); `edge-tts` is not part of the pro environment's requirements.
+- **Seed-VC models are pinned.** The first run used to let Seed-VC fetch whatever it wanted. Now `cns_pins.SEEDVC_MODELS`
+  lists repo, exact revision, files and sha256 for the four models the default path loads (Plachta/Seed-VC DiT +
+  config, funasr/campplus, nvidia/bigvgan_v2_22khz_80band_256x, openai/whisper-small). They are downloaded with the
+  resumable, size-capped, hash-checked path into Hugging Face cache layouts (`seedvc/hf/checkpoints`, what
+  `load_custom_model_from_hf` reads through the `seed-vc/checkpoints` symlink, and `seedvc/hf/hub`), and the warm-up
+  conversion runs with `HF_HUB_OFFLINE=1`, `TRANSFORMERS_OFFLINE=1` and a 15 minute timeout. Small non-LFS files
+  (config.json, the yml) are trust-on-first-pin: their sha256 is computed when `tools/pin_applio.py` runs.
+- **Sandbox.** `sandbox_profile` aims at "no network, no writes outside the roots". Reads and exec stay open, and the
+  caller must list `TMPDIR` among the write roots.

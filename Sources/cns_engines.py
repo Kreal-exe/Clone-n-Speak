@@ -30,14 +30,23 @@ import cns_proto  # noqa: E402
 
 SCHEMA = 1
 LAYOUT_DEFAULT = "shared"   # "split": applio-env (torch 2.11.0 strict) + pro-env (torch 2.8.0) for Seed-VC and stems
+WARMUP_TIMEOUT = 900
 NO_CONNECTION = "No connection — check the network and press Install again."
 PYTHON_VERSION = "3.11"
-EDGE_TTS = "edge-tts==7.3.1"
+EDGE_TTS = pins.EDGE_REQUIREMENT
 GB = 1 << 30
 
+# Every uv pip install uses --only-binary :all: (no build scripts run on the user's Mac) except these packages, for
+# which PyPI has no usable wheel for Python 3.11 on macOS arm64 (checked with `uv pip install --dry-run`, 2026-11-09):
+#   diffq    (audio-separator 0.45.0 requires it; C extension, only cp37..cp310 wheels exist, so it is built from the
+#             source distribution and needs the Xcode Command Line Tools)
+#   argbind, randomname  (pure Python helpers of descript-audiotools; sdist only)
+NO_WHEEL_STAGE1 = ("diffq",)
+NO_WHEEL_STAGE3 = ("argbind", "randomname")
+
 # Peak memory (GB) the pro jobs need on a 16 GB Mac, measured in the spike.
-PEAK_GB = {"convert": 3.4, "train": 10.0, "train_batch2": 8.2, "realtime": 2.7, "seedvc": 4.0,
-           "stems_roformer": 6.6, "stems_mdx": 6.5}
+PEAK_GB = {"infer": 3.4, "seedvc": 4.0, "train": 10.0, "train_b2": 8.2, "realtime": 2.7,
+           "mdx": 6.5, "roformer": 6.6, "blend": 1.0, "ytdlp": 0.3, "edge": 0.3}
 
 ORDER = ["pro-env", "applio-env", "ytdlp", "applio", "rvc-core", "rvc-fcpe", "rvc-train-32k", "rvc-train-40k",
          "rvc-train-48k", "seedvc"]
@@ -134,8 +143,25 @@ def seedvc_dir(root):
 
 
 def seedvc_env(root):
-    """Environment of every Seed-VC process: its Hugging Face cache lives inside the engine folder."""
-    return {"HF_HOME": os.path.join(seedvc_dir(root), "hf"), "PYTORCH_ENABLE_MPS_FALLBACK": "1"}
+    """Environment of every Seed-VC process: its Hugging Face cache lives inside the engine folder and it never
+    goes online (every model it needs is installed and pinned by install())."""
+    hf = os.path.join(seedvc_dir(root), "hf")
+    return {"HF_HOME": hf, "HF_HUB_CACHE": os.path.join(hf, "hub"), "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1",
+            "PYTORCH_ENABLE_MPS_FALLBACK": "1"}
+
+
+def seedvc_model_files(root):
+    """[(blob path, snapshot link path, pinned entry)] for the Seed-VC models, laid out as a Hugging Face cache:
+    <cache>/models--org--name/{blobs/<sha256>, refs/main, snapshots/<rev>/<file> -> blob}. The 'checkpoints' cache
+    is what Seed-VC's load_custom_model_from_hf reads (seed-vc/checkpoints points to it), 'hub' is HF_HUB_CACHE."""
+    out = []
+    hf = os.path.join(seedvc_dir(root), "hf")
+    for m in pins.SEEDVC_MODELS:
+        repo_dir = os.path.join(hf, m["cache"], "models--" + m["repo"].replace("/", "--"))
+        for e in m["files"]:
+            out.append((os.path.join(repo_dir, "blobs", e["sha256"]),
+                        os.path.join(repo_dir, "snapshots", m["rev"], e["path"]), e, repo_dir, m["rev"]))
+    return out
 
 
 def python_for(root, cid, layout=None):
@@ -267,6 +293,11 @@ def _check(root, comp, marker, layout):
         if any(_size(os.path.join(base, rel)) != n for rel, n in sizes.items()):
             return False
         if kind == "seedvc":
+            models = marker.get("models")
+            if not isinstance(models, dict) or not models:
+                return False
+            if any(_size(os.path.join(seedvc_dir(root), rel)) != n for rel, n in models.items()):
+                return False
             return bool(marker.get("warmed"))
         return os.path.islink(os.path.join(base, "rvc", "models")) or os.path.isdir(os.path.join(base, "rvc", "models"))
     return False
@@ -468,9 +499,10 @@ class _Discard(Exception):
 
 # ---------------------------------------------------------------------------------------------------------- extraction
 
-def extract_pinned(tar_path, dest, file_pins):
+def extract_pinned(tar_path, dest, file_pins, sizes=None):
     """Extracts only the files named in file_pins ({path below the archive's top folder: sha256}) into dest, checking
-    each hash. Links, absolute paths and '..' reject the whole archive; other members are skipped."""
+    each hash. With sizes ({path: bytes}) a member of any other size is rejected, so no member can write more than
+    its pinned size. Links, absolute paths and '..' reject the whole archive; other members are skipped."""
     seen = set()
     dest = os.path.realpath(dest)
     try:
@@ -491,14 +523,21 @@ def extract_pinned(tar_path, dest, file_pins):
             want = file_pins.get(rel)
             if want is None:
                 continue
+            if sizes is not None and m.size != sizes.get(rel):
+                raise EngineError("%s has an unexpected size; the archive was rejected." % rel)
             target = os.path.realpath(os.path.join(dest, rel))
             if not target.startswith(dest + os.sep):
                 raise EngineError("The archive has an unsafe path (%s) and was rejected." % name)
             os.makedirs(os.path.dirname(target), exist_ok=True)
             h = hashlib.sha256()
             src = tar.extractfile(m)
+            left = m.size if sizes is None else sizes[rel]
             with open(target, "wb") as out:
-                for block in iter(lambda: src.read(1 << 20), b""):
+                while left > 0:
+                    block = src.read(min(1 << 20, left))
+                    if not block:
+                        break
+                    left -= len(block)
                     h.update(block)
                     out.write(block)
             if h.hexdigest() != want:
@@ -510,7 +549,10 @@ def extract_pinned(tar_path, dest, file_pins):
 
 
 def extract_applio(tar_path, dest, file_pins=None):
-    extract_pinned(tar_path, dest, pins.APPLIO_FILES if file_pins is None else file_pins)
+    if file_pins is None:
+        extract_pinned(tar_path, dest, pins.APPLIO_FILES, pins.APPLIO_SIZES)
+    else:
+        extract_pinned(tar_path, dest, file_pins)
 
 
 def _swap_dir(new, final):
@@ -585,8 +627,44 @@ def _check_disk(root, comps):
         raise EngineError("Not enough free disk space: %.1f GB needed, %.1f GB free." % (need / 1e9, free / 1e9))
 
 
-def _uv_env(env):
-    return dict(os.environ, **(env or {}))
+_SAFE_PATH = "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin"
+_SECRET_WORDS = ("TOKEN", "KEY", "SECRET", "PASSWORD", "CREDENTIAL", "AUTH")
+
+
+_PASS_THROUGH = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy",
+                 "no_proxy", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "UV_HTTP_TIMEOUT")
+
+
+def _blocked_env(name):
+    up = name.upper()
+    return up.startswith(("UV_INDEX", "UV_EXTRA_INDEX", "UV_DEFAULT_INDEX", "PIP_", "HF_TOKEN", "HUGGING")) or any(
+        w in up for w in _SECRET_WORDS)
+
+
+def _safe_env(root, extra=None):
+    """The environment of every child process (uv, pip builds, Seed-VC): built from a short allowlist, never copied from
+    ours, so index overrides (UV_INDEX*, PIP_*), tokens and API keys in the app's environment cannot reach it. The
+    caller's explicit keys are added, minus index overrides and anything that looks like a secret."""
+    env = {"PATH": _SAFE_PATH, "HOME": os.environ.get("HOME", os.path.expanduser("~")),
+           "LANG": os.environ.get("LANG", "en_US.UTF-8"), "PYTHONNOUSERSITE": "1", "PYTHONDONTWRITEBYTECODE": "1",
+           "UV_CACHE_DIR": os.path.join(root, ".uv-cache")}
+    if os.environ.get("TMPDIR"):
+        env["TMPDIR"] = os.environ["TMPDIR"]
+    for k in _PASS_THROUGH:   # network settings the install needs behind a proxy or a corporate CA
+        if os.environ.get(k) and not _blocked_env(k):
+            env[k] = os.environ[k]
+    for k, v in (extra or {}).items():
+        if not _blocked_env(str(k)):
+            env[str(k)] = str(v)
+    return env
+
+
+def _pip(uv, py, *args, no_binary=()):
+    """uv pip install, wheels only except the documented packages in no_binary."""
+    cmd = [uv, "pip", "install", "--python", py, "--only-binary", ":all:"]
+    for pkg in no_binary:
+        cmd += ["--no-binary", pkg]
+    return cmd + list(args)
 
 
 def _write_temp(root, name, text):
@@ -609,16 +687,16 @@ def _install_env(root, comp, uv, uvenv, emit_fn, prog, python):
     if cid == "applio-env":
         # the strict set is Applio's exact freeze: it is both the requirements and the constraints
         cons = _write_temp(base, "constraints.txt", pins.APPLIO_STRICT_CONSTRAINTS)
-        _run_uv([uv, "pip", "install", "--python", py, "-r", cons, "-c", cons], uvenv, emit_fn, prog, cid, 0.03, 1.0,
+        _run_uv(_pip(uv, py, "-r", cons, "-c", cons, no_binary=NO_WHEEL_STAGE1), uvenv, emit_fn, prog, cid, 0.03, 1.0,
                 "Applio environment (~1.3 GB)…")
         return {"python": py, "version": _wanted_version(comp)}
     req = _write_temp(base, "requirements.txt", pins.PRO_REQUIREMENTS)
     cons = _write_temp(base, "constraints.txt", pins.PRO_CONSTRAINTS)
-    _run_uv([uv, "pip", "install", "--python", py, "-r", req, "-c", cons], uvenv, emit_fn, prog, cid, 0.03, 0.85,
+    _run_uv(_pip(uv, py, "-r", req, "-c", cons, no_binary=NO_WHEEL_STAGE1), uvenv, emit_fn, prog, cid, 0.03, 0.85,
             "PyTorch and audio libraries (~1.3 GB)…")
-    _run_uv([uv, "pip", "install", "--python", py, "--no-deps", "-c", cons] + list(pins.PRO_STAGE2), uvenv, emit_fn, prog,
-            cid, 0.85, 0.92, "Audio tools…")
-    _run_uv([uv, "pip", "install", "--python", py, "-c", cons] + list(pins.PRO_STAGE3), uvenv, emit_fn, prog, cid, 0.92,
+    _run_uv(_pip(uv, py, "--no-deps", "-c", cons, *pins.PRO_STAGE2), uvenv, emit_fn, prog, cid, 0.85, 0.92,
+            "Audio tools…")
+    _run_uv(_pip(uv, py, "-c", cons, *pins.PRO_STAGE3, no_binary=NO_WHEEL_STAGE3), uvenv, emit_fn, prog, cid, 0.92,
             1.0, "Helper libraries…")
     return {"python": py, "version": _wanted_version(comp), "torch": "2.8.0"}
 
@@ -679,8 +757,33 @@ def _install_applio(root, comp, emit_fn, prog, opener):
     return {"version": pins.APPLIO_COMMIT, "files": files}
 
 
+def _install_seedvc_models(root, comp, emit_fn, prog, opener, lo, hi):
+    """Downloads the pinned Seed-VC models (resumable, sha256-checked) into Hugging Face cache layouts."""
+    items = seedvc_model_files(root)
+    total = sum(e["size"] for _, _, e, _, _ in items) or 1
+    before = 0
+    models = {}
+    for blob, link, e, repo_dir, rev in items:
+        base = before
+
+        def sub(event, value=0.0, _b=base, _e=e, **_):
+            prog.stage_at(comp["id"], lo + (hi - lo) * (_b + value * _e["size"]) / total)
+        emit_fn("status", msg="Downloading %s…" % e["path"])
+        download(e["url"], blob, e["sha256"], e["size"], sub, opener)
+        os.makedirs(os.path.dirname(link), exist_ok=True)
+        _remove(link)
+        os.symlink(os.path.relpath(blob, os.path.dirname(link)), link)
+        os.makedirs(os.path.join(repo_dir, "refs"), exist_ok=True)
+        with open(os.path.join(repo_dir, "refs", "main"), "w") as f:
+            f.write(rev)
+        models[os.path.relpath(blob, seedvc_dir(root))] = e["size"]
+        before += e["size"]
+    return models
+
+
 def _warm_seedvc(root, py, src, uvenv, emit_fn):
-    """Converts a second of noise once so Seed-VC fetches its models (~1.6 GB) into the engine's HF cache."""
+    """Converts a second of noise once to check that Seed-VC runs on its pinned models. HF_HUB_OFFLINE=1: nothing may be
+    fetched here, so an unpinned model fails the install instead of being downloaded."""
     import struct
     import wave
     import random
@@ -697,14 +800,18 @@ def _warm_seedvc(root, py, src, uvenv, emit_fn):
     cmd = [py, "inference.py", "--source", wav, "--target", wav, "--output", tmp, "--diffusion-steps", "4",
            "--length-adjust", "1.0", "--inference-cfg-rate", "0.7", "--fp16", "False"]
     env = dict(uvenv, **seedvc_env(root))
-    emit_fn("status", msg="Downloading Seed-VC models (~1.6 GB)…")
-    run = subprocess.run(cmd, cwd=src, capture_output=True, text=True, env=env)
+    emit_fn("status", msg="Checking Seed-VC…")
+    try:
+        run = subprocess.run(cmd, cwd=src, capture_output=True, text=True, env=env, timeout=WARMUP_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise EngineError("Seed-VC did not finish its first run in time — close other apps and press Install again.")
     ok = run.returncode == 0 and any(n.endswith(".wav") and n != "noise.wav" for n in os.listdir(tmp))
     if not ok:
         print(run.stdout[-2000:], run.stderr[-6000:], file=sys.stderr, flush=True)
     shutil.rmtree(tmp, ignore_errors=True)
     if not ok:
-        raise EngineError("Seed-VC could not fetch its models — check the network and press Install again.")
+        raise EngineError("Seed-VC could not start with its installed models — see the log, then press Install again.")
 
 
 def _install_seedvc(root, comp, uvenv, emit_fn, prog, opener):
@@ -715,27 +822,38 @@ def _install_seedvc(root, comp, uvenv, emit_fn, prog, opener):
     tar_path = os.path.join(tmp, "seedvc.tar.gz")
     emit_fn("status", msg="Downloading Seed-VC…")
     download(pins.SEEDVC_URL, tar_path, None, None, None, opener, max_bytes=300 << 20)
-    prog.stage_at(comp["id"], 0.05)
+    prog.stage_at(comp["id"], 0.02)
     shutil.rmtree(new, ignore_errors=True)
     os.makedirs(new)
     try:
-        extract_pinned(tar_path, new, pins.SEEDVC_FILES)
+        extract_pinned(tar_path, new, pins.SEEDVC_FILES, pins.SEEDVC_SIZES)
         _swap_dir(new, os.path.join(base, "seed-vc"))
     except BaseException:
         shutil.rmtree(new, ignore_errors=True)
         raise
     shutil.rmtree(tmp, ignore_errors=True)
     src = os.path.join(base, "seed-vc")
+    models = _install_seedvc_models(root, comp, emit_fn, prog, opener, 0.03, 0.95)
+    os.makedirs(os.path.join(base, "hf", "checkpoints"), exist_ok=True)
+    link = os.path.join(src, "checkpoints")   # load_custom_model_from_hf caches in ./checkpoints
+    shutil.rmtree(link, ignore_errors=True)
+    _remove(link)
+    os.symlink(os.path.join("..", "hf", "checkpoints"), link)
     _warm_seedvc(root, python_path(root, "pro-env"), src, uvenv, emit_fn)
-    return {"version": pins.SEEDVC_COMMIT, "files": _sizes(src, pins.SEEDVC_FILES), "warmed": True,
-            "hf_home": seedvc_env(root)["HF_HOME"]}
+    return {"version": pins.SEEDVC_COMMIT, "files": _sizes(src, [r for r in pins.SEEDVC_FILES]), "models": models,
+            "warmed": True, "hf_home": seedvc_env(root)["HF_HOME"]}
+
+
+def _pip_ytdlp(root, uv, uvenv, emit_fn, prog, cid):
+    """Installs/updates yt-dlp in pro-env; the constraints keep every other package at its pinned version."""
+    cons = _write_temp(env_dir(root, "pro-env"), "constraints.txt", pins.PRO_CONSTRAINTS)
+    _run_uv(_pip(uv, python_path(root, "pro-env"), "-U", "-c", cons, "yt-dlp"), uvenv, emit_fn, prog, cid, 0.0, 1.0,
+            "yt-dlp…")
+    return {"version": ytdlp_version(root)}
 
 
 def _install_ytdlp(root, comp, uv, uvenv, emit_fn, prog):
-    py = python_path(root, "pro-env")
-    _run_uv([uv, "pip", "install", "--python", py, "-U", "yt-dlp"], uvenv, emit_fn, prog, comp["id"], 0.0, 1.0,
-            "yt-dlp…")
-    return {"version": None}
+    return _pip_ytdlp(root, uv, uvenv, emit_fn, prog, comp["id"])
 
 
 def _install_edge(root, comp, uv, uvenv, emit_fn, prog, python):
@@ -746,7 +864,8 @@ def _install_edge(root, comp, uv, uvenv, emit_fn, prog, python):
         shutil.rmtree(os.path.join(base, ".venv"), ignore_errors=True)
         _run_uv([uv, "venv", "--relocatable", "--python", python, os.path.join(base, ".venv")], uvenv, emit_fn, prog,
                 comp["id"], 0.0, 0.3, "Edge environment…")
-    _run_uv([uv, "pip", "install", "--python", py, EDGE_TTS], uvenv, emit_fn, prog, comp["id"], 0.3, 1.0,
+    cons = _write_temp(base, "constraints.txt", pins.EDGE_CONSTRAINTS)
+    _run_uv(_pip(uv, py, "-c", cons, EDGE_TTS), uvenv, emit_fn, prog, comp["id"], 0.3, 1.0,
             "Edge text-to-speech…")
     return {"python": py, "version": EDGE_TTS}
 
@@ -760,7 +879,7 @@ def install(root, components_, uv, env, emit_fn, opener=None, python=PYTHON_VERS
     todo = [c for c in wanted if component_state(root, c, layout) != "ready"]
     os.makedirs(root, exist_ok=True)
     _check_disk(root, todo)
-    uvenv = _uv_env(env)
+    uvenv = _safe_env(root, env)
     prog = _Progress(emit_fn, todo)
     done = []
     emit_fn("progress", value=0.0)
@@ -788,14 +907,17 @@ def install(root, components_, uv, env, emit_fn, opener=None, python=PYTHON_VERS
 
 
 def update_ytdlp(root, uv, env, emit_fn):
+    """Updates yt-dlp. ready.json is cleared first and written back only when the update succeeded."""
+    cns_net.require_online("youtube")
     if not is_ready(root, "pro-env"):
         raise EngineError("Install the pro engines first.")
     comp = _by_id(read_layout(root))["ytdlp"]
     prog = _Progress(emit_fn, [comp])
-    _run_uv([uv, "pip", "install", "--python", python_path(root, "pro-env"), "-U", "yt-dlp"], _uv_env(env), emit_fn,
-            prog, "ytdlp", 0.0, 1.0, "yt-dlp…")
-    _write_ready(root, comp, {"version": None})
-    return ytdlp_version(root)
+    _clear_ready(root, comp)
+    _mark_installing(root, comp)
+    data = _pip_ytdlp(root, uv, _safe_env(root, env), emit_fn, prog, comp["id"])
+    _write_ready(root, comp, data)
+    return data["version"]
 
 
 # --------------------------------------------------------------------------------------------------------- uninstall
@@ -854,6 +976,8 @@ def uninstall(root, components_):
             freed += _delete(applio_dir(root)) + _delete(applio_dir(root) + ".new")
         else:
             freed += _delete(state_dir(root, comp))
+            if cid == "pro-env":
+                freed += _delete(os.path.join(root, ".uv-cache"))
     return freed
 
 
@@ -930,7 +1054,10 @@ def _sb_quote(path):
 
 
 def sandbox_profile(deny_network, write_roots):
-    """A sandbox-exec profile: everything allowed, network optionally denied, writes only below write_roots."""
+    """A sandbox-exec profile whose goal is: no network and no writes outside write_roots. Reads and exec stay open on
+    purpose (Python, torch and the models are read from all over the disk), so it is not a confidentiality boundary.
+    Callers must put TMPDIR (and any cache the child writes, e.g. the MPS/torch caches) into write_roots, or the child
+    fails on its first temp file. /dev/null is always writable."""
     lines = ["(version 1)", "(allow default)"]
     if deny_network:
         lines.append("(deny network*)")

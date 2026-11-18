@@ -51,6 +51,19 @@ for _sr in ("32", "40", "48"):
         ("pretraineds/hifi-gan/f0D%sk.pth" % _sr, "Resources/pretrained_v2/f0D%sk.pth" % _sr),
     ]
 
+# What Seed-VC's inference.py fetches on its first conversion (DiT without f0, the default path): repo, exact revision,
+# where it caches ("checkpoints": load_custom_model_from_hf uses ./checkpoints; "hub": from_pretrained uses HF_HUB_CACHE).
+SEEDVC_MODEL_SPECS = [
+    ("Plachta/Seed-VC", "257283f9f41585055e8f858fba4fd044e5caed6e", "checkpoints",
+     ["DiT_seed_v2_uvit_whisper_small_wavenet_bigvgan_pruned.pth", "config_dit_mel_seed_uvit_whisper_small_wavenet.yml"]),
+    ("funasr/campplus", "e4b6ede7ce16997aff4ae69fbca1f0175e2afede", "checkpoints", ["campplus_cn_common.bin"]),
+    ("nvidia/bigvgan_v2_22khz_80band_256x", "633ff708ed5b74903e86ff1298cf4a98e921c513", "hub",
+     ["config.json", "bigvgan_generator.pt"]),
+    ("openai/whisper-small", "973afd24965f72e36ca33b3055d56a652f456b4d", "hub",
+     ["config.json", "model.safetensors", "preprocessor_config.json"]),
+]
+EDGE_REQUIREMENT = "edge-tts==7.3.1"
+
 # Task 7.5 adds the stem models here: id -> [(file name, url, sha256 or None to read it from the URL's LFS headers)].
 STEM_SPECS = {}
 
@@ -76,8 +89,8 @@ def fetch(url, dest):
 
 
 def tar_files(tar_path):
-    """{path relative to the tarball's top folder: sha256} for regular files; symlinks/hardlinks stop the run."""
-    out = {}
+    """({path below the tarball's top folder: sha256}, {path: size}) of regular files; links stop the run."""
+    out, sizes = {}, {}
     with tarfile.open(tar_path) as tar:
         for m in tar:
             if m.issym() or m.islnk():
@@ -90,7 +103,8 @@ def tar_files(tar_path):
             for block in iter(lambda: f.read(1 << 20), b""):
                 h.update(block)
             out[rel] = h.hexdigest()
-    return out
+            sizes[rel] = m.size
+    return out, sizes
 
 
 def select_applio(all_files):
@@ -118,8 +132,9 @@ def select_seedvc(all_files):
     return dict(sorted((k, v) for k, v in all_files.items() if not k.startswith(SEEDVC_SKIP_PREFIXES)))
 
 
-def hf_head(url):
+def hf_head(url, rev=None):
     """(sha256, size) of a Hugging Face file: the LFS oid is the x-linked-etag of the redirect."""
+    rev = rev or HF_REV
     class NoRedirect(urllib.request.HTTPRedirectHandler):
         def redirect_request(self, *a, **k):
             return None
@@ -131,8 +146,8 @@ def hf_head(url):
     except urllib.error.HTTPError as e:
         headers = e.headers
     commit = headers.get("x-repo-commit")
-    if commit != HF_REV:
-        raise SystemExit("%s: repo commit %s, expected %s" % (url, commit, HF_REV))
+    if commit != rev:
+        raise SystemExit("%s: repo commit %s, expected %s" % (url, commit, rev))
     etag = (headers.get("x-linked-etag") or "").strip('"')
     size = headers.get("x-linked-size")
     if re.fullmatch(r"[0-9a-f]{64}", etag) and size:
@@ -140,9 +155,11 @@ def hf_head(url):
     return None, None   # a small non-LFS file: hash it by downloading
 
 
-def weight_entry(dest, url, tmpdir):
-    digest, size = hf_head(url)
+def weight_entry(dest, url, tmpdir, rev=None):
+    digest, size = hf_head(url, rev)
     if digest is None:
+        # A small non-LFS file (config.json, a yml): HF publishes only its git sha1, so the sha256 is trust-on-first-pin:
+        # computed from this download of the exact revision, then enforced on every install.
         part = os.path.join(tmpdir, "small.bin")
         fetch(url, part)
         digest, size = sha256_file(part), os.path.getsize(part)
@@ -161,12 +178,36 @@ def parse_requirements_header(text):
             stage3 = m.group(1).split()
     if not stage2 or not stage3:
         raise SystemExit("could not read stages 2 and 3 from the requirements header")
-    body = "\n".join(l for l in text.splitlines() if l.strip() and not l.lstrip().startswith("#")) + "\n"
+    body = "\n".join(l for l in text.splitlines() if l.strip() and not l.lstrip().startswith("#")
+                     and not l.startswith("edge-tts")) + "\n"   # edge-tts lives in its own environment
     return body, stage2, stage3
 
 
 def freeze_text(path):
     return "\n".join(l.strip() for l in open(path).read().splitlines() if l.strip() and not l.startswith("#")) + "\n"
+
+
+def seedvc_models(tmpdir):
+    out = []
+    for repo, rev, cache, files in SEEDVC_MODEL_SPECS:
+        entries = []
+        for name in files:
+            url = "https://huggingface.co/%s/resolve/%s/%s" % (repo, rev, name)
+            e = weight_entry(name, url, tmpdir, rev)
+            entries.append(e)
+        out.append({"repo": repo, "rev": rev, "cache": cache, "files": entries})
+        print("%s: %d MB" % (repo, sum(e["size"] for e in entries) // 1000000))
+    return out
+
+
+def edge_constraints():
+    """Exact versions of edge-tts and everything it pulls in, as uv resolves them now (wheels only)."""
+    import subprocess
+    run = subprocess.run(["uv", "pip", "compile", "-", "--python-version", "3.11", "--no-header", "--no-annotate",
+                          "--only-binary", ":all:", "-q"], input=EDGE_REQUIREMENT + "\n", capture_output=True, text=True)
+    if run.returncode:
+        raise SystemExit("uv pip compile failed: " + run.stderr[-500:])
+    return "\n".join(l.strip() for l in run.stdout.splitlines() if l.strip() and not l.startswith("#")) + "\n"
 
 
 def build(args, tmpdir):
@@ -177,10 +218,12 @@ def build(args, tmpdir):
     if not args.seedvc_tar:
         fetch("https://github.com/Plachtaa/seed-vc/archive/%s.tar.gz" % SEEDVC_COMMIT, seed_tar)
 
-    applio = select_applio(tar_files(applio_tar))
+    applio_all, applio_sizes = tar_files(applio_tar)
+    applio = select_applio(applio_all)
     n = check_against_revision(applio, args.revision_json)
     print("Applio: %d files selected, %d matched revision.json" % (len(applio), n))
-    seedvc = select_seedvc(tar_files(seed_tar))
+    seed_all, seed_sizes = tar_files(seed_tar)
+    seedvc = select_seedvc(seed_all)
     print("Seed-VC: %d files" % len(seedvc))
 
     weights = {}
@@ -200,7 +243,12 @@ def build(args, tmpdir):
         "SEEDVC_URL": "https://github.com/Plachtaa/seed-vc/archive/%s.tar.gz" % SEEDVC_COMMIT,
         "HF_REV": HF_REV,
         "APPLIO_FILES": applio,
+        "APPLIO_SIZES": {k: applio_sizes[k] for k in applio},
         "SEEDVC_FILES": seedvc,
+        "SEEDVC_SIZES": {k: seed_sizes[k] for k in seedvc},
+        "SEEDVC_MODELS": seedvc_models(tmpdir),
+        "EDGE_REQUIREMENT": EDGE_REQUIREMENT,
+        "EDGE_CONSTRAINTS": edge_constraints(),
         "WEIGHTS": weights,
         "STEMS": stems,
         "PRO_REQUIREMENTS": req_body,

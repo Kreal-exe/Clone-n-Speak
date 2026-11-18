@@ -29,9 +29,9 @@ EXPECTED = {
     "worker.py": (4, "ECAPA fetch (cached only offline), Seed-VC download (explicit_download)"),
     "cns_separate.py": (8, "music-removal model download, started by the user (pinned HTTPS URL + sha256, https-only redirects)"),
     "cns_dfn.py": (4, "DeepFilterNet binary download, started by the user (pinned URL + sha256)"),
-    "cns_engines.py": (23, "pro-engine installs, started by the user: pinned HTTPS URLs (GitHub, Hugging Face) + sha256, "
+    "cns_engines.py": (22, "pro-engine installs, started by the user: pinned HTTPS URLs (GitHub, Hugging Face) + sha256, "
                            "https-only redirects, uv/PyPI through the installer; also names edge-tts and yt-dlp as packages"),
-    "cns_pins.py": (6, "generated pins: the requirement lines that name requests / edge-tts packages (no network code)"),
+    "cns_pins.py": (7, "generated pins: the requirement lines that name requests / edge-tts packages (no network code)"),
     "cns_api.py": (4, "local API / Bridge listeners on 127.0.0.1, server side only (no outgoing calls)"),
 }
 
