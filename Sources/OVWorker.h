@@ -29,6 +29,9 @@ typedef void (^OVWorkerResult)(NSDictionary *_Nullable data, NSString *_Nullable
 /// Memory the next model may use: what is free plus what the engine would release by swapping models.
 @property (readonly) unsigned long long memoryBudget;
 - (void)resetPeak;
+/// Set by the pro-engine kit: returns a message when this request must not start now (a pro job holds the memory), nil
+/// to let it through. Checked by request: for the commands that load models.
+@property (class, copy, nullable) NSString *_Nullable (^requestGuard)(NSDictionary *request);
 
 - (void)request:(NSDictionary *)req
          status:(nullable OVWorkerStatus)status

@@ -246,8 +246,14 @@ NSNotificationName const OVWorkerEventNotification = @"OVWorkerEvent";
     }
 }
 
+static NSString *_Nullable (^gRequestGuard)(NSDictionary *);
++ (NSString *_Nullable (^)(NSDictionary *))requestGuard { return gRequestGuard; }
++ (void)setRequestGuard:(NSString *_Nullable (^)(NSDictionary *))guard { gRequestGuard = [guard copy]; }
+
 - (void)request:(NSDictionary *)req status:(OVWorkerStatus)status progress:(OVWorkerProgress)progress done:(OVWorkerResult)done {
     _lastErrorCode = nil;   // also for the busy reject below: its callback must not see the code of an earlier error
+    NSString *blocked = gRequestGuard ? gRequestGuard(req) : nil;   // a pro job runs: model loading waits for it
+    if (blocked) { _lastErrorCode = @"pro_job_running"; done(nil, blocked); return; }
     if (self.busy) { done(nil, L(@"Another operation is already in progress")); return; }
     if (!self.running) {
         NSString *err = nil;

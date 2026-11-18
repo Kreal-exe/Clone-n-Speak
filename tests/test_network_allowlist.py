@@ -38,6 +38,10 @@ EXPECTED = {
     "cns_edge.py": (12, "Edge TTS: sends the typed text to Microsoft's online voices (edge-tts, own process), "
                         "after cns_net.require_online(\"edge_tts\")"),
     "cns_pins.py": (7, "generated pins: the requirement lines that name requests / edge-tts packages (no network code)"),
+    "OVEngines.h": (2, "pro-engine manager API: names yt-dlp, and the local Unix-socket connect helper of the realtime engine"),
+    "OVEngines.m": (3, "pro-engine manager: runs cns_engines.py and the pro job processes (the network kinds ask OVNetwork first); "
+                       "the AF_UNIX connect to the realtime process; kind names edge_tts / yt_import"),
+    "OVProKit.m": (2, "pro-run preflight asks OVNetwork before Edge / YouTube jobs; the yt-dlp update title"),
     "OVPrivacyCatalog.m": (3, "descriptions only: feature ids and the word \"requests\" in the Bridge text"),
     "cns_api.py": (4, "local API / Bridge listeners on 127.0.0.1, server side only (no outgoing calls)"),
 }

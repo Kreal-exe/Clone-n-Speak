@@ -13,6 +13,7 @@
 #import "OVPageRegistry.h"
 #import "OVDesign.h"
 #import "OVJobs.h"
+#import "OVProKit.h"
 
 @interface OVSeparatorPage (LaunchSweep)
 /// Removes decoded inputs older than a day that no running or retryable task needs (implemented in OVSeparatorPage.m).
@@ -493,6 +494,7 @@ static void OVRedrawTree(NSView *v) {
     [[OVVoices shared] reload];
     [[OVHistory shared] reload];
     [OVJobs registerBuiltinKinds];
+    [OVProKit registerKinds];
     [OVSeparatorPage sweepInputFolder];
     OVBatchRegister();
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(jobsChanged:) name:OVJobsDidChangeNotification object:nil];
