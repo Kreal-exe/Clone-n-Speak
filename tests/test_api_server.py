@@ -1004,15 +1004,23 @@ class TunnelOwnership(unittest.TestCase):
         up, out = os.path.join(self.tmp, "up"), os.path.join(self.tmp, "out")
         os.makedirs(up, exist_ok=True)
         os.makedirs(out, exist_ok=True)
-        for m in ({"op": "config", "key_sha256": KEY_SHA, "uploads_dir": up, "outputs_dir": out, "port": 0},
-                  {"op": "bridge", "host": "bridge-starting.invalid"}):
-            w.write(json.dumps(m) + "\n")
-            w.flush()
-            time.sleep(0.6)
+        def wait_for(marker, count=1, seconds=60):   # slow CI runners: wait for the server's own events, not fixed sleeps
+            end = time.time() + seconds
+            while time.time() < end:
+                if os.path.exists(outfile) and pathlib.Path(outfile).read_text().count(marker) >= count:
+                    return True
+                time.sleep(0.1)
+            return False
+        w.write(json.dumps({"op": "config", "key_sha256": KEY_SHA, "uploads_dir": up, "outputs_dir": out, "port": 0}) + "\n")
+        w.flush()
+        self.assertTrue(wait_for('"listening"'), "the API server did not start")
+        w.write(json.dumps({"op": "bridge", "host": "bridge-starting.invalid"}) + "\n")
+        w.flush()
+        self.assertTrue(wait_for('"listening"', 2), "the Bridge listener did not start")
         w.write(json.dumps(self.tunnel_msg()) + "\n")
         w.flush()
         pid = None
-        end = time.time() + 8
+        end = time.time() + 60
         while time.time() < end and pid is None:
             for line in pathlib.Path(outfile).read_text().splitlines():
                 if '"tunnel_started"' in line:
