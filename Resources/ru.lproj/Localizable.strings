@@ -419,8 +419,10 @@
 "Current sample" = "Текущий сэмпл";
 "Custom" = "Своё";
 "Cut" = "Вырезать";
+"Cut %.1f s of silence (start %.1f s, end %.1f s, %d pauses shortened)." = "Вырезано %.1f с тишины (в начале %.1f с, в конце %.1f с, укорочено пауз: %d).";
 "Cut anything you don’t want from the start and the end of the sample: a breath, a word, a click. The original is kept." = "Вырежьте всё лишнее в начале и в конце образца: вдох, слово, щелчок. Оригинал сохраняется.";
 "Cut it first: this file is longer than the allowed length." = "Сначала обрежьте: файл длиннее допустимого.";
+"Cut silence" = "Вырезать тишину";
 "Damping" = "Поглощение";
 "Dark" = "Тёмная";
 "Dark Theme" = "Тёмная тема";
@@ -998,6 +1000,7 @@
 "No round beat the original sample, so the voice keeps it. Listen to the rounds — you can still pick one by ear." = "Ни один раунд не обошёл исходный образец, голос остаётся с ним. Послушайте раунды — любой можно выбрать на слух.";
 "No RVC models yet" = "Моделей RVC пока нет";
 "No sample yet." = "Образец ещё не выбран.";
+"No silence to cut." = "Вырезать нечего — тишины нет.";
 "No sound from the microphone for 2 s. Check the microphone and press Start again." = "От микрофона нет звука уже 2 с. Проверьте микрофон и нажмите «Старт» ещё раз.";
 "No sound was found in this file." = "В этом файле не найден звук.";
 "No step number" = "Без номера шага";
@@ -1365,7 +1368,9 @@
 "Show all" = "Показать все";
 "Show in Finder" = "Показать в Finder";
 "Sigh" = "Вздох";
+"Silence and pauses: up to %.1f s can be cut. Every word stays." = "Тишина и паузы: можно вырезать до %.1f с. Все слова останутся.";
 "Silence at start/end: %.1f s / %.1f s" = "Тишина в начале/в конце: %.1f с / %.1f с";
+"Silence at the edges — trim it." = "Тишина по краям — обрежьте её.";
 "Silence at the end — trim it." = "Тишина в конце — обрежьте её.";
 "Silence at the start — trim it." = "Тишина в начале — обрежьте её.";
 "Silence threshold" = "Порог тишины";

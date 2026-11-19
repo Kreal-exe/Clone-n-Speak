@@ -92,6 +92,19 @@ class Audio(unittest.TestCase):
         endless = worker.trim_sample(voice(40.0))
         self.assertAlmostEqual(len(endless) / SR, 10.0, delta=0.3)  # no pause: the target length
 
+    def test_cleanup_reports_what_it_cut(self):
+        import tempfile, os
+        gap = np.zeros(int(SR * 0.8), dtype=np.float32)
+        wav = np.concatenate([gap, voice(2.0), gap, voice(2.0), gap]).astype(np.float32)
+        with tempfile.TemporaryDirectory() as d:
+            src, out = os.path.join(d, "a.wav"), os.path.join(d, "b.wav")
+            worker.write_wav(src, wav)
+            r = worker.cmd_enhance({"audio": src, "out": out, "denoise": False})
+            cut = r["cut"]
+            self.assertGreater(cut["removed_s"], 1.4)            # 2.4 s of silence, 0.25 s kept inside
+            self.assertEqual(cut["pauses_shortened"], 1)
+            self.assertAlmostEqual(len(worker.load_mono(out)) / SR, len(wav) / SR - cut["removed_s"], delta=0.05)
+
     def test_best_stretch_is_found_anywhere_in_the_recording(self):
         rng = np.random.default_rng(1)
         pause = np.zeros(int(SR * 0.5), dtype=np.float32)

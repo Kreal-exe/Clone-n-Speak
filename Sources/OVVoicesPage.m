@@ -860,8 +860,19 @@ static const NSTimeInterval kMaxRecord = 15;
         });
     }
     [self clearAdvice];
+    // silence at the edges, long pauses and pauses in general are one fix (Light cleanup): one line, with how much it cuts
+    NSSet *silence = [NSSet setWithArray:@[@"trim_start", @"trim_end", @"long_pause", @"pauses"]];
+    BOOL silenceShown = NO;
     for (NSString *code in advice) {
         NSDictionary *info = OVAdviceInfo(code);
+        if ([silence containsObject:code]) {
+            if (silenceShown) continue;
+            silenceShown = YES;
+            double cut = [r[@"removable_silence_s"] doubleValue];
+            info = @{@"text": cut >= 0.1 ? [NSString stringWithFormat:L(@"Silence and pauses: up to %.1f s can be cut. Every word stays."), cut]
+                                         : L(@"Silence at the edges — trim it."),
+                     @"button": L(@"Cut silence"), @"action": @"light"};
+        }
         if (!info) continue;
         NSView *row = [self adviceRow:info];
         [self.adviceStack addArrangedSubview:row];
@@ -1228,7 +1239,14 @@ static NSString *TenthsTime(NSTimeInterval t) {
             return;
         }
         if ([w keepSample:tmp]) {
-            w.status.stringValue = w.voice.ready ? L(@"Sample improved. Re-clone the voice to use it.") : L(@"Sample improved.");
+            NSDictionary *cut = [data[@"cut"] isKindOfClass:NSDictionary.class] ? data[@"cut"] : nil;
+            double removed = [cut[@"removed_s"] doubleValue];
+            NSString *what = removed >= 0.05
+                ? [NSString stringWithFormat:L(@"Cut %.1f s of silence (start %.1f s, end %.1f s, %d pauses shortened)."), removed,
+                   [cut[@"lead_removed_s"] doubleValue], [cut[@"tail_removed_s"] doubleValue], [cut[@"pauses_shortened"] intValue]]
+                : (cut ? L(@"No silence to cut.") : @"");
+            NSString *done = w.voice.ready ? L(@"Sample improved. Re-clone the voice to use it.") : L(@"Sample improved.");
+            w.status.stringValue = what.length ? [NSString stringWithFormat:@"%@ %@", done, what] : done;
         }
         [NSFileManager.defaultManager removeItemAtPath:tmp error:nil];
         [w refreshButtons];

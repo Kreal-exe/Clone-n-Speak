@@ -45,6 +45,15 @@ class CheckTests(unittest.TestCase):
     def check(self, wav, sr=24000, name="a.wav"):
         return cns_check.cmd_sample_check({"audio": self.path(name, wav, sr)})
 
+    def test_pauses_that_cleanup_would_cut_are_advised(self):
+        gap = np.zeros(int(SR * 0.8), dtype=np.float32)
+        r = self.check(np.concatenate([gap, voice(2.0), gap, voice(2.0), gap, voice(2.0), gap]), name="p.wav")
+        self.assertIn("pauses", r["advice"])
+        self.assertGreater(r["removable_silence_s"], 1.5)   # 4 × 0.8 s of silence, 0.25 s kept per pause
+        tight = self.check(voice(5), name="t.wav")
+        self.assertNotIn("pauses", tight["advice"])
+        self.assertLess(tight["removable_silence_s"], 0.4)
+
     def test_same_keys_as_old_analyze(self):
         p = self.path("v.wav", voice(5))
         got = cns_check.cmd_sample_check({"audio": p})

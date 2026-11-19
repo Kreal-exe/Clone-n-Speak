@@ -1992,12 +1992,22 @@ def cmd_enhance(req):
     if voiced.any():
         first = max(0, int(np.argmax(voiced)) - 3)
         last = min(len(voiced), len(voiced) - int(np.argmax(voiced[::-1])) + 3)
-        keep, gap = [], 0
-        for i in range(first, last):  # shorten pauses but keep every word, so the transcript stays valid
+        keep, gap, shortened, run = [], 0, 0, 0
+        for i in range(first, last):  # shorten pauses to 0.25 s but keep every word, so the transcript stays valid
             gap = 0 if voiced[i] else gap + 1
-            if gap * 0.03 <= 0.35:
+            if gap * 0.03 <= 0.25:
                 keep.append(wav[i * n:(i + 1) * n])
+            if not voiced[i]:
+                run += 1
+            else:
+                shortened += run * 0.03 > 0.25
+                run = 0
+        before = len(wav) / SR
         wav = np.concatenate(keep) if keep else wav
+        trimmed = {"removed_s": round(before - len(wav) / SR, 2), "lead_removed_s": round(first * 0.03, 2),
+                   "tail_removed_s": round(max(0.0, before - last * 0.03), 2), "pauses_shortened": int(shortened)}
+    else:
+        trimmed = {"removed_s": 0.0, "lead_removed_s": 0.0, "tail_removed_s": 0.0, "pauses_shortened": 0}
     wav = wav * (0.1 / np.sqrt((wav ** 2).mean() + 1e-12))  # ≈ −20 dBFS, the level OmniVoice expects
     peak = np.abs(wav).max()
     if peak > 0.89:
@@ -2009,6 +2019,7 @@ def cmd_enhance(req):
     write_wav(req["out"], wav)
     report = cmd_analyze({"audio": req["out"]})
     report["path"] = req["out"]
+    report["cut"] = trimmed   # what the cleanup cut, so the app can say it
     return report
 
 

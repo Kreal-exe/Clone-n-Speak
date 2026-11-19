@@ -13,6 +13,8 @@ MAX_FILES = 12
 PAUSE_REGION_S = 0.7    # a voiceless stretch this long between voiced parts is a pause region
 LONG_PAUSE_S = 1.5      # ... and this long is worth advice
 EDGE_ADVICE_S = 0.35    # silence at an edge this long: advise trimming
+KEEP_PAUSE_S = 0.25     # cleanup shortens every pause to this (cmd_enhance)
+PAUSES_ADVICE_S = 0.4   # silence that cleanup would remove, in total, worth advice
 CLIP_LEVEL = 0.985
 EDGE_DEBOUNCE = 3       # voiced frames in a row that end the silence at an edge
 
@@ -141,6 +143,7 @@ def check(wav):
 
     lead = tail = 0.0
     longest = None
+    removable = 0.0   # what a cleanup would cut: the edges and every pause beyond KEEP_PAUSE_S
     solid = [(a, b) for a, b in _runs(voiced) if b - a >= EDGE_DEBOUNCE]  # a lone click does not end the silence
     if voiced.any():
         first, last = (solid[0][0], solid[-1][1]) if solid else (int(np.argmax(voiced)), nfr - int(np.argmax(voiced[::-1])))
@@ -175,9 +178,20 @@ def check(wav):
         advice.append("clipping")
     if longest is not None and longest["seconds"] >= LONG_PAUSE_S:
         advice.append("long_pause")
+    if voiced.any():   # the same rule as cmd_enhance: edges up to 3 frames from the first/last voiced frame, pauses to 0.25 s
+        f0 = max(0, int(np.argmax(voiced)) - 3)
+        l0 = min(nfr, nfr - int(np.argmax(voiced[::-1])) + 3)
+        removable = f0 * FRAME + max(0.0, dur - l0 * FRAME)
+        gap = 0
+        for i in range(f0, l0):
+            gap = 0 if voiced[i] else gap + 1
+            if gap * FRAME > KEEP_PAUSE_S:
+                removable += FRAME
+    if removable >= PAUSES_ADVICE_S:
+        advice.append("pauses")
     if hum_hz:
         advice.append("hum")
-    report.update({"lead_silence_s": round(lead, 2), "tail_silence_s": round(tail, 2), "longest_pause": longest,
+    report.update({"removable_silence_s": round(removable, 2), "lead_silence_s": round(lead, 2), "tail_silence_s": round(tail, 2), "longest_pause": longest,
                    "regions": regions, "hum_hz": hum_hz, "advice": advice})
     return report
 

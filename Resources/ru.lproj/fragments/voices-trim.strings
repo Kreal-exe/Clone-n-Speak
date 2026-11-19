@@ -14,3 +14,8 @@
 "Trim end" = "Конец образца";
 "%.1f seconds" = "%.1f с";
 "The text covers the %.1f s of the sample used for cloning; the whole recording is %.1f s and is kept as the original. To use another part, press Restore original, then Trim edges." = "Текст — это %.1f с семпла, которые идут в клонирование; вся запись длится %.1f с и сохранена как оригинал. Чтобы взять другой кусок, нажмите «Вернуть оригинал», затем «Обрезать края».";
+"Silence and pauses: up to %.1f s can be cut. Every word stays." = "Тишина и паузы: можно вырезать до %.1f с. Все слова останутся.";
+"Silence at the edges — trim it." = "Тишина по краям — обрежьте её.";
+"Cut silence" = "Вырезать тишину";
+"Cut %.1f s of silence (start %.1f s, end %.1f s, %d pauses shortened)." = "Вырезано %.1f с тишины (в начале %.1f с, в конце %.1f с, укорочено пауз: %d).";
+"No silence to cut." = "Вырезать нечего — тишины нет.";
