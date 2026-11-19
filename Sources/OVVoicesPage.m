@@ -10,6 +10,7 @@
 #import "OVWaveformView.h"
 #import "OVPlayerBar.h"
 #import "OVVoiceCheck.h"
+#import "OVTrim.h"
 #import <AVFAudio/AVFAudio.h>
 #import <AVFoundation/AVFoundation.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
@@ -58,6 +59,13 @@ static const NSTimeInterval kMaxRecord = 15;
 @property OVSegmented *modeSeg;
 @property OVSlider *strengthSlider;
 @property OVPlayerBar *playerBar;
+// trimming the edges by hand
+@property NSButton *trimButton, *trimPlayButton, *trimApplyButton, *trimCancelButton;
+@property NSStackView *trimStack;
+@property NSTextField *trimInfo, *trimWarn;
+@property BOOL trimming, playingSelection;
+@property (nullable, copy) NSString *trimPath;      // the file the handles belong to
+@property (nullable) NSTimer *trimTimer;
 @property (nullable) NSNumber *dfnInstalled, *musicInstalled;   // nil = not asked yet / the worker was busy
 @property BOOL askingEngine;
 @property (nullable, copy) NSString *shownKey, *peaksKey;          // analysis key whose details are on screen / being read
@@ -162,6 +170,8 @@ static const NSTimeInterval kMaxRecord = 15;
     self.checkButton = OVGhostButton(L(@"Check sample"), @"waveform.badge.magnifyingglass", self, @selector(checkSample:));
     self.compareButton = OVGhostButton(L(@"Compare samples…"), @"rectangle.on.rectangle", self, @selector(compareSamples:));
     self.compareButton.toolTip = L(@"Choose several recordings of this voice to see which is the best: levels, noise and duplicates.");
+    self.trimButton = OVGhostButton(L(@"Trim edges"), @"scissors", self, @selector(trimEdges:));
+    self.trimButton.toolTip = L(@"Cut anything you don’t want from the start and the end of the sample: a breath, a word, a click. The original is kept.");
     NSStackView *checkRow = OVHStack(@[self.checkButton, self.compareButton, OVSpacer()], 10);
     self.waveform = [OVWaveformView new];
     self.waveform.translatesAutoresizingMaskIntoConstraints = NO;
@@ -179,6 +189,20 @@ static const NSTimeInterval kMaxRecord = 15;
     self.adviceStack = OVVStack(@[], 8);
     self.compareStack = OVVStack(@[], 4);
     self.waveform.hidden = YES;
+    self.waveform.onTrimChange = ^(NSTimeInterval start, NSTimeInterval end) { [weakSelf updateTrimInfo]; };
+    self.trimInfo = OVLabel(@"", 13, NSFontWeightMedium, OVColor(OVRoleText));
+    self.trimInfo.accessibilityLabel = L(@"Length kept");
+    self.trimWarn = OVWrapLabel(@"", 13, OVColor(OVRoleWarn));
+    self.trimPlayButton = OVGhostButton(L(@"Play selection"), @"play.fill", self, @selector(playSelection:));
+    self.trimCancelButton = OVGhostButton(L(@"Cancel"), nil, self, @selector(cancelTrim:));
+    self.trimCancelButton.keyEquivalent = @"\033";
+    self.trimApplyButton = OVPillButtonMake(L(@"Apply"), @"checkmark", self, @selector(applyTrim:), NO);
+    // idle: just "Trim edges"; trimming: the length kept (and a warning), then Play selection … Cancel, Apply
+    NSStackView *trimRow = OVHStack(@[self.trimButton, self.trimPlayButton, OVSpacer(), self.trimCancelButton, self.trimApplyButton], 10);
+    trimRow.alignment = NSLayoutAttributeCenterY;
+    self.trimStack = OVVStack(@[self.trimInfo, self.trimWarn, trimRow], 8);
+    OVFillWidth(@[self.trimInfo, self.trimWarn, trimRow], self.trimStack);
+    [self showTrimControls:NO];
 
     // Improve modes
     self.modeSeg = [OVSegmented segmentedWithItems:@[@[L(@"Light cleanup"), @"wand.and.stars"], @[L(@"DeepFilterNet"), @"waveform.path"],
@@ -202,7 +226,7 @@ static const NSTimeInterval kMaxRecord = 15;
     self.playerBar = [OVPlayerBar new];
     self.playerBar.translatesAutoresizingMaskIntoConstraints = NO;
     self.playerBar.hidden = YES;
-    NSArray *audioViews = @[zone, playRow, qualityRow, self.qualityLabel, checkRow, self.waveform, self.adviceStack,
+    NSArray *audioViews = @[zone, playRow, qualityRow, self.qualityLabel, checkRow, self.waveform, self.trimStack, self.adviceStack,
                             self.compareStack, self.modeSeg, self.strengthRow, fixRow, self.playerBar];
     NSStackView *audioBox = OVVStack(audioViews, 12);
     OVFillWidth(audioViews, audioBox);
@@ -284,7 +308,18 @@ static const NSTimeInterval kMaxRecord = 15;
     root.distribution = NSStackViewDistributionFill;
     root.spacing = 0;
     root.alignment = NSLayoutAttributeTop;
-    root.onWindowChange = ^(BOOL inWindow) { if (inWindow) [weakSelf askEngineStatus:nil]; };   // pages are swapped with addSubview, not viewDidAppear
+    root.onWindowChange = ^(BOOL inWindow) {   // pages are swapped with addSubview, not viewDidAppear
+        if (!inWindow) return;
+        [weakSelf askEngineStatus:nil];
+        // Developer aid for snapshots: OV_VOICES_TRIM=1 opens trim mode on the first voice, OV_VOICES_TRIM=<start>,<end> also sets the handles.
+        NSString *aid = NSProcessInfo.processInfo.environment[@"OV_VOICES_TRIM"];
+        if (aid.length) dispatch_async(dispatch_get_main_queue(), ^{
+            [weakSelf trimEdges:nil];
+            NSArray *se = [aid componentsSeparatedByString:@","];
+            if (weakSelf.trimming && se.count == 2) [weakSelf.waveform setTrimStart:[se[0] doubleValue] end:[se[1] doubleValue]];
+            [weakSelf updateTrimInfo];
+        });
+    };
     [root registerForDraggedTypes:@[NSPasteboardTypeFileURL]];
     root.onDrop = ^(NSString *path) {  // a recording dropped on the page becomes the sample of the voice shown
         [weakSelf importDropped:path];
@@ -462,6 +497,7 @@ static const NSTimeInterval kMaxRecord = 15;
     BOOL recording = self.recorder.recording;
     NSString *audio = [self currentAudio];
     BOOL engine = OVEverythingReady();
+    if (self.trimming && (!audio || ![audio isEqualToString:self.trimPath])) [self endTrim];   // another voice or another file
 
     if (audio) {
         double d = OVAudioDuration(audio);
@@ -498,6 +534,8 @@ static const NSTimeInterval kMaxRecord = 15;
     self.enhanceButton.enabled = audio && engine && !busy && !recording;
     self.checkButton.enabled = audio && engine && !busy && !recording;
     self.compareButton.enabled = audio && engine && !busy && !recording;
+    self.trimButton.enabled = audio && !busy && !recording && !self.trimming;
+    self.trimApplyButton.enabled = self.trimming && !busy && !recording;
     [self refreshImproveControls:audio busy:busy];
     self.revertButton.hidden = !(self.voice && [NSFileManager.defaultManager fileExistsAtPath:[self originalPath]]);
     self.revertButton.enabled = !busy && !recording;
@@ -714,10 +752,12 @@ static const NSTimeInterval kMaxRecord = 15;
 }
 
 - (void)clearCheckDetails {
-    self.waveform.hidden = YES;
     self.waveform.regions = @[];
-    self.waveform.peaks = @[];
-    self.waveform.accessibilityHelp = nil;
+    if (!self.trimming) {   // trimming keeps showing the waveform of the file being cut
+        self.waveform.hidden = YES;
+        self.waveform.peaks = @[];
+        self.waveform.accessibilityHelp = nil;
+    }
     [self clearAdvice];
 }
 
@@ -812,6 +852,152 @@ static const NSTimeInterval kMaxRecord = 15;
         row.translatesAutoresizingMaskIntoConstraints = NO;
         [row.widthAnchor constraintEqualToAnchor:self.adviceStack.widthAnchor].active = YES;
     }
+}
+
+#pragma mark Trim edges
+
+/// 6.4 → "0:06.4": minutes, seconds and tenths.
+static NSString *TenthsTime(NSTimeInterval t) {
+    long tenths = lround(MAX(0, t) * 10);
+    return [NSString stringWithFormat:@"%ld:%02ld.%ld", tenths / 600, (tenths / 10) % 60, tenths % 10];
+}
+
+- (void)trimEdges:(id)s {
+    NSString *audio = [self currentAudio];
+    if (!audio || self.trimming || [OVWorker shared].busy || self.recorder.recording) return;
+    double d = OVAudioDuration(audio);
+    if (d < OVTrimMinKeep + 0.1) {
+        self.status.stringValue = L(@"The sample is too short to trim.");
+        self.status.textColor = OVColor(OVRoleWarn);
+        return;
+    }
+    self.trimming = YES;
+    self.trimPath = audio;
+    NSString *key = [self analysisKey:audio];
+    // handles start on the voiced part when the check found silence at the edges, else on the whole sample
+    NSTimeInterval start = 0, end = d;
+    NSDictionary *r = self.analysis[key];
+    if ([r[@"lead_silence_s"] respondsToSelector:@selector(doubleValue)]) {
+        NSTimeInterval s = MAX(0, [r[@"lead_silence_s"] doubleValue] - 0.15), e = MIN(d, d - [r[@"tail_silence_s"] doubleValue] + 0.15);
+        if (e - s >= OVTrimMinKeep) { start = s; end = e; }
+    }
+    self.waveform.duration = d;
+    self.waveform.position = 0;
+    self.waveform.trimEnabled = YES;
+    [self.waveform setTrimStart:start end:end];
+    self.waveform.accessibilityHelp = L(@"Drag the two handles, or press [ and ] to set the start and the end at the playhead.");
+    self.waveform.toolTip = L(@"Drag the handles to choose what stays. [ sets the start and ] the end at the playhead.");
+    NSArray *cached = self.peaksCache[key];
+    if (cached) self.waveform.peaks = cached;
+    else {
+        __weak typeof(self) w = self;
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+            NSArray *peaks = OVWaveformPeaksForFile(audio, 400);
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (!peaks) return;
+                w.peaksCache[key] = peaks;
+                if (w.trimming && [w.trimPath isEqualToString:audio]) w.waveform.peaks = peaks;
+            });
+        });
+    }
+    self.waveform.hidden = NO;
+    [self showTrimControls:YES];
+    [self updateTrimInfo];
+    self.trimTimer = [NSTimer scheduledTimerWithTimeInterval:0.05 target:self selector:@selector(trimTick:) userInfo:nil repeats:YES];
+    [self refreshButtons];
+    [self.view.window makeFirstResponder:self.waveform];
+}
+
+- (void)showTrimControls:(BOOL)on {
+    self.trimInfo.hidden = self.trimPlayButton.hidden = self.trimCancelButton.hidden = self.trimApplyButton.hidden = !on;
+    self.trimButton.hidden = on;
+    if (!on) self.trimWarn.hidden = YES;
+}
+
+- (void)updateTrimInfo {
+    NSTimeInterval kept = self.waveform.trimEnd - self.waveform.trimStart, whole = self.waveform.duration;
+    self.trimInfo.stringValue = [NSString stringWithFormat:L(@"Keeps %@ of %@"), TenthsTime(kept), TenthsTime(whole)];
+    // the page's own wording for a sample the model can't use well (it warns, it doesn't block)
+    self.trimWarn.stringValue = kept < 3 ? L(@"Too short — the model needs 3–10 seconds of speech.") :
+                                kept > 15 ? L(@"Longer than 15 s — trim it to the best 5–10 seconds.") : @"";
+    self.trimWarn.hidden = self.trimWarn.stringValue.length == 0;
+    self.trimApplyButton.accessibilityLabel = [NSString stringWithFormat:@"%@. %@", L(@"Apply"), self.trimInfo.stringValue];
+}
+
+- (void)endTrim {
+    if (!self.trimming) return;
+    [self.trimTimer invalidate];
+    self.trimTimer = nil;
+    if (self.playingSelection && [[OVPlayer shared].currentPath isEqualToString:self.trimPath]) [[OVPlayer shared] stop];
+    self.playingSelection = NO;
+    self.trimming = NO;
+    self.trimPath = nil;
+    self.waveform.trimEnabled = NO;
+    self.waveform.toolTip = nil;
+    [self showTrimControls:NO];
+    self.trimPlayButton.title = L(@"Play selection");
+    self.trimPlayButton.image = [NSImage imageWithSystemSymbolName:@"play.fill" accessibilityDescription:nil];
+    NSString *shown = self.shownKey, *audio = [self currentAudio];
+    if (shown && self.analysis[shown] && audio) [self showAnalysis:self.analysis[shown] forAudio:audio key:shown];   // the check's waveform and help come back
+    else self.waveform.hidden = YES;
+    [self refreshButtons];
+}
+
+- (void)cancelTrim:(id)s { [self endTrim]; [self.view.window makeFirstResponder:self.trimButton]; }
+
+/// Plays only the kept part; the timer stops it at the end handle and follows the playhead.
+- (void)playSelection:(id)s {
+    OVPlayer *p = [OVPlayer shared];
+    if (!self.trimming || !self.trimPath) return;
+    if (self.playingSelection) { [p stop]; self.playingSelection = NO; [self refreshTrimPlayButton]; return; }
+    [p play:self.trimPath];
+    [p seek:self.waveform.trimStart];
+    self.playingSelection = p.playing;
+    [self refreshTrimPlayButton];
+}
+
+- (void)refreshTrimPlayButton {
+    self.trimPlayButton.title = self.playingSelection ? L(@"Stop") : L(@"Play selection");
+    self.trimPlayButton.image = [NSImage imageWithSystemSymbolName:self.playingSelection ? @"stop.fill" : @"play.fill" accessibilityDescription:nil];
+}
+
+- (void)trimTick:(NSTimer *)t {
+    OVPlayer *p = [OVPlayer shared];
+    BOOL mine = [p.currentPath isEqualToString:self.trimPath];
+    if (mine && p.playing) {
+        self.waveform.position = p.currentTime;
+        if (self.playingSelection && p.currentTime >= self.waveform.trimEnd) { [p stop]; self.playingSelection = NO; [self refreshTrimPlayButton]; }
+    } else if (self.playingSelection) {   // finished, or something else took the player
+        self.playingSelection = NO;
+        [self refreshTrimPlayButton];
+    }
+}
+
+- (void)applyTrim:(id)s {
+    NSString *audio = [self currentAudio];
+    if (!self.trimming || !audio || !self.voice || ![audio isEqualToString:self.trimPath]) return;
+    if ([OVWorker shared].busy || self.recorder.recording) return;
+    NSTimeInterval start = self.waveform.trimStart, end = self.waveform.trimEnd;
+    NSFileManager *fm = NSFileManager.defaultManager;
+    NSString *tmp = [self draftPath:[NSUUID.UUID.UUIDString stringByAppendingPathExtension:@"wav"]];
+    NSError *err = nil;
+    if (!OVTrimAudioFile(audio, tmp, start, end, OVTrimDefaultFade, &err)) {
+        self.status.stringValue = [NSString stringWithFormat:L(@"Couldn’t trim the sample: %@"), err.localizedDescription ?: @"?"];
+        self.status.textColor = OVColor(OVRoleWarn);
+        return;
+    }
+    // the original stays exactly as the Improve flow keeps it: made once, never overwritten
+    BOOL madeOriginal = ![fm fileExistsAtPath:[self originalPath]];
+    if (madeOriginal) [fm copyItemAtPath:audio toPath:[self originalPath] error:nil];
+    [self endTrim];
+    if ([self keepSample:tmp]) {
+        self.status.textColor = OVColor(OVRoleMuted);
+        self.status.stringValue = self.voice.ready ? L(@"Sample trimmed. Re-clone the voice to use it.") : L(@"Sample trimmed.");
+    } else if (madeOriginal) {
+        [fm removeItemAtPath:[self originalPath] error:nil];   // nothing was changed
+    }
+    [fm removeItemAtPath:tmp error:nil];
+    [self refreshButtons];
 }
 
 #pragma mark Compare samples

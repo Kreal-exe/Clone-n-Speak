@@ -20,6 +20,7 @@
 "%.0f epochs" = "Эпох: %.0f";
 "%.0f%% · likeness %.0f%%%@" = "%.0f%% · похожесть %.0f%%%@";
 "%.1f GB" = "%.1f ГБ";
+"%.1f seconds" = "%.1f с";
 "%.2f (%+.1f semitones)" = "%.2f (%+.1f полутона)";
 "%1$@ needs its engine · %2$@ download" = "Для «%1$@» нужен движок · скачать %2$@";
 "%1$@ · %2$.1f kHz · %3$@ dB" = "%1$@ · %2$.1f кГц · %3$@ дБ";
@@ -407,6 +408,7 @@
 "Couldn’t save the sample: %@" = "Не удалось сохранить образец: %@";
 "Couldn’t send the command to the worker" = "Не удалось отправить команду воркеру";
 "Couldn’t start recording" = "Не удалось начать запись";
+"Couldn’t trim the sample: %@" = "Не удалось обрезать образец: %@";
 "Couldn’t unpack uv" = "Не удалось распаковать uv";
 "Couldn’t write the file (out of disk space?)" = "Не удалось записать файл (нет места на диске?)";
 "CPU only" = "только CPU";
@@ -417,6 +419,7 @@
 "Current sample" = "Текущий сэмпл";
 "Custom" = "Своё";
 "Cut" = "Вырезать";
+"Cut anything you don’t want from the start and the end of the sample: a breath, a word, a click. The original is kept." = "Вырежьте всё лишнее в начале и в конце образца: вдох, слово, щелчок. Оригинал сохраняется.";
 "Cut it first: this file is longer than the allowed length." = "Сначала обрежьте: файл длиннее допустимого.";
 "Damping" = "Поглощение";
 "Dark" = "Тёмная";
@@ -525,6 +528,8 @@
 "Downloads the sound of one video as a WAV file, for a voice sample or to convert." = "Скачивает звук одного видео в файл WAV: для образца голоса или для преобразования.";
 "downloads Whisper on first run" = "при запуске скачает Whisper";
 "Downsample" = "Понижение частоты";
+"Drag the handles to choose what stays. [ sets the start and ] the end at the playhead." = "Перетащите маркеры, чтобы выбрать, что останется. [ ставит начало, ] — конец на позиции воспроизведения.";
+"Drag the two handles, or press [ and ] to set the start and the end at the playhead." = "Перетащите два маркера или нажмите [ и ], чтобы поставить начало и конец на позицию воспроизведения.";
 "Drive" = "Нагрузка";
 "Drop a folder of recordings here, or click to choose one" = "Перетащите сюда папку с записями или нажмите, чтобы выбрать";
 "Drop a plugin folder" = "Перетащите папку плагина";
@@ -790,6 +795,7 @@
 "Keep my text" = "Оставить мой текст";
 "Keep the app open. This may take a few minutes, depending on your connection and computer." = "Не закрывайте приложение. Это может занять несколько минут, в зависимости от соединения и компьютера.";
 "Keep voice character" = "Сохранять характер голоса";
+"Keeps %@ of %@" = "Останется %@ из %@";
 "Keeps consonants and breaths clear. Changes at once." = "Сохраняет согласные и дыхание чистыми. Меняется сразу.";
 "Keeps the voice and takes the music out, or the other way round. Runs on this Mac." = "Оставляет голос и убирает музыку или наоборот. Работает на этом Mac.";
 "Kind of task" = "Вид задачи";
@@ -809,6 +815,7 @@
 "Learn more" = "Подробнее";
 "Learn the pronunciation again the next time this voice speaks another language." = "Произношение будет выучено заново, когда этот голос в следующий раз заговорит на другом языке.";
 "Learns from" = "Учится на";
+"Length kept" = "Сохранится";
 "Let other apps and scripts on this Mac use your voices." = "Пусть другие программы и скрипты на этом Mac пользуются вашими голосами.";
 "Letters, numbers, - and _ only. Spaces become _." = "Только буквы, цифры, - и _. Пробелы станут _.";
 "Levels: median %.0f dB" = "Громкость: медиана %.0f дБ";
@@ -1122,6 +1129,7 @@
 "Plateau" = "Плато";
 "Play" = "Прослушать";
 "Play %@" = "Играть: %@";
+"Play selection" = "Слушать выделенное";
 "Play the result as soon as it’s ready" = "Проигрывать результат сразу после озвучки";
 "Playback" = "Воспроизведение";
 "Playback position" = "Позиция воспроизведения";
@@ -1291,6 +1299,8 @@
 "Sample saved. Check the text and click “Clone voice”." = "Образец сохранён. Проверьте текст и нажмите «Клонировать голос».";
 "Sample saved. Enter the sample text and click “Clone voice”." = "Образец сохранён. Введите текст образца и нажмите «Клонировать голос».";
 "Sample slider" = "Пример ползунка";
+"Sample trimmed." = "Образец обрезан.";
+"Sample trimmed. Re-clone the voice to use it." = "Образец обрезан. Переклонируйте голос, чтобы он его использовал.";
 "Save" = "Сохранить";
 "Save as %@" = "Сохранить как %@";
 "Save as preset" = "Сохранить как пресет";
@@ -1598,6 +1608,7 @@
 "the requests your devices send and the audio they get back" = "запросы ваших устройств и звук, который они получают";
 "The result appears here." = "Здесь появится результат.";
 "The sample has a noticeable accent (Whisper finds its own transcript unlikely). The voice first says two short phrases in this language several times; the takes that sound most like you and most native become its sample, so the accent fades. Switch it off under the sliders button to keep the accent." = "У образца заметный акцент (Whisper считает его собственную расшифровку маловероятной). Голос сначала несколько раз произносит две короткие фразы на этом языке; дубли, которые больше всего похожи на вас и звучат роднее всего, становятся его образцом, и акцент уходит. Отключается под кнопкой с ползунками, если акцент нужно сохранить.";
+"The sample is too short to trim." = "Образец слишком короткий, чтобы его обрезать.";
 "the servers a plugin talks to" = "серверы, с которыми работает плагин";
 "The source audio file cannot be read (%@). Choose a WAV file." = "Исходный аудиофайл не читается (%@). Выберите файл WAV.";
 "The source audio file was not found. Generate or choose the audio again." = "Исходный аудиофайл не найден. Озвучьте текст или выберите аудио заново.";
@@ -1723,7 +1734,10 @@
 "Transcribe (download Whisper…)" = "Распознать (скачать Whisper…)";
 "Transcribe automatically" = "Распознать автоматически";
 "Transcribing…" = "Распознаю…";
+"Trim edges" = "Обрезать края";
+"Trim end" = "Конец образца";
 "Trim silence" = "Обрезать тишину";
+"Trim start" = "Начало образца";
 "Try again" = "Повторить";
 "Try in Convert" = "Попробовать в Convert";
 "Turn a text file or pasted text into many audio files at once: one file per line, paragraph or subtitle, all in the same voice." = "Превратите текстовый файл или вставленный текст в много аудиофайлов сразу: по файлу на строку, абзац или субтитр, одним голосом.";

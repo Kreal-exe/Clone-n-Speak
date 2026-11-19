@@ -1,4 +1,4 @@
-// deps: OVPlayerBar.m OVWaveformView.m OVDesign.m OVUI.m OVTheme.m OVLocale.m
+// deps: OVPlayerBar.m OVWaveformView.m OVTrim.m OVDesign.m OVUI.m OVTheme.m OVLocale.m
 // Pure functions need only OVPlayerBar.m; drawing needs AppKit (the other files are its design-system dependencies).
 #import <Cocoa/Cocoa.h>
 #import "OVPlayerBar.h"
@@ -196,6 +196,84 @@ static void testABSwitchKeepsPosition(void) {
     CHECK(!bar.showsABSwitch && !bar.originalSelected, "no original, no switch");
 }
 
+static NSEvent *Key(NSString *ch) {
+    return [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:0 timestamp:0 windowNumber:0 context:nil
+                          characters:ch charactersIgnoringModifiers:ch isARepeat:NO keyCode:33];
+}
+
+static void testWaveformTrim(void) {
+    OVWaveformView *w = [[OVWaveformView alloc] initWithFrame:NSMakeRect(0, 0, 400, 80)];
+    w.duration = 10;
+    // off: [ and ] do nothing, the view is a plain slider
+    w.position = 4;
+    [w keyDown:Key(@"[")];
+    CHECK(!w.trimEnabled && w.trimStart == 0, "[ with trim off");
+    CHECK([w.accessibilityRole isEqualToString:NSAccessibilitySliderRole], "slider role while trim is off");
+    w.trimEnabled = YES;
+    CHECK(w.trimStart == 0 && w.trimEnd == 10, "starts on the whole file: %g…%g", w.trimStart, w.trimEnd);
+    __block int calls = 0; __block NSTimeInterval cs = -1, ce = -1;
+    w.onTrimChange = ^(NSTimeInterval s, NSTimeInterval e) { calls++; cs = s; ce = e; };
+    [w setTrimStart:2 end:8];
+    CHECK(w.trimStart == 2 && w.trimEnd == 8 && calls == 0, "code changes do not call onTrimChange");
+    // clamping: kept part >= 1 s, start < end, inside the file
+    w.trimStart = 7.6;
+    CHECK(fabs(w.trimStart - 7) < 1e-9, "start stops 1 s before the end: %g", w.trimStart);
+    w.trimEnd = 7.2;
+    CHECK(fabs(w.trimEnd - 8) < 1e-9, "end stops 1 s after the start: %g", w.trimEnd);
+    w.trimEnd = 99;
+    CHECK(w.trimEnd == 10, "end clamped to the duration: %g", w.trimEnd);
+    w.trimStart = -4;
+    CHECK(w.trimStart == 0, "start clamped to 0");
+    // keys
+    w.position = 3;
+    [w keyDown:Key(@"[")];
+    CHECK(w.trimStart == 3 && calls == 1 && cs == 3, "[ sets the start at the playhead: %g, %d calls", w.trimStart, calls);
+    w.position = 6.5;
+    [w keyDown:Key(@"]")];
+    CHECK(w.trimEnd == 6.5 && calls == 2 && ce == 6.5, "] sets the end at the playhead: %g", w.trimEnd);
+    w.position = 6.9;   // would leave less than 1 s: clamped
+    [w keyDown:Key(@"[")];
+    CHECK(fabs(w.trimStart - 5.5) < 1e-9, "[ near the end keeps 1 s: %g", w.trimStart);
+    // a new duration re-clamps
+    w.duration = 6;
+    CHECK(w.trimEnd <= 6 && w.trimEnd - w.trimStart >= 1 - 1e-9, "re-clamped: %g…%g", w.trimStart, w.trimEnd);
+    // VoiceOver: two adjustable children, 0.1 s per step
+    w.duration = 10; [w setTrimStart:2 end:8];
+    NSArray *kids = w.accessibilityChildren;
+    CHECK(kids.count == 3 && [w.accessibilityRole isEqualToString:NSAccessibilityGroupRole], "children: %lu", (unsigned long)kids.count);
+    id st = nil, en = nil;
+    for (id k in kids) {
+        if ([[k accessibilityLabel] isEqualToString:@"Trim start"]) st = k;
+        if ([[k accessibilityLabel] isEqualToString:@"Trim end"]) en = k;
+    }
+    CHECK(st && en, "Trim start / Trim end children");
+    CHECK([[st accessibilityRole] isEqualToString:NSAccessibilitySliderRole] && [[st accessibilityValue] doubleValue] == 2, "start value %@", [st accessibilityValue]);
+    [st accessibilityPerformIncrement];
+    CHECK(fabs(w.trimStart - 2.1) < 1e-9, "increment = +0.1 s: %g", w.trimStart);
+    [en accessibilityPerformDecrement]; [en accessibilityPerformDecrement];
+    CHECK(fabs(w.trimEnd - 7.8) < 1e-9, "decrement = -0.1 s: %g", w.trimEnd);
+    CHECK([[en accessibilityValueDescription] containsString:@"7.8"], "value text: %@", [en accessibilityValueDescription]);
+    w.trimEnabled = NO;
+    CHECK([w.accessibilityRole isEqualToString:NSAccessibilitySliderRole] && w.accessibilityChildren.count == 0, "back to a plain slider");
+
+    // drawing: the cut-away parts are dimmed, the handles stand out, in both themes
+    for (NSAppearanceName an in @[NSAppearanceNameAqua, NSAppearanceNameDarkAqua]) {
+        NSAppearance *ap = [NSAppearance appearanceNamed:an];
+        OVWaveformView *v = [[OVWaveformView alloc] initWithFrame:NSMakeRect(0, 0, 400, 80)];
+        v.duration = 10; v.peaks = Peaks(400, 200);
+        NSBitmapImageRep *plain = Render(v, ap);
+        v.trimEnabled = YES; [v setTrimStart:3 end:7];
+        NSBitmapImageRep *cut = Render(v, ap);
+        NSColor *a = Px(plain, 40, 40), *b = Px(cut, 40, 40);
+        CHECK(fabs(a.redComponent - b.redComponent) + fabs(a.greenComponent - b.greenComponent) + fabs(a.blueComponent - b.blueComponent) > 0.02,
+              "%s: the part before the start is not dimmed", an.UTF8String);
+        NSColor *keepA = Px(plain, 200, 5), *keepB = Px(cut, 200, 5);
+        CHECK(fabs(keepA.redComponent - keepB.redComponent) < 0.01, "%s: the kept part changed", an.UTF8String);
+        NSColor *bg = Resolve(OVRoleBackground, ap), *handle = Px(cut, 120, 5);   // the start handle's bar: x = 120…121
+        CHECK(Contrast(handle, bg) >= 3.0, "%s: handle contrast %.2f", an.UTF8String, Contrast(handle, bg));
+    }
+}
+
 static void testAccessibility(void) {
     FakePlayer *fp = [FakePlayer new];
     fp.durations = @{@"/r.wav": @34};
@@ -230,6 +308,7 @@ int main(void) {
         testScrubberValue();
         testWaveformRendersPeaksAndRegions();
         testWaveformSeek();
+        testWaveformTrim();
         testABSwitchKeepsPosition();
         testAccessibility();
         printf("%d checks, %d failures\n", checks, failures);
