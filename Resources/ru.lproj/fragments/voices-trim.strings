@@ -13,3 +13,4 @@
 "Trim start" = "Начало образца";
 "Trim end" = "Конец образца";
 "%.1f seconds" = "%.1f с";
+"The text covers the %.1f s of the sample used for cloning; the whole recording is %.1f s and is kept as the original. To use another part, press Restore original, then Trim edges." = "Текст — это %.1f с семпла, которые идут в клонирование; вся запись длится %.1f с и сохранена как оригинал. Чтобы взять другой кусок, нажмите «Вернуть оригинал», затем «Обрезать края».";

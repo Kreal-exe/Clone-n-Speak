@@ -92,6 +92,25 @@ class Audio(unittest.TestCase):
         endless = worker.trim_sample(voice(40.0))
         self.assertAlmostEqual(len(endless) / SR, 10.0, delta=0.3)  # no pause: the target length
 
+    def test_best_stretch_is_found_anywhere_in_the_recording(self):
+        rng = np.random.default_rng(1)
+        pause = np.zeros(int(SR * 0.5), dtype=np.float32)
+        def phrase(sec, noisy):
+            p = voice(sec)
+            if noisy:  # loud hiss under the speech and clipped peaks
+                p = np.clip(p * 12 + rng.normal(0, 0.05, len(p)).astype(np.float32), -1, 1)
+            return p
+        bad = [x for _ in range(4) for x in (pause, phrase(3.0, True))]
+        good = [x for _ in range(3) for x in (pause, phrase(3.0, False))]
+        wav = np.concatenate(bad + good + [pause]).astype(np.float32)
+        cut = worker.trim_sample(wav)
+        self.assertGreaterEqual(len(cut) / SR, 6.0)
+        self.assertLessEqual(len(cut) / SR, 14.0)
+        self.assertLess(float(np.abs(cut).max()), 0.99, "the clipped, noisy start must not be chosen")
+        start = len(wav) - len(cut)
+        self.assertTrue(any(np.array_equal(cut, wav[i:i + len(cut)]) for i in range(int(SR * 13.5), start + 1, int(SR * 0.03))),
+                        "the cut comes from the clean second half")
+
 
 if __name__ == "__main__":
     unittest.main()

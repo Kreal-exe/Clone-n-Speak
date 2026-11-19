@@ -1624,6 +1624,7 @@
 "The task finished without a result." = "Задача закончилась без результата.";
 "The task has no command." = "У задачи нет команды.";
 "The task was not started" = "Задача не запущена";
+"The text covers the %.1f s of the sample used for cloning; the whole recording is %.1f s and is kept as the original. To use another part, press Restore original, then Trim edges." = "Текст — это %.1f с семпла, которые идут в клонирование; вся запись длится %.1f с и сохранена как оригинал. Чтобы взять другой кусок, нажмите «Вернуть оригинал», затем «Обрезать края».";
 "The text doesn’t match the recording" = "Текст не совпадает с записью";
 "the text you want to hear" = "текст, который нужно озвучить";
 "The tunnel program did not start." = "Программа туннеля не запустилась.";

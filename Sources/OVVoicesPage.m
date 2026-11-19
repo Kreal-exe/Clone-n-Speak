@@ -63,6 +63,7 @@ static const NSTimeInterval kMaxRecord = 15;
 @property NSButton *trimButton, *trimPlayButton, *trimApplyButton, *trimCancelButton;
 @property NSStackView *trimStack;
 @property NSTextField *trimInfo, *trimWarn;
+@property NSTextField *textHint;
 @property BOOL trimming, playingSelection;
 @property (nullable, copy) NSString *trimPath;      // the file the handles belong to
 @property (nullable) NSTimer *trimTimer;
@@ -247,6 +248,7 @@ static const NSTimeInterval kMaxRecord = 15;
     self.refText.accessibilityLabel = L(@"What the sample says");
     self.transcribeButton = OVGhostButton(L(@"Transcribe automatically"), @"text.bubble", self, @selector(transcribe:));
     NSTextField *textHint = OVWrapLabel(L(@"Exactly, word for word. You can leave it empty — Whisper will transcribe it."), 13, OVColor(OVRoleMuted));
+    self.textHint = textHint;
     NSStackView *transcribeRow = OVHStack(@[self.transcribeButton, OVSpacer()], 10);
     NSStackView *textBox = OVVStack(@[textArea, transcribeRow, textHint], 12);
     [textBox setCustomSpacing:8 afterView:transcribeRow];
@@ -492,6 +494,19 @@ static const NSTimeInterval kMaxRecord = 15;
     [self.voice save];
 }
 
+/// When a long recording was cut to its best seconds for cloning, the transcript covers only that cut: say so next to the
+/// text, with the way to use another part, instead of letting the text look cut off.
+- (void)updateTextHintForSample:(NSString *)audio seconds:(double)d {
+    NSString *def = L(@"Exactly, word for word. You can leave it empty — Whisper will transcribe it.");
+    NSString *orig = self.voice ? [self originalPath] : nil;
+    double full = (orig && [audio isEqualToString:self.voice.referencePath] && [NSFileManager.defaultManager fileExistsAtPath:orig]) ? OVAudioDuration(orig) : 0;
+    NSString *hint = def;
+    if (full > d + 1.0) {
+        hint = [NSString stringWithFormat:L(@"The text covers the %.1f s of the sample used for cloning; the whole recording is %.1f s and is kept as the original. To use another part, press Restore original, then Trim edges."), d, full];
+    }
+    if (![self.textHint.stringValue isEqualToString:hint]) self.textHint.stringValue = hint;
+}
+
 - (void)refreshButtons {
     BOOL busy = [OVWorker shared].busy;
     BOOL recording = self.recorder.recording;
@@ -501,6 +516,7 @@ static const NSTimeInterval kMaxRecord = 15;
 
     if (audio) {
         double d = OVAudioDuration(audio);
+        [self updateTextHintForSample:audio seconds:d];
         NSString *warn = d < 2.5 ? L(@"  · too short") : d > 20 ? L(@"  · longer than 20 s — trim it to 3–10 s") : @"";
         BOOL bad = d < 2.5 || d > 20;
         for (NSView *old in [self.sampleBadge.arrangedSubviews copy]) { [self.sampleBadge removeArrangedSubview:old]; [old removeFromSuperview]; }

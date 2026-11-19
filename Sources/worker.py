@@ -645,31 +645,67 @@ def scale_melody(wav, k, sr=SR, hop=0.01):
     return np.interp(pos, np.arange(len(fine)), fine).astype(np.float32)
 
 
-def trim_sample(wav, sr=SR, target=10.0, limit=14.0):
-    """Best stretch of a long recording: from the first word to the longest pause between 6 s and `limit`."""
+def trim_sample(wav, sr=SR, target=10.0, limit=14.0, shortest=6.0):
+    """Best stretch of a long recording for cloning, looked for over the WHOLE recording: every stretch of `shortest`..
+    `limit` seconds that starts and ends in a pause (so no word is cut) is scored for dense speech, a low noise floor,
+    no clipping, no long gaps and a length near `target`; the best one wins, the earliest on a tie. A recording without
+    pauses gets `target`-second windows instead."""
     import numpy as np
-    db = frames_db(wav, sr)
     hop = 0.03
     n = int(sr * hop)
+    db = frames_db(wav, sr)
     voiced = db > max(np.percentile(db, 10) + 10, -55)
     if not voiced.any():
         return wav[: int(sr * target)]
-    first = int(np.argmax(voiced))
-    lo, hi = first + int(6 / hop), min(len(voiced), first + int(limit / hop))
-    best, run_start = None, None
-    for i in range(lo, hi + 1):
-        quiet = i < hi and not voiced[i]
-        if quiet and run_start is None:
-            run_start = i
-        elif not quiet and run_start is not None:
-            if best is None or i - run_start > best[1] - best[0]:
-                best = (run_start, i)
-            run_start = None
-    if best and best[1] - best[0] >= 4:  # a pause of at least 0.12 s: cut in its middle
-        cut = (best[0] + best[1]) // 2
-    else:
-        cut = first + int(target / hop)
-    return wav[max(0, first - 3) * n: min(len(wav), cut * n)]
+    clip = np.abs(wav[: len(db) * n]).reshape(len(db), n).max(axis=1) >= 0.99 if len(wav) >= n else np.zeros(len(db), bool)
+    # pause middles are the cut points; the first word's start and the last word's end are cut points too
+    first, last = int(np.argmax(voiced)), len(voiced) - int(np.argmax(voiced[::-1]))
+    cuts, run = [max(0, first - 3)], None
+    for i in range(first, last + 1):
+        quiet = i < last and not voiced[i]
+        if quiet and run is None:
+            run = i
+        elif not quiet and run is not None:
+            if i - run >= 4:  # a pause of at least 0.12 s
+                cuts.append((run + i) // 2)
+            run = None
+    cuts.append(min(len(voiced), last + 3))
+
+    def score(a, b):
+        v, d, c = voiced[a:b], db[a:b], clip[a:b]
+        if not v.any():
+            return -1e9
+        density = float(v.mean())
+        floor = float(np.percentile(d, 15))
+        speech = float(np.percentile(d[v], 75))
+        snr = min(40.0, max(0.0, speech - floor)) / 40.0
+        gap, g = 0, 0
+        for x in v:
+            g = 0 if x else g + 1
+            gap = max(gap, g)
+        long_gap = max(0.0, gap * hop - 1.0)
+        length = (b - a) * hop
+        return density + snr - 30.0 * float(c.mean()) - 0.5 * long_gap - 0.3 * abs(length - target) / target
+
+    best = None
+    lo_f, hi_f = int(shortest / hop), int(limit / hop)
+    for i, a in enumerate(cuts):
+        for b in cuts[i + 1:]:
+            if b - a < lo_f:
+                continue
+            if b - a > hi_f:
+                break
+            sc = score(a, b)
+            if best is None or sc > best[0] + 1e-9:
+                best = (sc, a, b)
+    if best is None:  # no pauses in the right places: fixed windows of `target` seconds, one second apart
+        w = int(target / hop)
+        for a in range(max(0, first - 3), max(1, last - w + 1), int(1 / hop)):
+            sc = score(a, a + w)
+            if best is None or sc > best[0] + 1e-9:
+                best = (sc, a, a + w)
+    _, a, b = best
+    return wav[a * n: min(len(wav), b * n)]
 
 
 # --------------------------------------------------------------------------
