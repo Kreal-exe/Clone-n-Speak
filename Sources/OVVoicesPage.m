@@ -52,11 +52,12 @@ static const NSTimeInterval kMaxRecord = 15;
 @property NSMutableDictionary<NSString *, NSDictionary *> *analysis; // path|mtime → report
 @property NSProgressIndicator *spinner;
 // extended check, comparison and Improve modes
-@property NSButton *checkButton, *compareButton, *downloadButton;
+@property NSButton *checkButton, *compareButton;
 @property OVWaveformView *waveform;
 @property NSTextField *strengthValue;
-@property NSStackView *adviceStack, *compareStack, *strengthRow;
-@property OVSegmented *modeSeg;
+@property NSStackView *adviceStack, *compareStack;
+@property NSArray<NSView *> *strengthViews;   // the Strength slider: shown while DeepFilterNet is the mode last used
+@property NSInteger modeIndex;               // the Improve mode last used: 0 light, 1 DeepFilterNet, 2 remove music
 @property OVSlider *strengthSlider;
 @property OVPlayerBar *playerBar;
 // trimming the edges by hand
@@ -150,9 +151,11 @@ static const NSTimeInterval kMaxRecord = 15;
     [self.qualityMeter.heightAnchor constraintEqualToConstant:6].active = YES;
     self.qualityMeter.accessibilityLabel = L(@"Quality");
     self.qualityLabel = OVWrapLabel(@"", 13, OVColor(OVRoleMuted));
-    self.enhanceButton = OVGhostButton(L(@"Improve sample"), @"sparkles", self, @selector(enhance:));
+    self.enhanceButton = OVSmallPill(OVGhostButton(L(@"Improve"), @"sparkles", self, nil));
     self.enhanceButton.toolTip = L(@"Removes background noise and rumble, trims long pauses and evens out loudness. The original is kept.");
-    self.revertButton = OVGhostButton(L(@"Restore original"), @"arrow.uturn.backward", self, @selector(revertSample:));
+    self.enhanceButton.accessibilityLabel = L(@"Improve sample");
+    [self buildImproveMenu];
+    self.revertButton = OVSmallPill(OVGhostButton(L(@"Restore original"), @"arrow.uturn.backward", self, @selector(revertSample:)));
     __weak typeof(self) weakSelf = self;
     OVDropZone *zone = [OVDropZone zoneWithTitle:L(@"Drop a recording here")
                                             hint:L(@"WAV, MP3, M4A, FLAC · 3–10 s · or click to choose")
@@ -165,15 +168,18 @@ static const NSTimeInterval kMaxRecord = 15;
     playRow.alignment = NSLayoutAttributeCenterY;
     NSStackView *qualityRow = OVHStack(@[OVLabel(L(@"Quality"), 13, NSFontWeightMedium, OVColor(OVRoleMuted)), self.qualityMeter, OVSpacer()], 10);
     qualityRow.alignment = NSLayoutAttributeCenterY;
-    NSStackView *fixRow = OVHStack(@[self.enhanceButton, self.revertButton, OVSpacer()], 10);
 
     // extended check: waveform with problem regions, advice with action buttons
-    self.checkButton = OVGhostButton(L(@"Check sample"), @"waveform.badge.magnifyingglass", self, @selector(checkSample:));
-    self.compareButton = OVGhostButton(L(@"Compare samples…"), @"rectangle.on.rectangle", self, @selector(compareSamples:));
+    self.checkButton = OVSmallPill(OVGhostButton(L(@"Check"), @"waveform.badge.magnifyingglass", self, @selector(checkSample:)));
+    self.checkButton.accessibilityLabel = L(@"Check sample");
+    self.checkButton.toolTip = L(@"Measures the sample: noise, silence, pauses and clipping, with advice.");
+    self.compareButton = OVSmallPill(OVGhostButton(L(@"Compare"), @"rectangle.on.rectangle", self, @selector(compareSamples:)));
+    self.compareButton.accessibilityLabel = L(@"Compare samples…");
     self.compareButton.toolTip = L(@"Choose several recordings of this voice to see which is the best: levels, noise and duplicates.");
-    self.trimButton = OVGhostButton(L(@"Trim edges"), @"scissors", self, @selector(trimEdges:));
+    self.trimButton = OVSmallPill(OVGhostButton(L(@"Trim"), @"scissors", self, @selector(trimEdges:)));
+    self.trimButton.accessibilityLabel = L(@"Trim edges");
     self.trimButton.toolTip = L(@"Cut anything you don’t want from the start and the end of the sample: a breath, a word, a click. The original is kept.");
-    NSStackView *checkRow = OVHStack(@[self.checkButton, self.compareButton, OVSpacer()], 10);
+    NSStackView *checkRow = OVHStack(@[self.checkButton, self.compareButton, self.trimButton, OVSpacer()], 8);
     self.waveform = [OVWaveformView new];
     self.waveform.translatesAutoresizingMaskIntoConstraints = NO;
     [self.waveform.heightAnchor constraintEqualToConstant:72].active = YES;
@@ -194,23 +200,18 @@ static const NSTimeInterval kMaxRecord = 15;
     self.trimInfo = OVLabel(@"", 13, NSFontWeightMedium, OVColor(OVRoleText));
     self.trimInfo.accessibilityLabel = L(@"Length kept");
     self.trimWarn = OVWrapLabel(@"", 13, OVColor(OVRoleWarn));
-    self.trimPlayButton = OVGhostButton(L(@"Play selection"), @"play.fill", self, @selector(playSelection:));
-    self.trimCancelButton = OVGhostButton(L(@"Cancel"), nil, self, @selector(cancelTrim:));
+    self.trimPlayButton = OVSmallPill(OVGhostButton(L(@"Play selection"), @"play.fill", self, @selector(playSelection:)));
+    self.trimCancelButton = OVSmallPill(OVGhostButton(L(@"Cancel"), nil, self, @selector(cancelTrim:)));
     self.trimCancelButton.keyEquivalent = @"\033";
-    self.trimApplyButton = OVPillButtonMake(L(@"Apply"), @"checkmark", self, @selector(applyTrim:), NO);
-    // idle: just "Trim edges"; trimming: the length kept (and a warning), then Play selection … Cancel, Apply
-    NSStackView *trimRow = OVHStack(@[self.trimButton, self.trimPlayButton, OVSpacer(), self.trimCancelButton, self.trimApplyButton], 10);
+    self.trimApplyButton = OVSmallPill(OVPillButtonMake(L(@"Apply"), @"checkmark", self, @selector(applyTrim:), NO));
+    // idle: nothing here ("Trim" sits in the Check row); trimming: the length kept (and a warning), then Play selection … Cancel, Apply
+    NSStackView *trimRow = OVHStack(@[self.trimPlayButton, OVSpacer(), self.trimCancelButton, self.trimApplyButton], 8);
     trimRow.alignment = NSLayoutAttributeCenterY;
     self.trimStack = OVVStack(@[self.trimInfo, self.trimWarn, trimRow], 8);
     OVFillWidth(@[self.trimInfo, self.trimWarn, trimRow], self.trimStack);
     [self showTrimControls:NO];
 
-    // Improve modes
-    self.modeSeg = [OVSegmented segmentedWithItems:@[@[L(@"Light cleanup"), @"wand.and.stars"], @[L(@"DeepFilterNet"), @"waveform.path"],
-                                                     @[L(@"Remove music"), @"music.note"]]];
-    self.modeSeg.target = self;
-    self.modeSeg.action = @selector(modePicked:);
-    self.modeSeg.accessibilityLabel = L(@"How to improve the sample");
+    // Improve: a pull-down (see buildImproveMenu); the mode last used is modeIndex
     self.strengthSlider = [OVSlider new];
     self.strengthSlider.minValue = 1;
     self.strengthSlider.maxValue = 30;
@@ -220,16 +221,17 @@ static const NSTimeInterval kMaxRecord = 15;
     self.strengthSlider.accessibilityLabel = L(@"Noise reduction strength");
     self.strengthValue = OVLabel(@"18 dB", 13, NSFontWeightMedium, OVColor(OVRoleMuted));
     [self.strengthSlider.widthAnchor constraintGreaterThanOrEqualToConstant:140].active = YES;
-    self.downloadButton = OVGhostButton(L(@"Download"), @"arrow.down.circle", self, @selector(downloadEngine:));
-    self.strengthRow = OVHStack(@[OVLabel(L(@"Strength"), 13, NSFontWeightMedium, OVColor(OVRoleMuted)), self.strengthSlider, self.strengthValue,
-                                  self.downloadButton], 10);
-    self.strengthRow.alignment = NSLayoutAttributeCenterY;
+    self.strengthViews = @[OVLabel(L(@"Strength"), 13, NSFontWeightMedium, OVColor(OVRoleMuted)), self.strengthSlider, self.strengthValue];
+    NSStackView *fixRow = OVHStack(@[self.enhanceButton, self.strengthViews[0], self.strengthViews[1], self.strengthViews[2], OVSpacer(), self.revertButton], 8);
+    fixRow.alignment = NSLayoutAttributeCenterY;
     self.playerBar = [OVPlayerBar new];
     self.playerBar.translatesAutoresizingMaskIntoConstraints = NO;
     self.playerBar.hidden = YES;
     NSArray *audioViews = @[zone, playRow, qualityRow, self.qualityLabel, checkRow, self.waveform, self.trimStack, self.adviceStack,
-                            self.compareStack, self.modeSeg, self.strengthRow, fixRow, self.playerBar];
+                            self.compareStack, fixRow, self.playerBar];
     NSStackView *audioBox = OVVStack(audioViews, 12);
+    // the summary, its buttons, the waveform and the advice belong together: 8 pt
+    for (NSView *v in @[self.qualityLabel, checkRow, self.waveform, self.trimStack, self.adviceStack, self.compareStack]) [audioBox setCustomSpacing:8 afterView:v];
     OVFillWidth(audioViews, audioBox);
     self.sampleBadge = OVHStack(@[], 0);
     NSView *audioCard = OVStepCardWithAccessory(2, @"waveform", L(@"Voice sample"), self.sampleBadge, audioBox);
@@ -795,21 +797,7 @@ static const NSTimeInterval kMaxRecord = 15;
 
 /// "Trim silence" / "Denoise": picks the Improve mode and runs it (an engine that is not installed offers its download).
 - (void)adviceAction:(NSButton *)b {
-    self.modeSeg.selectedIndex = [b.identifier isEqualToString:@"dfn"] ? 1 : 0;
-    __weak typeof(self) w = self;
-    [self askEngineStatus:^{
-        if ([w modeEngineReady]) { if (w.enhanceButton.enabled) [w enhance:nil]; return; }
-        if ([w improveEngineKnown]) {   // not installed: say so and point at the Download button
-            w.status.stringValue = [[w improveMode] isEqualToString:@"dfn"]
-                ? L(@"DeepFilterNet isn’t installed — press Download, then try again.")
-                : L(@"The music-removal engine isn’t installed — press Download, then try again.");
-            w.status.textColor = OVColor(OVRoleWarn);
-            [w.view.window makeFirstResponder:w.downloadButton];
-        } else {
-            w.status.stringValue = L(@"The engine is busy — try again in a moment.");
-        }
-    }];
-    [self refreshButtons];
+    [self runImproveMode:[b.identifier isEqualToString:@"dfn"] ? 1 : 0];
 }
 
 - (void)showAnalysis:(NSDictionary *)r forAudio:(NSString *)audio key:(NSString *)key {
@@ -869,7 +857,7 @@ static const NSTimeInterval kMaxRecord = 15;
             if (silenceShown) continue;
             silenceShown = YES;
             double cut = [r[@"removable_silence_s"] doubleValue];
-            info = @{@"text": cut >= 0.1 ? [NSString stringWithFormat:L(@"Silence and pauses: up to %.1f s can be cut. Every word stays."), cut]
+            info = @{@"text": cut >= 0.1 ? [NSString stringWithFormat:L(@"Up to %.1f s of silence can be cut."), cut]
                                          : L(@"Silence at the edges — trim it."),
                      @"button": L(@"Cut silence"), @"action": @"light"};
         }
@@ -938,6 +926,7 @@ static NSString *TenthsTime(NSTimeInterval t) {
 - (void)showTrimControls:(BOOL)on {
     self.trimInfo.hidden = self.trimPlayButton.hidden = self.trimCancelButton.hidden = self.trimApplyButton.hidden = !on;
     self.trimButton.hidden = on;
+    self.trimStack.hidden = !on;   // nothing to show while idle: its only button moved to the Check row
     if (!on) self.trimWarn.hidden = YES;
 }
 
@@ -1104,11 +1093,52 @@ static NSString *TenthsTime(NSTimeInterval t) {
 #pragma mark Improve sample
 
 
-- (NSString *)improveMode { return @[@"light", @"dfn", @"music"][MAX(0, MIN(2, self.modeSeg.selectedIndex))]; }
+- (NSString *)improveMode { return @[@"light", @"dfn", @"music"][MAX(0, MIN(2, self.modeIndex))]; }
 
-- (void)modePicked:(id)s {
-    [self askEngineStatus:nil];
+/// The "Improve" pull-down: each item runs its mode; an engine that is not installed is offered for download instead.
+- (void)buildImproveMenu {
+    NSMenu *menu = [[NSMenu alloc] initWithTitle:L(@"Improve sample")];
+    for (NSInteger i = 0; i < 3; i++) {
+        NSMenuItem *it = [menu addItemWithTitle:@"" action:@selector(improvePicked:) keyEquivalent:@""];
+        it.target = self;
+        it.tag = i;
+    }
+    __weak typeof(self) w = self;
+    OVMenuButton(self.enhanceButton, menu, ^(NSMenu *m) { [w refreshImproveMenu:m]; });
+}
+
+- (void)refreshImproveMenu:(NSMenu *)m {
+    [self askAllEngineStatus];
+    NSString *audio = [self currentAudio];
+    BOOL busy = [OVWorker shared].busy;
+    BOOL have[3] = {YES, self.dfnInstalled ? self.dfnInstalled.boolValue : YES, self.musicInstalled ? self.musicInstalled.boolValue : YES};   // unknown: the click asks
+    NSArray *titles = @[L(@"Light cleanup — cut silence and noise"), L(@"DeepFilterNet — strong noise removal"), L(@"Remove music")];
+    NSArray *missing = @[@"", L(@"DeepFilterNet (download, ~27 MB) — strong noise removal"), L(@"Remove music (download, ~140 MB)")];
+    for (NSMenuItem *it in m.itemArray) {
+        it.title = have[it.tag] ? titles[it.tag] : missing[it.tag];
+        it.enabled = audio && OVEverythingReady() && !busy && !self.recorder.recording;
+    }
+}
+
+- (void)improvePicked:(NSMenuItem *)it { [self runImproveMode:it.tag]; }
+
+/// Runs a mode; when its engine is missing, starts the download instead (the same flow as before).
+- (void)runImproveMode:(NSInteger)index {
+    self.modeIndex = MAX(0, MIN(2, index));
+    __weak typeof(self) w = self;
+    [self askEngineStatus:^{
+        if ([w modeEngineReady]) { if (w.enhanceButton.enabled) [w enhance:nil]; return; }
+        if ([w improveEngineKnown]) { [w downloadEngine:nil]; return; }   // not installed: download it, then pick the mode again
+        w.status.stringValue = L(@"The engine is busy — try again in a moment.");
+    }];
     [self refreshButtons];
+}
+
+/// Both engines' state (the menu shows "(download …)" for a missing one): DeepFilterNet first, then music removal.
+- (void)askAllEngineStatus {
+    __weak typeof(self) w = self;
+    if (!self.dfnInstalled) [self askEngineStatusForMode:@"dfn" then:^{ if (w.dfnInstalled) [w askAllEngineStatus]; }];
+    else if (!self.musicInstalled) [self askEngineStatusForMode:@"music" then:nil];
 }
 
 - (void)strengthChanged:(OVSlider *)sl {
@@ -1124,8 +1154,9 @@ static NSString *TenthsTime(NSTimeInterval t) {
 
 /// Asks whether DeepFilterNet / the music-removal engine are installed. `then` runs afterwards (also when the answer
 /// could not be had because the worker is busy — the state then stays unknown and refreshButtons asks again).
-- (void)askEngineStatus:(nullable void (^)(void))then {
-    NSString *mode = [self improveMode];
+- (void)askEngineStatus:(nullable void (^)(void))then { [self askEngineStatusForMode:[self improveMode] then:then]; }
+
+- (void)askEngineStatusForMode:(NSString *)mode then:(nullable void (^)(void))then {
     if ([mode isEqualToString:@"light"] || [OVRuntime shared].state != OVRuntimeReady) { if (then) then(); return; }
     if ([OVWorker shared].busy || self.askingEngine) { if (then) then(); return; }
     self.askingEngine = YES;
@@ -1159,18 +1190,11 @@ static NSString *TenthsTime(NSTimeInterval t) {
 
 - (void)refreshImproveControls:(NSString *)audio busy:(BOOL)busy {
     NSString *mode = [self improveMode];
-    BOOL ready = [self modeEngineReady];
     BOOL known = [self improveEngineKnown];
     if (!known && !busy) [self askEngineStatus:nil];   // the worker was busy earlier: ask again now
-    BOOL dfn = [mode isEqualToString:@"dfn"], music = [mode isEqualToString:@"music"];
-    // strength (DeepFilterNet only) and the download button (a mode whose engine is missing)
-    for (NSView *v in self.strengthRow.arrangedSubviews) v.hidden = v == self.downloadButton ? (ready || !known) : !dfn;
-    self.strengthRow.hidden = !(dfn || (music && !ready && known));
-    NSString *what = dfn ? L(@"Download DeepFilterNet (~27 MB)") : L(@"Download the music-removal engine (~140 MB)");
-    self.downloadButton.toolTip = what;
-    self.downloadButton.accessibilityLabel = what;
-    self.downloadButton.enabled = !busy;
-    self.enhanceButton.enabled = audio && OVEverythingReady() && !busy && !self.recorder.recording && ready;
+    // the strength slider only while DeepFilterNet is the mode last used
+    for (NSView *v in self.strengthViews) v.hidden = ![mode isEqualToString:@"dfn"];
+    self.enhanceButton.enabled = audio && OVEverythingReady() && !busy && !self.recorder.recording;
     BOOL hasOrig = self.voice && [NSFileManager.defaultManager fileExistsAtPath:[self originalPath]];
     self.playerBar.hidden = !(audio && hasOrig);
     if (!self.playerBar.hidden) {
@@ -1179,7 +1203,7 @@ static NSString *TenthsTime(NSTimeInterval t) {
     }
 }
 
-/// "Download" next to the mode: DeepFilterNet, or onnxruntime + the vocal-separation model.
+/// The "(download …)" menu item of a mode: DeepFilterNet, or onnxruntime + the vocal-separation model.
 - (void)downloadEngine:(id)s {
     NSString *mode = [self improveMode];
     __weak typeof(self) w = self;

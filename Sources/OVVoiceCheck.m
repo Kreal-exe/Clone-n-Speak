@@ -22,7 +22,7 @@ NSDictionary *OVAdviceInfo(NSString *code) {
     NSDictionary *t = @{
         @"trim_start": @{@"text": L(@"Silence at the start — trim it."), @"button": L(@"Trim silence"), @"action": @"light"},
         @"trim_end": @{@"text": L(@"Silence at the end — trim it."), @"button": L(@"Trim silence"), @"action": @"light"},
-        @"denoise": @{@"text": L(@"Background noise — clean it up or record in a quieter room."), @"button": L(@"Denoise"), @"action": @"dfn"},
+        @"denoise": @{@"text": L(@"Background noise — clean it up."), @"button": L(@"Denoise"), @"action": @"dfn"},
         @"too_quiet": @{@"text": L(@"Very quiet — speak closer to the microphone.")},
         @"clipping": @{@"text": L(@"Distorted (clipping) — speak a little further from the microphone.")},
         @"long_pause": @{@"text": L(@"A long pause — shorten it."), @"button": L(@"Shorten pauses"), @"action": @"light"},

@@ -72,7 +72,7 @@ static void Center(NSView *child, NSView *parent) {
 #pragma mark - Pill button (CTA / ghost)
 
 @interface OVPillButton : NSButton
-@property BOOL ghost, hovered;
+@property BOOL ghost, hovered, dropsDown;   // dropsDown: a chevron after the title (pull-down menu button)
 @property (nonatomic) CGFloat pillHeight;
 @property NSLayoutConstraint *heightConstraint;
 @end
@@ -84,7 +84,8 @@ static void Center(NSView *child, NSView *parent) {
 /// An NSButton with a symbol image reports alignment insets (the image's), which made the frame taller than the constraint.
 - (NSEdgeInsets)alignmentRectInsets { return NSEdgeInsetsZero; }
 - (NSSize)intrinsicContentSize {
-    CGFloat w = ceil([self.title sizeWithAttributes:@{NSFontAttributeName: self.font}].width) + 36 + (self.image ? 21 : 0);
+    if (!self.title.length && self.image) return NSMakeSize(MAX(_pillHeight, 30), _pillHeight);   // icon only
+    CGFloat w = ceil([self.title sizeWithAttributes:@{NSFontAttributeName: self.font}].width) + 36 + (self.image ? 21 : 0) + (self.dropsDown ? 17 : 0);
     return NSMakeSize(w, _pillHeight);
 }
 /// A fixed height constraint: an NSButton that carries an image otherwise lays out taller than its intrinsic height.
@@ -131,8 +132,12 @@ static void Center(NSView *child, NSView *parent) {
     NSDictionary *attrs = @{NSFontAttributeName: self.font, NSForegroundColorAttributeName: fg};
     NSSize ts = [self.title sizeWithAttributes:attrs];
     NSImage *img = self.image ? Tinted([self.image imageWithSymbolConfiguration:[NSImageSymbolConfiguration configurationWithPointSize:13 weight:NSFontWeightSemibold]], fg) : nil;
-    CGFloat iw = img ? img.size.width + 7 : 0;
-    CGFloat x = round((NSWidth(b) - ts.width - iw) / 2);
+    CGFloat iw = img ? img.size.width + (self.title.length ? 7 : 0) : 0;
+    NSImage *chev = self.dropsDown ? Tinted(Glyph(@"chevron.down", 10, NSFontWeightSemibold), fg) : nil;
+    CGFloat cw = chev ? chev.size.width + 6 : 0;
+    CGFloat x = round((NSWidth(b) - ts.width - iw - cw) / 2);
+    if (chev) [chev drawInRect:NSMakeRect(x + iw + ts.width + 6, round((NSHeight(b) - chev.size.height) / 2), chev.size.width, chev.size.height)
+                      fromRect:NSZeroRect operation:NSCompositingOperationSourceOver fraction:1 respectFlipped:YES hints:nil];
     if (img) [img drawInRect:NSMakeRect(x, round((NSHeight(b) - img.size.height) / 2), img.size.width, img.size.height)
                     fromRect:NSZeroRect operation:NSCompositingOperationSourceOver fraction:1 respectFlipped:YES hints:nil];
     [self.title drawAtPoint:NSMakePoint(x + iw, round((NSHeight(b) - ts.height) / 2) - (self.isFlipped ? 1 : -1)) withAttributes:attrs];
@@ -169,6 +174,39 @@ NSButton *OVButtonHeight(NSButton *b, CGFloat height) {
 NSButton *OVSmallPill(NSButton *b) {
     b.font = [NSFont systemFontOfSize:13 weight:NSFontWeightSemibold];
     return OVButtonHeight(b, 30);
+}
+
+#pragma mark - Pull-down menu button
+
+/// Pops the button's menu up under it; `willOpen` lets the owner enable, disable and relabel items first.
+@interface OVMenuButtonHandler : NSObject
+@property NSMenu *menu;
+@property (copy) void (^willOpen)(NSMenu *);
+- (void)open:(NSButton *)b;
+@end
+@implementation OVMenuButtonHandler
+- (void)open:(NSButton *)b {
+    if (self.willOpen) self.willOpen(self.menu);
+    [self.menu popUpMenuPositioningItem:nil atLocation:NSMakePoint(0, NSHeight(b.bounds) + 4) inView:b];
+}
+@end
+
+NSButton *OVMenuButton(NSButton *b, NSMenu *menu, void (^willOpen)(NSMenu *)) {
+    OVMenuButtonHandler *h = [OVMenuButtonHandler new];
+    h.menu = menu;
+    h.willOpen = willOpen;
+    menu.autoenablesItems = NO;
+    objc_setAssociatedObject(b, "ovMenuHandler", h, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    b.target = h;
+    b.action = @selector(open:);
+    if ([b isKindOfClass:OVPillButton.class]) {
+        ((OVPillButton *)b).dropsDown = YES;
+        if (!b.title.length) ((OVPillButton *)b).dropsDown = NO;   // an icon-only "…" button is its own cue
+        [b invalidateIntrinsicContentSize];
+    }
+    b.accessibilityRole = NSAccessibilityPopUpButtonRole;
+    b.accessibilityHelp = L(@"Opens a menu");
+    return b;
 }
 
 #pragma mark - Card header, step card
