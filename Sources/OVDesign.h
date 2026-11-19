@@ -54,6 +54,9 @@ NSButton *OVGhostButton(NSString *title, NSString *_Nullable symbol, id _Nullabl
 NSButton *OVButtonHeight(NSButton *b, CGFloat height);
 /// Compact pill for list rows: 13 pt semibold text, 30 pt high.
 NSButton *OVSmallPill(NSButton *b);
+/// Turns a button into a pull-down: a click pops `menu` up under it (a chevron after a title; none for an icon-only button).
+/// `willOpen` runs first, to enable and relabel the items. The caller sets each item's target and action.
+NSButton *OVMenuButton(NSButton *b, NSMenu *menu, void (^_Nullable willOpen)(NSMenu *menu));
 NSView *OVBadge(NSString *text, OVRole tone);   // OVRoleMuted | OVRoleAccent | OVRoleOK | OVRoleWarn | OVRoleErr
 NSView *OVCompactBadge(NSString *text, OVRole tone);  // smaller OVBadge for dense rows
 NSView *OVProBadgeCompact(void);                // same, smaller: sidebar rows

@@ -1,0 +1,19 @@
+/* Compact pages: one row of small buttons, pull-down menus. */
+"Improve" = "Улучшить";
+"Check" = "Проверить";
+"Compare" = "Сравнить";
+"Trim" = "Обрезать";
+"Measures the sample: noise, silence, pauses and clipping, with advice." = "Измеряет образец: шум, тишину, паузы и перегруз, и даёт советы.";
+"Opens a menu" = "Открывает меню";
+"Light cleanup — cut silence and noise" = "Лёгкая чистка — убрать тишину и шум";
+"DeepFilterNet — strong noise removal" = "DeepFilterNet — сильное шумоподавление";
+"DeepFilterNet (download, ~27 MB) — strong noise removal" = "DeepFilterNet (скачать, ~27 МБ) — сильное шумоподавление";
+"Remove music" = "Убрать музыку";
+"Remove music (download, ~140 MB)" = "Убрать музыку (скачать, ~140 МБ)";
+"Up to %.1f s of silence can be cut." = "Можно вырезать до %.1f с тишины.";
+"Background noise — clean it up." = "Фоновый шум — очистите запись.";
+"Preset actions" = "Действия с пресетом";
+"Rename…" = "Переименовать…";
+"Delete…" = "Удалить…";
+"Save, rename, delete, import or export presets" = "Сохранить, переименовать, удалить, импортировать или экспортировать пресеты";
+"Keeps the voice style, the file format and the effects chain." = "Хранит стиль голоса, формат файла и цепочку эффектов.";

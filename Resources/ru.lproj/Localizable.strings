@@ -223,6 +223,7 @@
 "Autotune" = "Автотюн";
 "Back to the original sample" = "Вернуть исходный образец";
 "Background noise — clean it up or record in a quieter room." = "Фоновый шум — очистите запись или запишите в тишине.";
+"Background noise — clean it up." = "Фоновый шум — очистите запись.";
 "Background noise — press “Improve sample” or record in a quieter room." = "Фоновый шум — нажмите «Улучшить образец» или запишите в более тихом месте.";
 "Badges" = "Бейджи";
 "Balanced" = "Баланс";
@@ -285,6 +286,7 @@
 "Change your voice live, through your microphone." = "Меняйте голос вживую через микрофон.";
 "Changes the voice's character. Adds 64 ms." = "Меняет характер голоса. Добавляет 64 мс задержки.";
 "Changing the voice…" = "Меняем голос…";
+"Check" = "Проверить";
 "Check dataset" = "Проверить набор";
 "Check sample" = "Проверить сэмпл";
 "Check these words in the sample text — they aren’t Ukrainian dictionary words, probably misheard: %@. The text must match the recording exactly; fix them and re-clone." = "Проверьте эти слова в тексте образца — их нет в украинском словаре, скорее всего, они распознаны неверно: %@. Текст должен в точности совпадать с записью; исправьте их и переклонируйте голос.";
@@ -366,6 +368,7 @@
 "Codebook layer penalty" = "Штраф слоёв кодбука";
 "Collapsed, click to open" = "Свёрнуто, нажмите, чтобы открыть";
 "Color palette" = "Цветовая палитра";
+"Compare" = "Сравнить";
 "Compare samples…" = "Сравнить сэмплы…";
 "Comparing the samples…" = "Сравниваю сэмплы…";
 "Comparison" = "Сравнение";
@@ -434,11 +437,13 @@
 "Decoding steps: 16 / 32 / 64" = "Шагов декодирования: 16 / 32 / 64";
 "Deeper ↔ higher voice, in semitones. The timbre moves with it: lower is bigger and darker, higher is lighter." = "Ниже ↔ выше, в полутонах. Тембр меняется вместе с высотой: ниже — крупнее и темнее, выше — легче.";
 "DeepFilterNet" = "DeepFilterNet";
+"DeepFilterNet (download, ~27 MB) — strong noise removal" = "DeepFilterNet (скачать, ~27 МБ) — сильное шумоподавление";
 "DeepFilterNet has to be downloaded first." = "Сначала нужно скачать DeepFilterNet.";
 "DeepFilterNet is installed." = "DeepFilterNet установлен.";
 "DeepFilterNet is not installed. Download DeepFilterNet in Audio Tools, then try again." = "DeepFilterNet не установлен. Скачайте DeepFilterNet в «Аудио-инструментах» и повторите.";
 "DeepFilterNet is not installed. It removes noise from speech and music alike; the download is 27 MB." = "DeepFilterNet не установлен. Он убирает шум и из речи, и из музыки; загрузка 27 МБ.";
 "DeepFilterNet isn’t installed — press Download, then try again." = "DeepFilterNet не установлен — нажмите «Скачать» и повторите.";
+"DeepFilterNet — strong noise removal" = "DeepFilterNet — сильное шумоподавление";
 "Default" = "По умолчанию";
 "Default (192 kbps)" = "По умолчанию (192 кбит/с)";
 "Default (5)" = "По умолчанию (5)";
@@ -466,6 +471,7 @@
 "Delete voice “%@”?" = "Удалить голос «%@»?";
 "Delete “%@” from the Hugging Face cache?" = "Удалить «%@» из кеша Hugging Face?";
 "Delete “%@”?" = "Удалить «%@»?";
+"Delete…" = "Удалить…";
 "Denoise" = "Убрать шум";
 "Deny" = "Отклонить";
 "Depth" = "Глубина";
@@ -734,6 +740,7 @@
 "Import voice model: %@" = "Импорт модели голоса: %@";
 "Importing from YouTube and cloning through the local API (POST /v1/clone) ask you to confirm you have those rights." = "Импорт с YouTube и клонирование через локальный API (POST /v1/clone) просят подтвердить, что у вас есть эти права.";
 "Import…" = "Импорт…";
+"Improve" = "Улучшить";
 "Improve sample" = "Улучшить образец";
 "Improving" = "Улучшается";
 "In progress" = "Идёт";
@@ -800,6 +807,7 @@
 "Keeps %@ of %@" = "Останется %@ из %@";
 "Keeps consonants and breaths clear. Changes at once." = "Сохраняет согласные и дыхание чистыми. Меняется сразу.";
 "Keeps the voice and takes the music out, or the other way round. Runs on this Mac." = "Оставляет голос и убирает музыку или наоборот. Работает на этом Mac.";
+"Keeps the voice style, the file format and the effects chain." = "Хранит стиль голоса, формат файла и цепочку эффектов.";
 "Kind of task" = "Вид задачи";
 "Korean" = "Корейский";
 "Language" = "Язык";
@@ -829,6 +837,7 @@
 "Light" = "Светлая";
 "Light cleanup" = "Лёгкая очистка";
 "Light cleanup instead" = "Лёгкая очистка вместо этого";
+"Light cleanup — cut silence and noise" = "Лёгкая чистка — убрать тишину и шум";
 "Light cleanup: trims silence, shortens pauses, reduces noise. The original is kept." = "Лёгкая очистка: обрезает тишину, сокращает паузы, снижает шум. Оригинал сохраняется.";
 "Light Theme" = "Светлая тема";
 "likeness %.0f%%" = "сходство %.0f%%";
@@ -888,6 +897,7 @@
 "Maximum" = "Максимум";
 "Measured delay" = "Измеренная задержка";
 "Measured on this Mac with your devices." = "Измерено на этом Mac с вашими устройствами.";
+"Measures the sample: noise, silence, pauses and clipping, with advice." = "Измеряет образец: шум, тишину, паузы и перегруз, и даёт советы.";
 "Measuring… speak for a moment." = "Измеряю… скажите что-нибудь.";
 "Median pitch %d Hz" = "Медианная высота %d Гц";
 "Medium" = "Средний";
@@ -1083,6 +1093,7 @@
 "Open setup" = "Открыть подготовку";
 "Open Speech" = "Открыть озвучку";
 "Open the model page" = "Открыть страницу модели";
+"Opens a menu" = "Открывает меню";
 "Optional" = "По желанию";
 "optional" = "по желанию";
 "or click to choose a file" = "или нажмите, чтобы выбрать файл";
@@ -1154,6 +1165,7 @@
 "Preparing the task took too long. Close other apps and start it again." = "Подготовка задачи заняла слишком много времени. Закройте другие приложения и запустите её снова.";
 "Preparing: memory check and the voice engine." = "Подготовка: проверка памяти и голосовой движок.";
 "Preset" = "Пресет";
+"Preset actions" = "Действия с пресетом";
 "Preset exported." = "Пресет экспортирован.";
 "Preset imported" = "Пресет импортирован";
 "Preset imported." = "Пресет импортирован.";
@@ -1238,6 +1250,7 @@
 "Remove flagged files (%ld)" = "Убрать отмеченные файлы (%ld)";
 "Remove from list" = "Убрать из списка";
 "Remove music" = "Убрать музыку";
+"Remove music (download, ~140 MB)" = "Убрать музыку (скачать, ~140 МБ)";
 "Remove music: %@" = "Убрать музыку: %@";
 "Remove reverb" = "Убрать реверберацию";
 "Remove the sample’s accent in other languages" = "Убирать акцент образца в других языках";
@@ -1251,6 +1264,7 @@
 "Rename" = "Переименовать";
 "Rename the preset" = "Переименовать пресет";
 "Rename voice model" = "Переименовать модель голоса";
+"Rename…" = "Переименовать…";
 "Repair" = "Починить";
 "Repository “%@” was not found on Hugging Face. Check the link." = "Репозиторий «%@» не найден на Hugging Face. Проверьте ссылку.";
 "Rescan cache" = "Проверить кеш заново";
@@ -1313,6 +1327,7 @@
 "Save every" = "Сохранять каждые";
 "Save the current settings as a preset" = "Сохранить текущие настройки как пресет";
 "Save the last recording in this format wherever you like. New recordings are also saved next to the WAV in this format." = "Сохранить последнюю запись в этом формате в любое место. Новые записи также сохраняются рядом с WAV в этом формате.";
+"Save, rename, delete, import or export presets" = "Сохранить, переименовать, удалить, импортировать или экспортировать пресеты";
 "Saved ‘%@’. It is on the Models page and in Convert." = "Сохранено: «%@». Голос есть на странице «Модели» и в «Конвертации».";
 "Saved: %@" = "Сохранено: %@";
 "Saving as %@…" = "Сохраняю как %@…";
@@ -1740,6 +1755,7 @@
 "Transcribe (download Whisper…)" = "Распознать (скачать Whisper…)";
 "Transcribe automatically" = "Распознать автоматически";
 "Transcribing…" = "Распознаю…";
+"Trim" = "Обрезать";
 "Trim edges" = "Обрезать края";
 "Trim end" = "Конец образца";
 "Trim silence" = "Обрезать тишину";
@@ -1769,6 +1785,7 @@
 "Unknown kind of task: %@. Update the app or the plugin." = "Неизвестный вид задачи: %@. Обновите приложение или плагин.";
 "Unsupported audio format" = "Неподдерживаемый формат аудио";
 "Untitled" = "Без названия";
+"Up to %.1f s of silence can be cut." = "Можно вырезать до %.1f с тишины.";
 "Update" = "Обновить";
 "Update yt-dlp" = "Обновить yt-dlp";
 "Update yt-dlp (%@)" = "Обновить yt-dlp (%@)";

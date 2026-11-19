@@ -209,7 +209,8 @@ static void FillFormatPopup(OVPopup *popup, NSString *selectedId) {
 @property OVPopup *presetPopup, *formatPopup;
 @property (strong) OVJob *job;   // the running or queued synth job of this page (nil when none)
 @property BOOL exporting;   // a copy in the chosen format is being written: no new synth until it is done
-@property NSButton *presetRename, *presetDelete, *saveAsButton, *batchButton;
+@property NSMenuItem *presetRename, *presetDelete;
+@property NSButton *saveAsButton, *batchButton;
 @property OVEffectsView *effects;
 @property (copy) NSString *presetId, *lastResultPath;
 @property NSPopover *tunePopover;
@@ -389,15 +390,26 @@ static void FillFormatPopup(OVPopup *popup, NSString *selectedId) {
     self.presetPopup.accessibilityLabel = L(@"Preset");
     self.presetPopup.autoenablesItems = NO;
     Squeezable(self.presetPopup);
-    OVFlowRow *presetButtons = [OVFlowRow new];
-    NSButton *presetSave = OVButtonHeight(OVGhostButton(L(@"Save current as preset…"), nil, self, @selector(presetSave:)), 28);
-    self.presetRename = OVButtonHeight(OVGhostButton(L(@"Rename"), nil, self, @selector(presetRename:)), 28);
-    self.presetDelete = OVButtonHeight(OVGhostButton(L(@"Delete"), nil, self, @selector(presetDelete:)), 28);
-    NSButton *presetImport = OVButtonHeight(OVGhostButton(L(@"Import…"), nil, self, @selector(presetImport:)), 28);
-    NSButton *presetExport = OVButtonHeight(OVGhostButton(L(@"Export…"), nil, self, @selector(presetExport:)), 28);
-    [presetButtons setItems:@[presetSave, self.presetRename, self.presetDelete, presetImport, presetExport]];
-    NSView *presetBlock = OVFieldBlock(L(@"Preset"), L(@"A preset keeps the voice style, the file format and the effects chain."),
-                                       OVFillStack(@[OVFillPopup(self.presetPopup), presetButtons], 8));
+    // the five preset actions live in one "…" pull-down next to the popup
+    NSMenu *presetMenu = [[NSMenu alloc] initWithTitle:L(@"Preset actions")];
+    NSMenuItem *(^item)(NSString *, SEL) = ^NSMenuItem *(NSString *title, SEL action) {
+        NSMenuItem *it = [presetMenu addItemWithTitle:title action:action keyEquivalent:@""];
+        it.target = self;
+        return it;
+    };
+    item(L(@"Save current as preset…"), @selector(presetSave:));
+    self.presetRename = item(L(@"Rename…"), @selector(presetRename:));
+    self.presetDelete = item(L(@"Delete…"), @selector(presetDelete:));
+    [presetMenu addItem:NSMenuItem.separatorItem];
+    item(L(@"Import…"), @selector(presetImport:));
+    item(L(@"Export…"), @selector(presetExport:));
+    NSButton *presetMore = OVMenuButton(OVButtonHeight(OVGhostButton(@"", @"ellipsis.circle", nil, nil), 36), presetMenu, nil);
+    presetMore.accessibilityLabel = L(@"Preset actions");
+    presetMore.toolTip = L(@"Save, rename, delete, import or export presets");
+    [self.presetPopup setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
+    NSStackView *presetRow = OVHStack(@[self.presetPopup, presetMore], 8);
+    presetRow.alignment = NSLayoutAttributeCenterY;
+    NSView *presetBlock = OVFieldBlock(L(@"Preset"), L(@"Keeps the voice style, the file format and the effects chain."), presetRow);
     NSStackView *styleContent = OVFillStack(@[presetBlock, sliderColumns, design, resetRow], 16);
     self.styleDisclosure = [OVDisclosure disclosureWithTitle:L(@"Voice style") subtitle:L(@"Default") symbol:@"slider.horizontal.3" content:styleContent];
     self.styleDisclosure.expanded = [NSUserDefaults.standardUserDefaults boolForKey:@"stylePanel"];
