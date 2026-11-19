@@ -92,6 +92,7 @@ class Audio(unittest.TestCase):
         endless = worker.trim_sample(voice(40.0))
         self.assertAlmostEqual(len(endless) / SR, 10.0, delta=0.3)  # no pause: the target length
 
+    @unittest.skipUnless(importlib.util.find_spec("mlx_audio"), "reading audio files needs mlx_audio (not on CI)")
     def test_cleanup_reports_what_it_cut(self):
         import tempfile, os
         gap = np.zeros(int(SR * 0.8), dtype=np.float32)
