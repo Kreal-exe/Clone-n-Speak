@@ -45,6 +45,9 @@ heavy engines are separate downloads for Macs with 16 GB of unified memory, and 
 - Extended sample check: silence at the edges, the longest pause, problem spots marked on the waveform, and a
   comparison of several samples of one voice (levels, duplicates).
 - *Improve sample*: DeepFilterNet cleanup and music removal next to the light cleanup.
+- *Trim edges*: cut anything unwanted at the start or the end of a sample, not only silence. Drag the two handles on
+  the waveform (or press `[` and `]` at the playhead), listen with *Play selection*, then *Apply*; the original is kept
+  and *Restore original* brings it back.
 
 **Models**
 - LoRA adapters by Hugging Face link: paste the address of an adapter and the app downloads and checks it.
