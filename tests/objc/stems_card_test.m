@@ -1,4 +1,4 @@
-// deps: OVStemsCard.m OVDesign.m OVUI.m OVTheme.m OVLocale.m OVPaths.m OVPlayerBar.m OVWaveformView.m OVAudioIO.m OVJobs.m OVJobStore.m OVEngines.m OVProKit.m OVProRunPlan.m OVNetwork.m OVPrivacyCatalog.m OVRuntime.m OVWorker.m OVModels.m OVDownloader.m OVStore.m OVMemory.m
+// deps: OVStemsCard.m OVDesign.m OVUI.m OVTheme.m OVLocale.m OVPaths.m OVPlayerBar.m OVWaveformView.m OVTrim.m OVAudioIO.m OVJobs.m OVJobStore.m OVEngines.m OVProKit.m OVProRunPlan.m OVNetwork.m OVPrivacyCatalog.m OVRuntime.m OVWorker.m OVModels.m OVDownloader.m OVStore.m OVMemory.m
 // The pure parts of the full separation card: model table, request shape, result names, estimates. Exit status 1 on a failure.
 #import <Cocoa/Cocoa.h>
 #import "OVStemsCard.h"

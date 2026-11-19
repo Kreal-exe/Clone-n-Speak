@@ -1,0 +1,15 @@
+/* Voices page: trimming the edges of a sample by hand. */
+"Trim edges" = "Обрезать края";
+"Cut anything you don’t want from the start and the end of the sample: a breath, a word, a click. The original is kept." = "Вырежьте всё лишнее в начале и в конце образца: вдох, слово, щелчок. Оригинал сохраняется.";
+"Play selection" = "Слушать выделенное";
+"Length kept" = "Сохранится";
+"Keeps %@ of %@" = "Останется %@ из %@";
+"The sample is too short to trim." = "Образец слишком короткий, чтобы его обрезать.";
+"Drag the two handles, or press [ and ] to set the start and the end at the playhead." = "Перетащите два маркера или нажмите [ и ], чтобы поставить начало и конец на позицию воспроизведения.";
+"Drag the handles to choose what stays. [ sets the start and ] the end at the playhead." = "Перетащите маркеры, чтобы выбрать, что останется. [ ставит начало, ] — конец на позиции воспроизведения.";
+"Couldn’t trim the sample: %@" = "Не удалось обрезать образец: %@";
+"Sample trimmed. Re-clone the voice to use it." = "Образец обрезан. Переклонируйте голос, чтобы он его использовал.";
+"Sample trimmed." = "Образец обрезан.";
+"Trim start" = "Начало образца";
+"Trim end" = "Конец образца";
+"%.1f seconds" = "%.1f с";
