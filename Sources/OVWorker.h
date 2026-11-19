@@ -20,7 +20,9 @@ typedef void (^OVWorkerResult)(NSDictionary *_Nullable data, NSString *_Nullable
 @property (readonly, copy) NSString *lastStatus;
 /// The "code" of the last error event ("engine_missing", "bad_param", ...), nil when the error had none or the last
 /// request succeeded. Valid only synchronously inside the `done` block (it is set just before `done` runs and cleared
-/// by the next request(), including one rejected as busy); read it there, do not keep reading it later.
+/// by the next request()); read it there, do not keep reading it later.
+/// A request made while the engine is busy waits in a queue (up to 16) and runs when the engine is free, in order;
+/// Stop, an idle shutdown or a crash answers every waiting call with the same reason.
 @property (readonly, nullable, copy) NSString *lastErrorCode;
 /// Memory reported by the engine (GB): what it holds now and its peak during the last task.
 @property (readonly) double memoryActive, memoryPeak;

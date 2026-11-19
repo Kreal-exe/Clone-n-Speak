@@ -53,6 +53,8 @@ heavy engines are separate downloads for Macs with 16 GB of unified memory, and 
   only that cut.
 - Silence and pauses the voice doesn't need are offered as one fix with how much it removes; the cleanup shortens
   pauses to 0.25 s, keeps every word, and says what it cut.
+- No more "Another operation is already in progress" while a voice is cloned: requests that arrive while the engine is
+  busy (the sample check, the preview, an engine status) wait their turn instead of failing.
 - A more compact sample card (Check · Compare · Trim in one row, one *Improve* menu) and a "…" menu for presets.
 
 **Models**

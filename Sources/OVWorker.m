@@ -27,7 +27,12 @@ NSNotificationName const OVWorkerEventNotification = @"OVWorkerEvent";
 @property (readwrite) double memoryActive, memoryPeak;
 @property (readwrite) unsigned long long engineFootprint, peakFootprint, availableMemory;
 @property (nullable) NSTimer *memoryTimer;
+/// Requests that arrived while the engine was busy, served in order when it is free (pages ask for a check, a preview or
+/// an engine status while a clone runs; rejecting them made "Another operation is already in progress" pop up).
+@property NSMutableArray<NSDictionary *> *queue;
 @end
+
+static const NSUInteger OVWorkerQueueLimit = 16;
 
 @implementation OVWorker
 
@@ -195,9 +200,25 @@ NSNotificationName const OVWorkerEventNotification = @"OVWorkerEvent";
         _lastErrorCode = [kind isEqualToString:@"error"] && [ev[@"code"] isKindOfClass:NSString.class] ? [ev[@"code"] copy] : nil;
         if ([kind isEqualToString:@"error"]) [[OVRuntime shared] log:[NSString stringWithFormat:L(@"Error: %@"), ev[@"msg"] ?: @"?"]];
         if (done) done(ev[@"data"], [kind isEqualToString:@"error"] ? (ev[@"msg"] ?: L(@"Error")) : nil);
+        [self serveNext];
     } else if (kind) {
         [NSNotificationCenter.defaultCenter postNotificationName:OVWorkerEventNotification object:self userInfo:ev];
     }
+}
+
+/// Starts the oldest queued request if the engine is free (a done block may already have started a new one).
+- (void)serveNext {
+    if (self.busy || !self.queue.count) return;
+    NSDictionary *q = self.queue.firstObject;
+    [self.queue removeObjectAtIndex:0];
+    [self request:q[@"req"] status:q[@"status"] progress:q[@"progress"] done:q[@"done"]];
+}
+
+/// The engine stopped or died: what waited for it is answered with the same reason instead of restarting it.
+- (void)failQueue:(NSString *)reason {
+    NSArray *waiting = self.queue;
+    self.queue = nil;
+    for (NSDictionary *q in waiting) ((OVWorkerResult)q[@"done"])(nil, reason);
 }
 
 - (void)clearRequest {
@@ -241,8 +262,10 @@ NSNotificationName const OVWorkerEventNotification = @"OVWorkerEvent";
     if (done) {
         // SIGKILL (9) without us asking for it is macOS reclaiming memory
         BOOL killed = task.terminationReason == NSTaskTerminationReasonUncaughtSignal && code == SIGKILL;
-        done(nil, killed ? L(@"The Python process was terminated by the system — probably out of memory.")
-                         : [NSString stringWithFormat:L(@"The Python process quit unexpectedly (code %d). See the Log for details."), code]);
+        NSString *why = killed ? L(@"The Python process was terminated by the system — probably out of memory.")
+                               : [NSString stringWithFormat:L(@"The Python process quit unexpectedly (code %d). See the Log for details."), code];
+        done(nil, why);
+        [self failQueue:why];
     }
 }
 
@@ -254,7 +277,15 @@ static NSString *_Nullable (^gRequestGuard)(NSDictionary *);
     _lastErrorCode = nil;   // also for the busy reject below: its callback must not see the code of an earlier error
     NSString *blocked = gRequestGuard ? gRequestGuard(req) : nil;   // a pro job runs: model loading waits for it
     if (blocked) { _lastErrorCode = @"pro_job_running"; done(nil, blocked); return; }
-    if (self.busy) { done(nil, L(@"Another operation is already in progress")); return; }
+    if (self.busy) {
+        if (!self.queue) self.queue = [NSMutableArray array];
+        if (self.queue.count >= OVWorkerQueueLimit) { done(nil, L(@"Another operation is already in progress")); return; }
+        NSMutableDictionary *q = [@{@"req": [req copy], @"done": [done copy]} mutableCopy];
+        if (status) q[@"status"] = [status copy];
+        if (progress) q[@"progress"] = [progress copy];
+        [self.queue addObject:q];
+        return;
+    }
     if (!self.running) {
         NSString *err = nil;
         if (![self start:&err]) { done(nil, err); return; }
@@ -283,6 +314,7 @@ static NSString *_Nullable (^gRequestGuard)(NSDictionary *);
     @catch (NSException *e) {
         [self clearRequest];
         done(nil, L(@"Couldn’t send the command to the worker"));
+        [self serveNext];
     }
 }
 
@@ -296,6 +328,7 @@ static NSString *_Nullable (^gRequestGuard)(NSDictionary *);
         if (t.isRunning) kill(t.processIdentifier, SIGKILL);
     });
     if (done) done(nil, L(@"Stopped"));
+    [self failQueue:L(@"Stopped")];
 }
 
 - (void)shutdown {
@@ -305,6 +338,7 @@ static NSString *_Nullable (^gRequestGuard)(NSDictionary *);
     @try { [self.input writeData:[@"{\"cmd\":\"quit\"}\n" dataUsingEncoding:NSUTF8StringEncoding]]; } @catch (NSException *e) {}
     OVWorkerResult done = [self detach];
     if (done) done(nil, L(@"Stopped"));
+    [self failQueue:L(@"Stopped")];
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         if (t.isRunning) [t terminate];
     });
