@@ -48,6 +48,12 @@ heavy engines are separate downloads for Macs with 16 GB of unified memory, and 
 - *Trim edges*: cut anything unwanted at the start or the end of a sample, not only silence. Drag the two handles on
   the waveform (or press `[` and `]` at the playhead), listen with *Play selection*, then *Apply*; the original is kept
   and *Restore original* brings it back.
+- A long recording is no longer cut from its start: the best 6–14 s for cloning are picked from the whole recording
+  (the most speech, the least noise, no clipping, cut in pauses), and the text field says when the transcript covers
+  only that cut.
+- Silence and pauses the voice doesn't need are offered as one fix with how much it removes; the cleanup shortens
+  pauses to 0.25 s, keeps every word, and says what it cut.
+- A more compact sample card (Check · Compare · Trim in one row, one *Improve* menu) and a "…" menu for presets.
 
 **Models**
 - LoRA adapters by Hugging Face link: paste the address of an adapter and the app downloads and checks it.
